@@ -3,6 +3,7 @@ import { env } from "../config/env.js";
 import { authenticateSocket } from "./authSocket.js";
 import { registerChannelHandlers } from "./channelHandler.js";
 import { registerSosHandlers } from "./sosHandler.js";
+import { registerProCommerceHandlers } from "./proCommerceHandler.js";
 
 export const attachSocketServer = (httpServer) => {
   const io = new Server(httpServer, {
@@ -16,6 +17,7 @@ export const attachSocketServer = (httpServer) => {
   io.on("connection", (socket) => {
     registerSosHandlers(io, socket);
     registerChannelHandlers(io, socket);
+    registerProCommerceHandlers(socket);
     socket.on("disconnect", () => {
       socket.data.presenceLocation = null;
     });

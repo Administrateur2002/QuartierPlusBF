@@ -121,11 +121,37 @@ test("production environment rejects malformed URLs and boolean variables", () =
     ["PGSSL", "yes"],
     ["IS_PROMO_FREE_ACCESS", "sometimes"],
     ["BILLING_ENABLED", "sometimes"],
+    ["PRO_ENABLED", "sometimes"],
   ]) {
     const result = loadProductionConfig({ [name]: value });
     assert.notEqual(result.status, 0, `${name} should be validated`);
     assert.match(result.stderr, new RegExp(name));
   }
+});
+
+test("QuartierPlus Pro is disabled by default and can be explicitly enabled", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "import { env } from './config/env.js'; console.log(env.proEnabled)"],
+    {
+      cwd: serverDirectory,
+      env: { ...productionEnv, DOTENV_CONFIG_PATH: "/dev/null" },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "false");
+  const enabled = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", "import { env } from './config/env.js'; console.log(env.proEnabled)"],
+    {
+      cwd: serverDirectory,
+      env: { ...productionEnv, PRO_ENABLED: "true", DOTENV_CONFIG_PATH: "/dev/null" },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.equal(enabled.stdout.trim(), "true");
 });
 
 test("production environment marks placeholder LiveKit credentials unavailable", () => {

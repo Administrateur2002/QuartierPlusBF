@@ -21,6 +21,7 @@ export type MainTabParamList = {
   Talkie: undefined;
   Grin: undefined;
   Profil: undefined;
+  Grossistes: undefined;
   EspacePro: undefined;
   Événements: undefined;
 };

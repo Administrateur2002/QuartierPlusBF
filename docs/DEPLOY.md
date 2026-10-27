@@ -53,7 +53,8 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 18. `migrations/015_marketplace_country_of_origin.sql`
 19. `migrations/016_sponsored_pin_publication.sql`
 20. `migrations/017_pro_offer_publication.sql`
-21. `server/db/seeds.sql`
+21. `migrations/018_quartierplus_pro.sql`
+22. `server/db/seeds.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -166,6 +167,8 @@ invaliderait les signatures des billets déjà émis.
 | `POST_MAX_VIDEO_SECONDS` | Durée maximale d’une vidéo; défaut `30` secondes |
 | `POST_MAX_VIDEO_BYTES` | Taille maximale d’une vidéo en octets; défaut `31457280` (30 Mo) |
 | `POST_DAILY_LIMIT` | Nombre maximal de publications par compte et par jour; défaut `10` |
+| `PRO_ENABLED` | `false` par défaut; `true` active les catalogues, commandes et livraisons grossistes |
+| `PRO_ADMIN_TOKEN` | Secret serveur indépendant, facultatif; protège la validation RCCM/IFU via l’API Pro |
 
 Les trois variables `CLOUDINARY_*` doivent être configurées ensemble pour
 activer les publications; aucune ne doit être copiée dans l'application mobile.
@@ -189,6 +192,27 @@ configuration SMS et reçoivent un code aléatoire.
 Le HMAC des codes stockés dans `code_hash` utilise `JWT_SECRET` dans
 `authController.js`; aucun `HMAC_SECRET` distinct n'est lu par l'API. Render
 doit donc conserver le secret existant sous `JWT_SECRET` (sans rotation).
+
+La migration 018 crée les tables du catalogue grossiste, des commandes et du
+suivi QuartierPlus Pro. Le module n'encaisse aucun paiement : les modes
+enregistrent seulement « paiement à la livraison » ou un acompte confirmé
+directement par le grossiste. Les profils restent invisibles au catalogue tant
+que RCCM et IFU ne sont pas vérifiés; une équipe autorisée peut mettre à jour
+ces statuts avec `PATCH /v1/pro-commerce/admin/wholesalers/:wholesalerId/verification`
+et le jeton `PRO_ADMIN_TOKEN`.
+
+## Localisation des livraisons Pro
+
+Le suivi Android utilise une tâche Expo en arrière-plan, les permissions
+`ACCESS_BACKGROUND_LOCATION` et `FOREGROUND_SERVICE_LOCATION`, ainsi qu'une
+notification persistante « Livraison en cours ». Toute modification des
+permissions natives impose un nouveau build APK/AAB; une mise à jour OTA ne
+suffit pas. La publication sur Google Play doit déclarer l'accès à la
+localisation en arrière-plan dans **App content > Permissions** et fournir une
+justification montrant que le suivi ne commence qu'avec le consentement du
+livreur et s'arrête à la fin de la livraison. N'activez pas cette fonction en
+production avant l'approbation de cette déclaration. Les positions sont
+privées à la commande et supprimées 30 jours après livraison.
 
 ## 4. Vérifier et récupérer l'URL pour l'application
 

@@ -23,8 +23,28 @@ module.exports = ({ config }) => ({
   ...config,
   android: {
     ...config.android,
+    permissions: [
+      ...new Set([
+        ...(config.android.permissions ?? []),
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS",
+      ]),
+    ],
     googleServicesFile:
       process.env.GOOGLE_SERVICES_JSON ?? "./google-services.json",
+  },
+  ios: {
+    ...config.ios,
+    infoPlist: {
+      ...config.ios?.infoPlist,
+      UIBackgroundModes: [
+        ...new Set([...(config.ios?.infoPlist?.UIBackgroundModes ?? []), "location"]),
+      ],
+    },
   },
   extra: {
     ...config.extra,
@@ -41,7 +61,19 @@ module.exports = ({ config }) => ({
                 process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? "",
             },
           ]
-        : plugin,
+        : Array.isArray(plugin) && plugin[0] === "expo-location"
+          ? [
+              plugin[0],
+              {
+                ...plugin[1],
+                locationAlwaysAndWhenInUsePermission:
+                  "La position est partagée uniquement pendant une livraison QuartierPlus Pro en cours.",
+                isAndroidBackgroundLocationEnabled: true,
+                isAndroidForegroundServiceEnabled: true,
+                isIosBackgroundLocationEnabled: true,
+              },
+            ]
+          : plugin,
     ),
     ...(googleSignInPlugin ? [googleSignInPlugin] : []),
   ],

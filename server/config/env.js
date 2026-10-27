@@ -33,6 +33,10 @@ const billingEnabledValue = optional("BILLING_ENABLED");
 if (billingEnabledValue && !["true", "false"].includes(billingEnabledValue)) {
   throw new Error("BILLING_ENABLED must be true or false.");
 }
+const proEnabledValue = optional("PRO_ENABLED");
+if (proEnabledValue && !["true", "false"].includes(proEnabledValue)) {
+  throw new Error("PRO_ENABLED must be true or false.");
+}
 
 const databaseUrl = required("DATABASE_URL");
 let parsedDatabaseUrl;
@@ -236,6 +240,8 @@ export const env = Object.freeze({
   postDailyLimit: positiveInteger("POST_DAILY_LIMIT", 10),
   isPromoFreeAccess: promoFreeAccessValue === "true",
   billingEnabled: billingEnabledValue === "true",
+  proEnabled: proEnabledValue === "true",
+  proAdminToken: optional("PRO_ADMIN_TOKEN"),
   pgSsl: pgSslValue === "true",
   socketCorsOrigins: optional("SOCKET_CORS_ORIGIN")
     .split(",")

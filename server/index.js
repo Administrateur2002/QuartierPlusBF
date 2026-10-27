@@ -20,12 +20,14 @@ import sosRoutes from "./routes/sosRoutes.js";
 import ticketsRoutes from "./routes/ticketsRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import proCommerceRoutes from "./routes/proCommerceRoutes.js";
 import { createServer } from "node:http";
 import { attachSocketServer } from "./sockets/index.js";
 import { handleHealth } from "./health.js";
 import { ensureDefaultChannels } from "./services/defaultChannels.js";
 import { verifySmtpTransport } from "./services/email.js";
 import { captureFedaPayRawBody } from "./middlewares/fedapayRawBody.js";
+import { scheduleProDeliveryLocationCleanup } from "./services/proCommerceCleanup.js";
 
 const app = express();
 
@@ -57,6 +59,7 @@ app.use(["/api/v1/events", "/v1/events"], eventsRoutes);
 app.use(["/api/v1/livekit", "/v1/livekit"], livekitRoutes);
 app.use(["/api/v1/payments", "/v1/payments"], paymentRoutes);
 app.use(["/api/v1/pro", "/v1/pro"], proRoutes);
+app.use(["/api/v1/pro-commerce", "/v1/pro-commerce"], proCommerceRoutes);
 app.use(["/api/v1/tickets", "/v1/tickets"], ticketsRoutes);
 app.use(["/api/v1/users", "/v1/users"], userRoutes);
 app.use(["/api/v1/admin", "/v1/admin"], adminRoutes);
@@ -114,6 +117,8 @@ app.use((error, _request, response, _next) => {
 
 const server = createServer(app);
 const io = attachSocketServer(server);
+app.set("io", io);
+scheduleProDeliveryLocationCleanup();
 
 void verifySmtpTransport();
 

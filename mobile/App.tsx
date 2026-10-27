@@ -12,6 +12,7 @@ import {
   Mic,
   MessageSquare,
   ShoppingBag,
+  Store,
   User,
 } from "lucide-react-native";
 import { StatusBar } from "expo-status-bar";
@@ -37,6 +38,8 @@ import type {
   RootStackParamList,
 } from "./src/navigation/types";
 import { OfflineQueryProvider } from "./src/services/queryClient";
+import api from "./src/services/api";
+import "./src/services/proCommerceTracking";
 import {
   checkServerContract,
   isServerUpdating,
@@ -57,6 +60,7 @@ import MyActivityScreen from "./src/screens/MyActivityScreen";
 import ProTabNavigator from "./src/navigation/ProTabNavigator";
 import EventsNavigator from "./src/navigation/EventsNavigator";
 import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
+import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
 import { LockKeyhole, X } from "lucide-react-native";
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -80,6 +84,21 @@ const renderTabLabel =
 function MainTabs() {
   const insets = useSafeAreaInsets();
   const { colors, t } = useTheme();
+  const [proCommerceEnabled, setProCommerceEnabled] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void api
+      .get<{ enabled?: boolean }>("/v1/pro-commerce/config")
+      .then((response) => {
+        if (active) setProCommerceEnabled(response.data.enabled === true);
+      })
+      .catch(() => {
+        if (active) setProCommerceEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   return (
     <Tab.Navigator
       screenOptions={{
@@ -141,6 +160,16 @@ function MainTabs() {
           tabBarIcon: ({ color, size }) => <User color={color} size={size} />,
         }}
       />
+      {proCommerceEnabled && (
+        <Tab.Screen
+          name="Grossistes"
+          component={ProCommerceScreen}
+          options={{
+            tabBarLabel: renderTabLabel("Grossistes"),
+            tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
+          }}
+        />
+      )}
       <Tab.Screen
         name="Talkie"
         component={WalkieTalkieScreen}
