@@ -129,11 +129,19 @@ Secrets GitHub réservés aux workflows :
 
 ```text
 GOOGLE_SERVICES_JSON
+GOOGLE_SERVICES_JSON_B64
 EXPO_TOKEN
 ```
 
-`GOOGLE_SERVICES_JSON` est écrit temporairement dans `mobile/google-services.json`
-par le workflow APK ; le contenu n'est pas imprimé. Le client OAuth Android
+Pour la configuration Firebase Android du workflow APK, fournissez soit
+`GOOGLE_SERVICES_JSON` avec le contenu JSON brut, soit
+`GOOGLE_SERVICES_JSON_B64` avec le fichier JSON encodé en base64 standard.
+Si les deux secrets sont définis, `GOOGLE_SERVICES_JSON_B64` est prioritaire.
+Le workflow retire les espaces périphériques, le BOM et les guillemets
+englobants avant de valider le JSON. En cas d'échec, il n'affiche jamais le
+contenu du secret, uniquement des métadonnées de diagnostic.
+La valeur normalisée est écrite temporairement dans `mobile/google-services.json` ;
+le contenu n'est pas imprimé. Le client OAuth Android
 client_type 1 du package `expo.android.package`, le client Web client_type 3,
 `project_number` et `project_id` de ce fichier font autorité. Les deux identifiants
 Google et `EXPO_PUBLIC_FIREBASE_PROJECT_ID` sont exportés depuis ce fichier et

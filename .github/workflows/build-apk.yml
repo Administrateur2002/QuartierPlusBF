@@ -22,18 +22,78 @@ jobs:
       - name: Restore Firebase Android configuration
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
         run: |
           node <<'NODE'
           const fs = require("node:fs");
-          const contents = process.env.GOOGLE_SERVICES_JSON;
-          if (!contents) {
-            console.error("::error::Le secret GOOGLE_SERVICES_JSON est absent.");
+          const encoded = process.env.GOOGLE_SERVICES_JSON_B64;
+          const raw = encoded
+            ? Buffer.from(encoded, "base64").toString("utf8")
+            : process.env.GOOGLE_SERVICES_JSON;
+          if (!raw) {
+            console.error("::error::Les secrets GOOGLE_SERVICES_JSON et GOOGLE_SERVICES_JSON_B64 sont absents.");
             process.exit(1);
           }
+
+          const hadBom = raw.includes("\uFEFF");
+          const hadTypographicQuotes = /[\u2018\u2019\u201C\u201D]/.test(raw);
+          const hasTranslatedProjectKey = /["“”]?numéro_de_projet["“”]?\s*:/.test(raw);
+          let contents = raw.trim().replace(/^\uFEFF/, "").trim();
+          const enclosingQuotes = new Map([
+            ['"', '"'],
+            ["'", "'"],
+            ["“", "”"],
+            ["‘", "’"],
+          ]);
+          while (contents.length >= 2 && enclosingQuotes.get(contents[0]) === contents.at(-1)) {
+            contents = contents.slice(1, -1).trim();
+          }
+
           try {
             JSON.parse(contents);
-          } catch {
-            console.error("::error::Le secret GOOGLE_SERVICES_JSON n’est pas un JSON valide.");
+          } catch (error) {
+            const positionMatch = error.message.match(/position\s+(\d+)/i);
+            const lineColumnMatch = error.message.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+            let position = positionMatch?.[1];
+            if (!position && lineColumnMatch) {
+              const lines = contents.split(/\r\n|\r|\n/);
+              position = (
+                lines.slice(0, Number(lineColumnMatch[1]) - 1).reduce((total, line) => total + line.length + 1, 0) +
+                Number(lineColumnMatch[2]) - 1
+              );
+            }
+            if (position === undefined) {
+              let low = 0;
+              let high = contents.length;
+              while (low < high) {
+                const middle = Math.floor((low + high) / 2);
+                const prefix = contents.slice(0, middle + 1);
+                let invalidBeforeEnd = false;
+                try {
+                  JSON.parse(prefix);
+                } catch (prefixError) {
+                  const message = prefixError.message;
+                  const prefixPosition = message.match(/position\s+(\d+)/i)?.[1];
+                  invalidBeforeEnd = !/Unexpected end of JSON input/i.test(message) &&
+                    (prefixPosition === undefined || Number(prefixPosition) < prefix.length);
+                }
+                if (invalidBeforeEnd) {
+                  high = middle;
+                } else {
+                  low = middle + 1;
+                }
+              }
+              position = String(low);
+            }
+            const first = contents[0];
+            const last = contents.at(-1);
+            const braceOnly = (character) => character === "{" || character === "}" ? character : "autre";
+            const parserMessage = /Unexpected token/i.test(error.message)
+              ? "Unexpected token [contenu masqué]"
+              : error.message;
+            console.error("::error::Le secret de configuration Firebase Android n’est pas un JSON valide.");
+            console.error(`Diagnostic sans contenu : longueur=${contents.length} caractères, lignes=${contents.split(/\r\n|\r|\n/).length}, premier=${braceOnly(first)}, dernier=${braceOnly(last)}, BOM=${hadBom ? "oui" : "non"}, guillemets_typographiques=${hadTypographicQuotes ? "oui" : "non"}, clé_numéro_de_projet=${hasTranslatedProjectKey ? "oui" : "non"}.`);
+            console.error(`Message du parseur : ${parserMessage} (position ${position}; détails textuels masqués si nécessaire).`);
             process.exit(1);
           }
           fs.writeFileSync("mobile/google-services.json", contents, { mode: 0o600 });
