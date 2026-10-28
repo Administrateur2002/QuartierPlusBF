@@ -1,6 +1,9 @@
 import * as SQLite from "expo-sqlite";
 import * as SecureStore from "expo-secure-store";
-import { getSharedDatabase } from "../services/database";
+import {
+  ensureProfileStorageSchema,
+  getSharedDatabase,
+} from "../services/database";
 
 export type EmergencyNumbers = {
   police: string;
@@ -43,6 +46,7 @@ export type ProfileStore = {
 };
 
 const LEGACY_DATABASE_NAME = "quartierplus-profile.db";
+const PREVIOUS_DATABASE_NAME = "quartierplus.db";
 const PREFERENCES_FALLBACK_KEY = "quartierplus.profile.preferences";
 const defaultPreferences = (): AppPreferences => ({
   theme: "system",
@@ -92,46 +96,52 @@ const openProfileDatabase = () => {
   if (databasePromise) return databasePromise;
   databasePromise = (async () => {
     const database = await getSharedDatabase();
+    await ensureProfileStorageSchema(database);
     const migrated = await database.getFirstAsync<{ value: string }>(
-      "SELECT value FROM profile.profile_settings WHERE key = 'legacy_store_migrated'",
+      "SELECT value FROM profile_settings WHERE key = 'legacy_store_migrated'",
     );
     if (migrated) return database;
 
-    const legacyPath = `${SQLite.defaultDatabaseDirectory}/${LEGACY_DATABASE_NAME}`;
-    await database.execAsync(
-      `ATTACH DATABASE '${legacyPath.replaceAll("'", "''")}' AS legacy`,
-    );
-    let activeCountry: { value: string } | null;
-    let contacts: TrustedContact[];
-    try {
-      const legacySettingsExist = await hasTable(database, "profile_settings");
-      const legacyContactsExist = await hasTable(database, "trusted_contacts");
-      activeCountry = legacySettingsExist
-        ? await database.getFirstAsync<{ value: string }>(
+    let activeCountry: { value: string } | null = null;
+    const contacts = new Map<string, TrustedContact>();
+    for (const name of [PREVIOUS_DATABASE_NAME, LEGACY_DATABASE_NAME]) {
+      const legacyPath = `${SQLite.defaultDatabaseDirectory}/${name}`;
+      await database.execAsync(
+        `ATTACH DATABASE '${legacyPath.replaceAll("'", "''")}' AS legacy`,
+      );
+      try {
+        const legacySettingsExist = await hasTable(database, "profile_settings");
+        const legacyContactsExist = await hasTable(database, "trusted_contacts");
+        if (!activeCountry && legacySettingsExist) {
+          activeCountry = await database.getFirstAsync<{ value: string }>(
             "SELECT value FROM legacy.profile_settings WHERE key = 'active_country'",
-          )
-        : null;
-      contacts = legacyContactsExist
-        ? await database.getAllAsync<TrustedContact>(
+          );
+        }
+        if (legacyContactsExist) {
+          const legacyContacts = await database.getAllAsync<TrustedContact>(
             "SELECT id, name, phone, position FROM legacy.trusted_contacts ORDER BY position",
-          )
-        : [];
-    } finally {
-      await database.execAsync("DETACH DATABASE legacy");
+          );
+          for (const contact of legacyContacts) {
+            contacts.set(contact.id, contact);
+          }
+        }
+      } finally {
+        await database.execAsync("DETACH DATABASE legacy");
+      }
     }
 
     await database.withExclusiveTransactionAsync(async (transaction) => {
       if (activeCountry) {
         await transaction.runAsync(
-          `INSERT INTO profile.profile_settings (key, value)
+          `INSERT INTO profile_settings (key, value)
            VALUES ('active_country', ?)
            ON CONFLICT(key) DO NOTHING`,
           activeCountry.value,
         );
       }
-      for (const contact of contacts) {
+      for (const contact of contacts.values()) {
         await transaction.runAsync(
-          `INSERT INTO profile.trusted_contacts (id, name, phone, position)
+          `INSERT INTO trusted_contacts (id, name, phone, position)
            VALUES (?, ?, ?, ?)
            ON CONFLICT(id) DO NOTHING`,
           contact.id,
@@ -141,7 +151,7 @@ const openProfileDatabase = () => {
         );
       }
       await transaction.runAsync(
-        `INSERT INTO profile.profile_settings (key, value)
+        `INSERT INTO profile_settings (key, value)
          VALUES ('legacy_store_migrated', 'true')
          ON CONFLICT(key) DO NOTHING`,
       );
@@ -235,7 +245,7 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
       try {
         const saved = await retryProfileOperation("country read", () =>
           initializedDatabase.getFirstAsync<{ value: string }>(
-            "SELECT value FROM profile.profile_settings WHERE key = 'active_country'",
+            "SELECT value FROM profile_settings WHERE key = 'active_country'",
           ),
         );
         memoryCountry = saved ? (JSON.parse(saved.value) as StoredCountry) : null;
@@ -250,7 +260,7 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
       try {
         await retryProfileOperation("country write", () =>
           initializedDatabase.runAsync(
-            `INSERT INTO profile.profile_settings (key, value)
+            `INSERT INTO profile_settings (key, value)
          VALUES ('active_country', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
             JSON.stringify(country),
@@ -264,7 +274,7 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
       try {
         memoryContacts = await retryProfileOperation("trusted contacts read", () =>
           initializedDatabase.getAllAsync<TrustedContact>(
-            "SELECT id, name, phone, position FROM profile.trusted_contacts ORDER BY position",
+            "SELECT id, name, phone, position FROM trusted_contacts ORDER BY position",
           ),
         );
         return [...memoryContacts];
@@ -280,7 +290,7 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
       try {
         await retryProfileOperation("trusted contact write", () =>
           initializedDatabase.runAsync(
-            `INSERT INTO profile.trusted_contacts (id, name, phone, position)
+            `INSERT INTO trusted_contacts (id, name, phone, position)
          VALUES (?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
@@ -301,10 +311,10 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
       try {
         await retryProfileOperation("trusted contact deletion", () =>
           initializedDatabase.withExclusiveTransactionAsync(async (transaction) => {
-            await transaction.runAsync("DELETE FROM profile.trusted_contacts WHERE id = ?", id);
+            await transaction.runAsync("DELETE FROM trusted_contacts WHERE id = ?", id);
             for (const contact of remainingContacts) {
               await transaction.runAsync(
-                "UPDATE profile.trusted_contacts SET position = ? WHERE id = ?",
+                "UPDATE trusted_contacts SET position = ? WHERE id = ?",
                 contact.position,
                 contact.id,
               );

@@ -45,6 +45,7 @@ import {
   type CloudinaryMediaType,
 } from "../services/cloudinaryUpload";
 import { MediaUploadError } from "../services/mediaUploadError";
+import { compressVideoForUpload } from "../services/videoCompression";
 import {
   FEED_SCOPES,
   isFeedCoordinates,
@@ -224,6 +225,7 @@ export default function FeedScreen() {
   const [draftCaption, setDraftCaption] = useState("");
   const [draftScope, setDraftScope] = useState<FeedScope>("country");
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isCompressingVideo, setIsCompressingVideo] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const uploadControllerRef = useRef<AbortController | null>(null);
 
@@ -788,15 +790,6 @@ export default function FeedScreen() {
         throw new Error("La signature reçue est invalide.");
       }
       const signature = signaturePayload as MediaSignature;
-      const maxAllowedBytes =
-        draftMedia.resourceType === "image"
-          ? Math.min(MAX_PHOTO_BYTES, signature.max_bytes)
-          : signature.max_bytes;
-      if (draftMedia.size > maxAllowedBytes) {
-        throw new PublicationApiError(
-          "Le média dépasse la limite de taille autorisée.",
-        );
-      }
       if (
         draftMedia.resourceType === "video" &&
         (typeof signature.max_duration_seconds !== "number" ||
@@ -804,20 +797,58 @@ export default function FeedScreen() {
             draftMedia.duration > signature.max_duration_seconds))
       ) {
         throw new PublicationApiError(
-          `La vidéo doit durer au maximum ${signature.max_duration_seconds ?? 30} secondes.`,
+          `La vidéo doit durer au maximum ${signature.max_duration_seconds ?? 180} secondes.`,
+        );
+      }
+      let uploadMedia = draftMedia;
+      if (draftMedia.resourceType === "video") {
+        setIsCompressingVideo(true);
+        try {
+          const compressedUri = await compressVideoForUpload(
+            draftMedia.uri,
+            (progress) => {
+              setUploadProgress(
+                Math.min(20, Math.max(0, Math.round(progress * 20))),
+              );
+            },
+          );
+          uploadMedia = {
+            ...draftMedia,
+            uri: compressedUri,
+            filename: `quartierplus-${Date.now()}.mp4`,
+            mimeType: "video/mp4",
+            size: new File(compressedUri).size,
+          };
+        } finally {
+          setIsCompressingVideo(false);
+        }
+        setUploadProgress(20);
+      }
+      const maxAllowedBytes =
+        uploadMedia.resourceType === "image"
+          ? Math.min(MAX_PHOTO_BYTES, signature.max_bytes)
+          : signature.max_bytes;
+      if (uploadMedia.size > maxAllowedBytes) {
+        throw new PublicationApiError(
+          "Le média optimisé dépasse la limite de taille autorisée.",
         );
       }
       const uploaded = await uploadCloudinaryMedia(
         signature,
         {
-          uri: draftMedia.uri,
-          name: draftMedia.filename,
-          type: draftMedia.mimeType,
-          size: draftMedia.size,
+          uri: uploadMedia.uri,
+          name: uploadMedia.filename,
+          type: uploadMedia.mimeType,
+          size: uploadMedia.size,
         },
         {
           signal: controller.signal,
-          onProgress: setUploadProgress,
+          onProgress: (progress) => {
+            const start = uploadMedia.resourceType === "video" ? 20 : 0;
+            setUploadProgress(
+              start + Math.round((progress / 90) * (90 - start)),
+            );
+          },
         },
       );
       setUploadProgress(94);
@@ -1264,7 +1295,9 @@ export default function FeedScreen() {
                       />
                     </View>
                     <Text style={styles.composerHelp}>
-                      Téléversement : {uploadProgress} %
+                      {isCompressingVideo
+                        ? `Compression 720p : ${uploadProgress * 5} %`
+                        : `Téléversement : ${uploadProgress} %`}
                     </Text>
                   </View>
                 ) : null}

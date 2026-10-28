@@ -1,7 +1,6 @@
 import * as SQLite from "expo-sqlite";
 
 const DATABASE_NAME = "quartierplus-offline.db";
-const PROFILE_DATABASE_NAME = "quartierplus.db";
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let database: SQLite.SQLiteDatabase | null = null;
 let operationQueue: Promise<void> = Promise.resolve();
@@ -54,11 +53,11 @@ const schema = `
 `;
 
 const profileSchema = `
-  CREATE TABLE IF NOT EXISTS profile.profile_settings (
+  CREATE TABLE IF NOT EXISTS profile_settings (
     key TEXT PRIMARY KEY NOT NULL,
     value TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS profile.trusted_contacts (
+  CREATE TABLE IF NOT EXISTS trusted_contacts (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
@@ -66,18 +65,18 @@ const profileSchema = `
   );
 `;
 
+export const ensureProfileStorageSchema = (
+  database: SQLite.SQLiteDatabase,
+) => database.execAsync(profileSchema);
+
 const openAndInitialize = async () => {
   const opened = await SQLite.openDatabaseAsync(DATABASE_NAME);
   try {
     await opened.execAsync(
       `PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`,
     );
-    const profilePath = `${SQLite.defaultDatabaseDirectory}/${PROFILE_DATABASE_NAME}`;
-    await opened.execAsync(
-      `ATTACH DATABASE '${profilePath.replaceAll("'", "''")}' AS profile`,
-    );
     await opened.execAsync(schema);
-    await opened.execAsync(profileSchema);
+    await ensureProfileStorageSchema(opened);
     await opened.runAsync(
       "UPDATE sync_queue SET status = 'pending' WHERE status = 'processing'",
     );

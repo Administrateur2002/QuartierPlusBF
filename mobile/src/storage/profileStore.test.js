@@ -8,13 +8,25 @@ jest.mock("expo-secure-store", () => ({
 }));
 
 jest.mock("../services/database", () => ({
+  ensureProfileStorageSchema: jest.fn(async (database) => {
+    database.events.push("create-profile-tables");
+    await database.execAsync("CREATE TABLE IF NOT EXISTS profile_settings (...)");
+  }),
   getSharedDatabase: jest.fn(),
 }));
 
-const { getSharedDatabase } = require("../services/database");
+const {
+  ensureProfileStorageSchema,
+  getSharedDatabase,
+} = require("../services/database");
 const { getProfileStorageDiagnostic, openProfileStore } = require("./profileStore");
 
 describe("profile storage fallback", () => {
+  beforeEach(() => {
+    ensureProfileStorageSchema.mockClear();
+    getSharedDatabase.mockReset();
+  });
+
   it("retries failed SQLite initialization and keeps profile changes in memory", async () => {
     getSharedDatabase.mockRejectedValue(new Error("SQLite unavailable"));
     const errorLogger = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -57,5 +69,37 @@ describe("profile storage fallback", () => {
     } finally {
       errorLogger.mockRestore();
     }
+  });
+
+  it("creates local profile tables before querying or migrating profile data", async () => {
+    const database = {
+      events: [],
+      async execAsync(statement) {
+        this.events.push(statement);
+      },
+      async getFirstAsync() {
+        this.events.push("query-profile-tables");
+        return null;
+      },
+      async getAllAsync() {
+        return [];
+      },
+      async withExclusiveTransactionAsync(callback) {
+        return callback({
+          runAsync: async () => ({ changes: 1 }),
+        });
+      },
+    };
+    getSharedDatabase.mockResolvedValue(database);
+
+    await openProfileStore();
+
+    expect(ensureProfileStorageSchema).toHaveBeenCalledWith(database);
+    expect(database.events.indexOf("create-profile-tables")).toBeLessThan(
+      database.events.indexOf("query-profile-tables"),
+    );
+    expect(database.events).not.toContain(
+      "SELECT value FROM profile.profile_settings WHERE key = 'legacy_store_migrated'",
+    );
   });
 });

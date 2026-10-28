@@ -9,6 +9,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  Vibration,
   View,
 } from "react-native";
 import { useAuth } from "../context/AuthContext";
@@ -68,6 +69,7 @@ export default function WalkieTalkieScreen() {
   const [isTalking, setIsTalking] = useState(false);
   const [speakers, setSpeakers] = useState<ActiveSpeaker[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [permissionHint, setPermissionHint] = useState(false);
 
   const connect = useCallback(async (): Promise<Room> => {
     if (roomRef.current?.state === "connected") return roomRef.current;
@@ -171,18 +173,30 @@ export default function WalkieTalkieScreen() {
 
   const startTalking = async () => {
     pressedRef.current = true;
-    setError("Connexion au canal…");
+    setError(null);
+    setPermissionHint(false);
     try {
       const permission = await requestRecordingPermissionsAsync();
       if (!permission.granted) {
         throw new Error("L’accès au microphone est nécessaire pour parler (code MICROPHONE_PERMISSION_DENIED).");
       }
+      if (!pressedRef.current) {
+        setPermissionHint(true);
+        return;
+      }
       const room = await connect();
       if (!pressedRef.current) return;
       await room.localParticipant.setMicrophoneEnabled(true);
-      if (pressedRef.current) setIsTalking(true);
+      if (pressedRef.current) {
+        setIsTalking(true);
+        setPermissionHint(false);
+        Vibration.vibrate(12);
+      } else {
+        await room.localParticipant.setMicrophoneEnabled(false);
+      }
     } catch (talkError) {
       pressedRef.current = false;
+      Vibration.vibrate(35);
       setError(formatLiveKitError(talkError));
     }
   };
@@ -233,7 +247,9 @@ export default function WalkieTalkieScreen() {
             {isConnecting
               ? "Connexion au canal…"
               : isConnected
-                ? "Audio en direct · micro fermé"
+                ? isTalking
+                  ? "Vous parlez · micro ouvert"
+                  : "Audio en direct · micro fermé"
                 : "Non connecté"}
           </Text>
         </View>
@@ -263,7 +279,11 @@ export default function WalkieTalkieScreen() {
           </Pressable>
         </View>
         <Text style={[styles.instruction, { color: colors.secondaryText }]}>
-          Appuyez et maintenez pour parler. Relâchez pour écouter.
+          {permissionHint
+            ? "Micro autorisé. Maintenez de nouveau pour parler."
+            : isTalking
+              ? "Vous parlez. Relâchez pour écouter."
+              : "Appuyez et maintenez pour parler. Relâchez pour écouter."}
         </Text>
       </View>
 

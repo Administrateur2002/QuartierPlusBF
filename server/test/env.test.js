@@ -38,6 +38,35 @@ test("production environment accepts a complete valid configuration", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("video duration limit defaults to 180 seconds and can be configured", () => {
+  const loadLimit = (value) =>
+    spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "import { env } from './config/env.js'; console.log(env.postMaxVideoSeconds)",
+      ],
+      {
+        cwd: serverDirectory,
+        env: {
+          ...productionEnv,
+          POST_MAX_VIDEO_SECONDS: value,
+          DOTENV_CONFIG_PATH: "/dev/null",
+        },
+        encoding: "utf8",
+      },
+    );
+
+  const defaultLimit = loadLimit("");
+  assert.equal(defaultLimit.status, 0, defaultLimit.stderr);
+  assert.equal(defaultLimit.stdout.trim(), "180");
+
+  const configuredLimit = loadLimit("240");
+  assert.equal(configuredLimit.status, 0, configuredLimit.stderr);
+  assert.equal(configuredLimit.stdout.trim(), "240");
+});
+
 test("Cloudinary and LiveKit values are trimmed and unquoted", () => {
   const result = spawnSync(
     process.execPath,

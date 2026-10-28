@@ -366,7 +366,7 @@ test("server rejects oversized photos and videos that exceed the configured dura
     format: "mp4",
     bytes: 1000,
     resource_type: "video",
-    duration: 31,
+    duration: 181,
   };
   const videoResponse = createResponse();
   await createPost(
@@ -384,7 +384,7 @@ test("server rejects oversized photos and videos that exceed the configured dura
     },
   );
   assert.equal(videoResponse.statusCode, 400);
-  assert.match(videoResponse.payload.error, /30 secondes/);
+  assert.match(videoResponse.payload.error, /180 secondes/);
 });
 
 test("photo uploads with GPS metadata are deleted from Cloudinary and rejected", async (context) => {
