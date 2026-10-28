@@ -3,6 +3,10 @@ node_modules/
 .env
 .env.*
 !.env.example
+ticket_private.pem
+ticket_private*.pem
+**/ticket_private*.pem
+**/ticket-signing-private*.pem
 
 /mobile/android/
 /mobile/ios/

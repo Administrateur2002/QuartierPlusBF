@@ -37,6 +37,17 @@ const proEnabledValue = optional("PRO_ENABLED");
 if (proEnabledValue && !["true", "false"].includes(proEnabledValue)) {
   throw new Error("PRO_ENABLED must be true or false.");
 }
+const voyageEnabledValue = optional("VOYAGE_ENABLED");
+if (voyageEnabledValue && !["true", "false"].includes(voyageEnabledValue)) {
+  throw new Error("VOYAGE_ENABLED must be true or false.");
+}
+const voyageEnabled = voyageEnabledValue === "true";
+const ticketSigningPrivateKeyB64 = optionalUnquoted(
+  "TICKET_SIGNING_PRIVATE_KEY_B64",
+);
+if (voyageEnabled && !ticketSigningPrivateKeyB64) {
+  throw new Error("TICKET_SIGNING_PRIVATE_KEY_B64 is required when VOYAGE_ENABLED=true.");
+}
 
 const databaseUrl = required("DATABASE_URL");
 let parsedDatabaseUrl;
@@ -241,6 +252,9 @@ export const env = Object.freeze({
   isPromoFreeAccess: promoFreeAccessValue === "true",
   billingEnabled: billingEnabledValue === "true",
   proEnabled: proEnabledValue === "true",
+  voyageEnabled,
+  ticketSigningPrivateKeyB64,
+  ticketSigningKid: optional("TICKET_SIGNING_KID") || "v1",
   proAdminToken: optional("PRO_ADMIN_TOKEN"),
   pgSsl: pgSslValue === "true",
   socketCorsOrigins: optional("SOCKET_CORS_ORIGIN")

@@ -13,6 +13,7 @@ import {
   MessageSquare,
   ShoppingBag,
   Store,
+  BusFront,
   User,
 } from "lucide-react-native";
 import { StatusBar } from "expo-status-bar";
@@ -59,6 +60,7 @@ import CheckoutScreen from "./src/screens/main/CheckoutScreen";
 import MyActivityScreen from "./src/screens/MyActivityScreen";
 import ProTabNavigator from "./src/navigation/ProTabNavigator";
 import EventsNavigator from "./src/navigation/EventsNavigator";
+import VoyageNavigator from "./src/navigation/VoyageNavigator";
 import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
 import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
 import { LockKeyhole, X } from "lucide-react-native";
@@ -85,6 +87,7 @@ function MainTabs() {
   const insets = useSafeAreaInsets();
   const { colors, t } = useTheme();
   const [proCommerceEnabled, setProCommerceEnabled] = useState(false);
+  const [voyageEnabled, setVoyageEnabled] = useState(false);
   useEffect(() => {
     let active = true;
     void api
@@ -94,6 +97,20 @@ function MainTabs() {
       })
       .catch(() => {
         if (active) setProCommerceEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    void api
+      .get<{ enabled?: boolean }>("/v1/voyage/config")
+      .then((response) => {
+        if (active) setVoyageEnabled(response.data.enabled === true);
+      })
+      .catch(() => {
+        if (active) setVoyageEnabled(false);
       });
     return () => {
       active = false;
@@ -167,6 +184,16 @@ function MainTabs() {
           options={{
             tabBarLabel: renderTabLabel("Grossistes"),
             tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
+          }}
+        />
+      )}
+      {voyageEnabled && (
+        <Tab.Screen
+          name="Voyage"
+          component={VoyageNavigator}
+          options={{
+            tabBarLabel: renderTabLabel("Voyage"),
+            tabBarIcon: ({ color, size }) => <BusFront color={color} size={size} />,
           }}
         />
       )}

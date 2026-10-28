@@ -21,6 +21,7 @@ import ticketsRoutes from "./routes/ticketsRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import proCommerceRoutes from "./routes/proCommerceRoutes.js";
+import voyageRoutes from "./routes/voyageRoutes.js";
 import { createServer } from "node:http";
 import { attachSocketServer } from "./sockets/index.js";
 import { handleHealth } from "./health.js";
@@ -61,6 +62,7 @@ app.use(["/api/v1/payments", "/v1/payments"], paymentRoutes);
 app.use(["/api/v1/pro", "/v1/pro"], proRoutes);
 app.use(["/api/v1/pro-commerce", "/v1/pro-commerce"], proCommerceRoutes);
 app.use(["/api/v1/tickets", "/v1/tickets"], ticketsRoutes);
+app.use(["/api/v1/voyage", "/v1/voyage"], voyageRoutes);
 app.use(["/api/v1/users", "/v1/users"], userRoutes);
 app.use(["/api/v1/admin", "/v1/admin"], adminRoutes);
 app.use((error, _request, response, _next) => {

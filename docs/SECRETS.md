@@ -26,6 +26,9 @@ CLOUDINARY_CLOUD_NAME
 CLOUDINARY_API_KEY
 CLOUDINARY_API_SECRET
 BILLING_ENABLED
+VOYAGE_ENABLED
+TICKET_SIGNING_PRIVATE_KEY_B64
+TICKET_SIGNING_KID
 FEDAPAY_SECRET_KEY
 FEDAPAY_PUBLIC_KEY
 FEDAPAY_ENVIRONMENT
@@ -56,6 +59,28 @@ SOCKET_CORS_ORIGIN
 être une URL `wss://`. Cloudinary et FedaPay sont configurés exclusivement sur
 Render. Ne transmettez jamais `LIVEKIT_API_SECRET`, `CLOUDINARY_API_SECRET`,
 `FEDAPAY_SECRET_KEY` ni `FEDAPAY_WEBHOOK_SECRET` à EAS.
+
+QuartierPlus Voyage reste désactivé par défaut (`VOYAGE_ENABLED=false`). Pour
+préparer la signature des billets, générer une paire Ed25519 hors du dépôt :
+
+```sh
+openssl genpkey -algorithm ED25519 -out "$HOME/ticket_private.pem"
+openssl pkey -in "$HOME/ticket_private.pem" -pubout -out mobile/assets/ticket_public.pem
+base64 -w0 "$HOME/ticket_private.pem"
+```
+
+Enregistrer la sortie base64 uniquement dans le secret serveur
+`TICKET_SIGNING_PRIVATE_KEY_B64`; configurer `TICKET_SIGNING_KID` (défaut `v1`)
+pour la rotation. Ne jamais déposer la clé privée ou la valeur base64 dans Git,
+EAS, un log CI ou une variable `EXPO_PUBLIC_*`. La clé publique PEM dans
+`mobile/assets/ticket_public.pem` est publique.
+
+Les transactions FedaPay actuellement intégrées sont créées par le compte
+plateforme (`amount`, devise et client), sans bénéficiaire compagnie ni partage
+de fonds. Les paiements Voyage payants sont donc refusés tant qu’un produit de
+versement vendeur n’est pas configuré; aucun fonds n’est ainsi détenu par
+QuartierPlus. Le champ de commission est prévu à 3 %, mais aucun paiement ou
+prélèvement de commission n’est activé dans cette intégration.
 
 Configurer l'URL FedaPay publique suivante et une signature HMAC-SHA256 du corps
 HTTP brut dans `X-FedaPay-Signature` :
