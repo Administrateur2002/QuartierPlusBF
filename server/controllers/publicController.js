@@ -101,6 +101,10 @@ export const listPublicMarketplace = async (_request, response, next) => {
     typeof _request.query.category === "string"
       ? _request.query.category.toUpperCase()
       : null;
+  const offset = _request.query.offset === undefined ? 0 : Number(_request.query.offset);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) {
+    return response.status(400).json({ error: "La page des annonces est invalide." });
+  }
   try {
     const result = await pool.query(
       `SELECT item.id, item.title, item.description, item.category,
@@ -157,7 +161,7 @@ export const listPublicMarketplace = async (_request, response, next) => {
            ), '[^A-Za-z0-9]+', '_', 'g')) = $7
          )
        ORDER BY item.created_at DESC
-       LIMIT 100`,
+       LIMIT 100 OFFSET $9`,
       [
         ...filter.values,
         requestedType,
@@ -165,6 +169,7 @@ export const listPublicMarketplace = async (_request, response, next) => {
           ? null
           : requestedCategory,
         _request.auth?.userId ?? null,
+        offset,
       ],
     );
     return response.status(200).json({ items: result.rows });

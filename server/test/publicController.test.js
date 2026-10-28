@@ -42,7 +42,7 @@ test("public marketplace returns an empty successful feed when there are no item
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.payload, { items: [] });
-  assert.deepEqual(queryValues, [null, null, null, null, null, null, null, null]);
+  assert.deepEqual(queryValues, [null, null, null, null, null, null, null, null, 0]);
 });
 
 test("nearby SOS alerts accept valid radius filters and return an empty list", async (context) => {
@@ -111,7 +111,23 @@ test("country scope filters marketplace posts by country without coordinates", a
   );
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(queryValues, [null, null, null, "BF", "country", null, null, null]);
+  assert.deepEqual(queryValues, [null, null, null, "BF", "country", null, null, null, 0]);
+});
+
+test("public marketplace rejects invalid pagination offsets without querying", async (context) => {
+  context.mock.method(pool, "query", async () => {
+    throw new Error("An invalid page must not query the database.");
+  });
+  const response = createResponse();
+
+  await listPublicMarketplace(
+    { query: { scope: "country", country_code: "BF", offset: "1.5" } },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.payload.error, /page/i);
 });
 
 test("neighborhood scope rejects missing position and country code", async (context) => {

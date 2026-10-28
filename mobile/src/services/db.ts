@@ -6,7 +6,8 @@ export type SyncActionType =
   | "create_post"
   | "trigger_sos"
   | "toggle_post_like"
-  | "create_post_comment";
+  | "create_post_comment"
+  | "create_feed_post";
 export type SyncAction = {
   id: number;
   ownerId?: string;

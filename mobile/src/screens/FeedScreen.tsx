@@ -30,6 +30,8 @@ import {
 } from "react-native";
 import * as MediaLibrary from "expo-media-library";
 import * as SecureStore from "expo-secure-store";
+import NetInfo from "@react-native-community/netinfo";
+import { FlashList } from "@shopify/flash-list";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
@@ -234,6 +236,14 @@ export default function FeedScreen() {
   const [scopeReady, setScopeReady] = useState(false);
   const [locationInvitation, setLocationInvitation] = useState(false);
   const [entries, setEntries] = useState<FeedEntry[]>([]);
+  const [lowDataMode, setLowDataMode] = useState(false);
+  const [pageOffsets, setPageOffsets] = useState({ marketplace: 0, feed: 0 });
+  const [hasMoreMarketplace, setHasMoreMarketplace] = useState(true);
+  const [hasMoreFeed, setHasMoreFeed] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const loadingMoreRef = useRef(false);
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const [feedViewportHeight, setFeedViewportHeight] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<FeedError | null>(null);
@@ -256,6 +266,24 @@ export default function FeedScreen() {
   const [commentDraft, setCommentDraft] = useState("");
   const [sendingComment, setSendingComment] = useState(false);
   const uploadControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () =>
+      NetInfo.addEventListener((state) => {
+        const expensive =
+          state.details !== null &&
+          "isConnectionExpensive" in state.details &&
+          state.details.isConnectionExpensive === true;
+        const lowGeneration =
+          state.type === "cellular" &&
+          (state.details.cellularGeneration === "2g" ||
+            state.details.cellularGeneration === "3g");
+        setLowDataMode(
+          expensive || lowGeneration,
+        );
+      }),
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -406,6 +434,10 @@ export default function FeedScreen() {
   }, [pageWidth, scope, scopeReady]);
 
   useEffect(() => {
+    setActiveMediaIndex(0);
+  }, [scope, refreshKey]);
+
+  useEffect(() => {
     if (!scopeReady || !countryCode) return;
     let cancelled = false;
     const controller = new AbortController();
@@ -459,7 +491,15 @@ export default function FeedScreen() {
           const posts = [...rawPosts, ...rawFeedPosts].map(normalizePost).filter(
             (entry): entry is FeedEntry => entry !== null,
           );
-          if (!cancelled) setEntries(sortEntries(posts));
+          if (!cancelled) {
+            setEntries(sortEntries(posts));
+            setPageOffsets({
+              marketplace: rawPosts.length,
+              feed: rawFeedPosts.length,
+            });
+            setHasMoreMarketplace(rawPosts.length === 100);
+            setHasMoreFeed(rawFeedPosts.length === 100);
+          }
           return;
         }
         if (!API_BASE_URL) {
@@ -544,7 +584,15 @@ export default function FeedScreen() {
           cachePosts([...rawPosts, ...rawFeedPosts]),
           cacheAlerts(rawAlerts),
         ]);
-        if (!cancelled) setEntries(sortEntries([...posts, ...alerts]));
+        if (!cancelled) {
+          setEntries(sortEntries([...posts, ...alerts]));
+          setPageOffsets({
+            marketplace: rawPosts.length,
+            feed: rawFeedPosts.length,
+          });
+          setHasMoreMarketplace(rawPosts.length === 100);
+          setHasMoreFeed(rawFeedPosts.length === 100);
+        }
       } catch (loadError) {
         if (cancelled || controller.signal.aborted) return;
         if (authStatus === "guest") {
@@ -605,6 +653,76 @@ export default function FeedScreen() {
   const refresh = () => {
     setIsRefreshing(true);
     setRefreshKey((current) => current + 1);
+  };
+
+  const loadMore = async () => {
+    if (
+      !API_BASE_URL ||
+      isOffline ||
+      isRefreshing ||
+      loadingMoreRef.current ||
+      (!hasMoreMarketplace && !hasMoreFeed)
+    ) return;
+    loadingMoreRef.current = true;
+    setIsLoadingMore(true);
+    const query = new URLSearchParams({ scope, country_code: countryCode ?? "" });
+    if (coordinates && (scope === "neighborhood" || scope === "region")) {
+      query.set("latitude", String(coordinates.latitude));
+      query.set("longitude", String(coordinates.longitude));
+    }
+    const marketplaceQuery = new URLSearchParams(query);
+    marketplaceQuery.set("offset", String(pageOffsets.marketplace));
+    const feedQuery = new URLSearchParams(query);
+    feedQuery.set("offset", String(pageOffsets.feed));
+    try {
+      const [marketplaceResponse, feedResponse] = await Promise.all([
+        hasMoreMarketplace
+          ? apiFetch(`${API_BASE_URL}/v1/public/marketplace?${marketplaceQuery}`)
+          : Promise.resolve(null),
+        hasMoreFeed
+          ? apiFetch(`${API_BASE_URL}/v1/feed?${feedQuery}`)
+          : Promise.resolve(null),
+      ]);
+      if (marketplaceResponse && !marketplaceResponse.ok) {
+        throw new FeedHttpError("/v1/public/marketplace", marketplaceResponse.status);
+      }
+      if (feedResponse && !feedResponse.ok) {
+        throw new FeedHttpError("/v1/feed", feedResponse.status);
+      }
+      const [marketplacePayload, feedPayload] = await Promise.all([
+        marketplaceResponse?.json() ?? Promise.resolve({ items: [] }),
+        feedResponse?.json() ?? Promise.resolve({ posts: [] }),
+      ]);
+      const rawMarketplace = recordsFrom(marketplacePayload, "items");
+      const rawFeed = recordsFrom(feedPayload, "posts");
+      const nextEntries = [...rawMarketplace, ...rawFeed]
+        .map(normalizePost)
+        .filter((entry): entry is FeedEntry => entry !== null);
+      setEntries((current) => {
+        const existingIds = new Set(current.map((entry) => `${entry.kind}:${entry.id}`));
+        return sortEntries([
+          ...current,
+          ...nextEntries.filter((entry) => !existingIds.has(`${entry.kind}:${entry.id}`)),
+        ]);
+      });
+      setPageOffsets((current) => ({
+        marketplace: current.marketplace + rawMarketplace.length,
+        feed: current.feed + rawFeed.length,
+      }));
+      if (hasMoreMarketplace && rawMarketplace.length < 100) setHasMoreMarketplace(false);
+      if (hasMoreFeed && rawFeed.length < 100) setHasMoreFeed(false);
+    } catch (loadError) {
+      const details =
+        loadError instanceof FeedHttpError
+          ? `${loadError.path} — HTTP ${loadError.status}`
+          : loadError instanceof Error
+            ? loadError.message
+            : "Erreur réseau inconnue.";
+      setError({ message: "Impossible de charger la suite du fil.", details });
+    } finally {
+      loadingMoreRef.current = false;
+      setIsLoadingMore(false);
+    }
   };
 
   const likePost = async (entry: FeedEntry) => {
@@ -962,10 +1080,48 @@ export default function FeedScreen() {
       return;
     }
     if (isOffline) {
-      Alert.alert(
-        "Connexion nécessaire",
-        "Reconnectez-vous à Internet pour publier votre média.",
-      );
+      const caption = draftCaption.trim();
+      if (!caption) {
+        Alert.alert(
+          "Publication hors ligne",
+          "Ajoutez une légende pour mettre en file une publication texte. Le média sera ignoré.",
+        );
+        return;
+      }
+      if (
+        (draftScope === "neighborhood" || draftScope === "region") &&
+        !coordinates
+      ) {
+        Alert.alert(
+          "Position nécessaire",
+          "La position de cette publication locale n’est pas disponible hors ligne.",
+        );
+        return;
+      }
+      try {
+        await queueOfflineAction("create_feed_post", {
+          caption,
+          scope: draftScope,
+          ...(coordinates
+            ? {
+                latitude: coordinates.latitude,
+                longitude: coordinates.longitude,
+              }
+            : {}),
+        });
+        setComposerStage("closed");
+        setDraftMedia(null);
+        setDraftCaption("");
+        Alert.alert(
+          "Publication mise en attente",
+          "La version texte sera publiée au retour du réseau; le média n’a pas été mis en file.",
+        );
+      } catch (queueError) {
+        Alert.alert(
+          "Mise en file impossible",
+          queueError instanceof Error ? queueError.message : "Réessayez.",
+        );
+      }
       return;
     }
     let position: FeedCoordinates | null = null;
@@ -1211,7 +1367,7 @@ export default function FeedScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
         <View>
           <Text style={styles.eyebrow}>QUARTIERPLUS</Text>
           <Text style={styles.title}>Fil du quartier</Text>
@@ -1240,7 +1396,7 @@ export default function FeedScreen() {
           </Pressable>
         </View>
       </View>
-      <View style={styles.scopeBar}>
+      <View style={[styles.scopeBar, { backgroundColor: colors.card }]}>
         {FEED_SCOPES.map((option) => (
           <Pressable
             accessibilityRole="button"
@@ -1350,17 +1506,40 @@ export default function FeedScreen() {
                 contentContainerStyle={styles.list}
                 decelerationRate="fast"
                 nestedScrollEnabled
+                onScroll={(event) => {
+                  const { contentOffset, contentSize, layoutMeasurement } =
+                    event.nativeEvent;
+                  if (
+                    contentOffset.y + layoutMeasurement.height >=
+                    contentSize.height - 600
+                  ) {
+                    void loadMore();
+                  }
+                }}
+                scrollEventThrottle={300}
+                onLayout={(event) =>
+                  setFeedViewportHeight(event.nativeEvent.layout.height)
+                }
+                onMomentumScrollEnd={(event) => {
+                  if (feedViewportHeight <= 0) return;
+                  setActiveMediaIndex(
+                    Math.round(
+                      event.nativeEvent.contentOffset.y / feedViewportHeight,
+                    ),
+                  );
+                }}
                 pagingEnabled
                 refreshControl={
                   <RefreshControl refreshing={isRefreshing} onRefresh={refresh} />
                 }
                 style={styles.feedPage}
               >
-                {entries.map((entry) => (
+                {entries.map((entry, index) => (
                   <View
                     key={`${entry.kind}:${entry.id}`}
                     style={[
                       styles.card,
+                      { backgroundColor: colors.card, borderColor: colors.border },
                       entry.imageUrl
                         ? { height: Math.max(520, windowHeight - 245) }
                         : null,
@@ -1376,25 +1555,28 @@ export default function FeedScreen() {
                       </View>
                       <View style={styles.cardHeading}>
                         {entry.authorName ? (
-                          <Text style={styles.authorName}>{entry.authorName}</Text>
+                          <Text style={[styles.authorName, { color: colors.text }]}>{entry.authorName}</Text>
                         ) : null}
-                        <Text style={styles.category}>{entry.category}</Text>
-                        <Text style={styles.date}>{formatDate(entry.createdAt)}</Text>
+                        <Text style={[styles.category, { color: colors.secondaryText }]}>{entry.category}</Text>
+                        <Text style={[styles.date, { color: colors.secondaryText }]}>{formatDate(entry.createdAt)}</Text>
                       </View>
                       {entry.price ? <Text style={styles.price}>{entry.price}</Text> : null}
                     </View>
                     {entry.imageUrl ? (
                       <FeedMedia
                         height={Math.max(280, windowHeight - 455)}
+                        active={index === activeMediaIndex}
                         onDoubleTap={() => {
                           if (!entry.likedByMe) void likePost(entry);
                         }}
+                        preloadUri={entries[index + 1]?.mediaType === "image" ? entries[index + 1]?.imageUrl : undefined}
+                        lowDataMode={lowDataMode}
                         type={entry.mediaType ?? "image"}
                         uri={entry.imageUrl}
                       />
                     ) : null}
                     {entry.body ? (
-                      <Text numberOfLines={2} style={styles.body}>{entry.body}</Text>
+                      <Text numberOfLines={2} style={[styles.body, { color: colors.secondaryText }]}>{entry.body}</Text>
                     ) : null}
                     {entry.kind === "post" ? (
                       <View style={styles.postActions}>
@@ -1403,9 +1585,9 @@ export default function FeedScreen() {
                           accessibilityRole="button"
                           accessibilityState={{ selected: entry.likedByMe }}
                           onPress={() => void likePost(entry)}
-                          style={styles.postAction}
+                          style={[styles.postAction, { backgroundColor: colors.background }]}
                         >
-                          <Text style={[styles.actionText, entry.likedByMe && styles.actionSelected]}>
+                          <Text style={[styles.actionText, { color: colors.text }, entry.likedByMe && styles.actionSelected]}>
                             {entry.likedByMe ? "♥ Adoré" : "♡ Adorer"} · {entry.likesCount}
                           </Text>
                         </Pressable>
@@ -1413,16 +1595,16 @@ export default function FeedScreen() {
                           accessibilityLabel={`Commenter, ${entry.commentsCount} commentaires`}
                           accessibilityRole="button"
                           onPress={() => void openComments(entry)}
-                          style={styles.postAction}
+                          style={[styles.postAction, { backgroundColor: colors.background }]}
                         >
-                          <Text style={styles.actionText}>Commenter · {entry.commentsCount}</Text>
+                          <Text style={[styles.actionText, { color: colors.text }]}>Commenter · {entry.commentsCount}</Text>
                         </Pressable>
-                        <Pressable accessibilityRole="button" onPress={() => void sharePost(entry)} style={styles.postAction}>
-                          <Text style={styles.actionText}>Propager</Text>
+                        <Pressable accessibilityRole="button" onPress={() => void sharePost(entry)} style={[styles.postAction, { backgroundColor: colors.background }]}>
+                          <Text style={[styles.actionText, { color: colors.text }]}>Propager</Text>
                         </Pressable>
                         {entry.imageUrl ? (
-                          <Pressable accessibilityRole="button" onPress={() => void downloadMedia(entry)} style={styles.postAction}>
-                            <Text style={styles.actionText}>Télécharger</Text>
+                          <Pressable accessibilityRole="button" onPress={() => void downloadMedia(entry)} style={[styles.postAction, { backgroundColor: colors.background }]}>
+                            <Text style={[styles.actionText, { color: colors.text }]}>Télécharger</Text>
                           </Pressable>
                         ) : null}
                         {entry.authorId && entry.authorId !== user?.id ? (
@@ -1430,9 +1612,9 @@ export default function FeedScreen() {
                             accessibilityRole="button"
                             accessibilityState={{ selected: entry.authorIsAlly }}
                             onPress={() => void requestAlliance(entry)}
-                            style={styles.postAction}
+                            style={[styles.postAction, { backgroundColor: colors.background }]}
                           >
-                            <Text style={styles.actionText}>
+                            <Text style={[styles.actionText, { color: colors.text }]}>
                               {entry.authorIsAlly
                                 ? "Allié ✓"
                                 : entry.allianceStatus === "PENDING"
@@ -1469,9 +1651,9 @@ export default function FeedScreen() {
                               },
                             ]);
                           }}
-                          style={styles.postAction}
+                          style={[styles.postAction, { backgroundColor: colors.background }]}
                         >
-                          <Text style={styles.actionText}>Signaler</Text>
+                          <Text style={[styles.actionText, { color: colors.text }]}>Signaler</Text>
                         </Pressable>
                       </View>
                     ) : (
@@ -1485,6 +1667,13 @@ export default function FeedScreen() {
                     ) : null}
                   </View>
                 ))}
+                {isLoadingMore ? (
+                  <ActivityIndicator
+                    accessibilityLabel="Chargement des publications suivantes"
+                    color={colors.primary}
+                    style={styles.loadMoreIndicator}
+                  />
+                ) : null}
                 {!entries.length && !isLoading && (
                   <View style={styles.empty}>
                     <MapPin color="#94a3b8" size={30} />
@@ -1663,28 +1852,31 @@ export default function FeedScreen() {
         visible={selectedPost !== null}
       >
         <View style={styles.commentBackdrop}>
-          <View style={styles.commentSheet}>
+          <View style={[styles.commentSheet, { backgroundColor: colors.card }]}>
             <View style={styles.commentHeader}>
-              <Text style={styles.composerTitle}>Commentaires</Text>
+              <Text style={[styles.composerTitle, { color: colors.text }]}>Commentaires</Text>
               <Pressable
                 accessibilityLabel="Fermer les commentaires"
                 accessibilityRole="button"
                 onPress={() => setSelectedPost(null)}
               >
-                <Text style={styles.actionText}>Fermer</Text>
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
               </Pressable>
             </View>
-            <ScrollView contentContainerStyle={styles.commentList}>
-              {comments.map((item) => (
-                <View key={item.id} style={styles.commentItem}>
-                  <Text style={styles.commentAuthor}>{item.user_name ?? "Voisin"}</Text>
-                  <Text style={styles.commentText}>{item.content}</Text>
-                </View>
-              ))}
-              {!comments.length ? (
+            <FlashList
+              contentContainerStyle={styles.commentList}
+              data={comments}
+              keyExtractor={(item) => item.id}
+              ListEmptyComponent={
                 <Text style={styles.emptyText}>Soyez le premier à commenter.</Text>
-              ) : null}
-            </ScrollView>
+              }
+              renderItem={({ item }) => (
+                <View style={styles.commentItem}>
+                  <Text style={[styles.commentAuthor, { color: colors.text }]}>{item.user_name ?? "Voisin"}</Text>
+                  <Text style={[styles.commentText, { color: colors.secondaryText }]}>{item.content}</Text>
+                </View>
+              )}
+            />
             <View style={styles.commentComposer}>
               <TextInput
                 accessibilityLabel="Votre commentaire"
@@ -1841,6 +2033,7 @@ const styles = StyleSheet.create({
   loading: { alignItems: "center", flex: 1, justifyContent: "center" },
   loadingText: { color: "#64748b", fontSize: 14, marginTop: 12 },
   skeletonList: { gap: 12, padding: 14 },
+  loadMoreIndicator: { paddingVertical: 18 },
   skeletonCard: {
     backgroundColor: "#ffffff",
     borderColor: "#e2e8f0",

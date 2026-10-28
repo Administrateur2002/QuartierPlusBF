@@ -12,6 +12,9 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   theme: "system",
   language: "fr",
   sosNotificationsEnabled: true,
+  sosNotificationsPriority: true,
+  quietHoursStart: "22:00",
+  quietHoursEnd: "07:00",
   defaultRadiusKm: 3,
   voiceAssistantFloatingButton: false,
 };
@@ -67,6 +70,17 @@ export const openProfileStore = async (): Promise<ProfileStore> => ({
           : "light",
       language: value.language === "en" ? "en" : "fr",
       sosNotificationsEnabled: value.sosNotificationsEnabled !== false,
+      sosNotificationsPriority: value.sosNotificationsPriority !== false,
+      quietHoursStart:
+        typeof value.quietHoursStart === "string" &&
+        /^([01]\d|2[0-3]):[0-5]\d$/.test(value.quietHoursStart)
+          ? value.quietHoursStart
+          : "22:00",
+      quietHoursEnd:
+        typeof value.quietHoursEnd === "string" &&
+        /^([01]\d|2[0-3]):[0-5]\d$/.test(value.quietHoursEnd)
+          ? value.quietHoursEnd
+          : "07:00",
       defaultRadiusKm:
         value.defaultRadiusKm === 10 || value.defaultRadiusKm === 30
           ? value.defaultRadiusKm

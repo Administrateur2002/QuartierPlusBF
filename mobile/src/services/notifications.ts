@@ -2,18 +2,45 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 import api from "./api";
+import { openProfileStore } from "../storage/profileStore";
+import { isWithinQuietHours } from "./notificationPreferences";
 
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
     const isSos =
       notification.request.content.data?.type === "sos" ||
       notification.request.content.data?.priority === "high";
+    let preferences;
+    try {
+      preferences = await (await openProfileStore()).getPreferences();
+    } catch (error) {
+      console.error("Unable to read notification preferences:", error);
+      return {
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+        priority: isSos
+          ? Notifications.AndroidNotificationPriority.MAX
+          : Notifications.AndroidNotificationPriority.HIGH,
+      };
+    }
+    const now = new Date();
+    const quiet = isWithinQuietHours(
+      now.getHours() * 60 + now.getMinutes(),
+      preferences.quietHoursStart,
+      preferences.quietHoursEnd,
+    );
+    const shouldShow = isSos
+      ? preferences.sosNotificationsEnabled &&
+        (!quiet || preferences.sosNotificationsPriority)
+      : !quiet;
     return {
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
+      shouldShowBanner: shouldShow,
+      shouldShowList: shouldShow,
+      shouldPlaySound: shouldShow,
       shouldSetBadge: true,
-      priority: isSos
+      priority: isSos && preferences.sosNotificationsPriority
         ? Notifications.AndroidNotificationPriority.MAX
         : Notifications.AndroidNotificationPriority.HIGH,
     };

@@ -554,9 +554,25 @@ test("feed requires a position for location-based scopes and never returns exact
   );
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(queryValues, ["neighborhood", "BF", 12.3, -1.5, null]);
+  assert.deepEqual(queryValues, ["neighborhood", "BF", 12.3, -1.5, null, 0]);
   assert.equal("latitude" in response.payload.posts[0], false);
   assert.equal("longitude" in response.payload.posts[0], false);
+});
+
+test("feed rejects invalid pagination offsets without querying", async (context) => {
+  context.mock.method(pool, "query", async () => {
+    throw new Error("An invalid page must not query the database.");
+  });
+  const response = createResponse();
+
+  await listFeed(
+    { query: { scope: "country", country_code: "BF", offset: "-1" } },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.payload.error, /page/i);
 });
 
 test("three pending reports hide a post until moderation", async (context) => {

@@ -346,8 +346,12 @@ export const listFeed = async (request, response, next) => {
     request.query.latitude,
     request.query.longitude,
   );
+  const offset = request.query.offset === undefined ? 0 : Number(request.query.offset);
   if (!SCOPES.has(scope)) {
     return response.status(400).json({ error: "La portée choisie est invalide." });
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) {
+    return response.status(400).json({ error: "La page du fil est invalide." });
   }
   if (coordinates === undefined) {
     return response.status(400).json({ error: "La position est invalide." });
@@ -422,13 +426,14 @@ export const listFeed = async (request, response, next) => {
              )
          END
        ORDER BY author_is_ally DESC, post.created_at DESC
-       LIMIT 100`,
+       LIMIT 100 OFFSET $6`,
       [
         scope,
         countryCode,
         coordinates?.latitude ?? null,
         coordinates?.longitude ?? null,
         request.auth?.userId ?? null,
+        offset,
       ],
     );
     return response.status(200).json({ posts: result.rows });

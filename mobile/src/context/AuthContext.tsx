@@ -88,6 +88,7 @@ const actionEndpoint = (action: SyncAction) => {
   if (action.actionType === "create_post_comment") {
     return `/v1/social/posts/${encodeURIComponent(String(action.payload.post_id))}/comments`;
   }
+  if (action.actionType === "create_feed_post") return "/v1/posts";
   throw new Error(`Type d'action hors ligne non pris en charge: ${action.actionType}`);
 };
 
@@ -95,6 +96,19 @@ const buildQueuedRequestBody = async (action: SyncAction) => {
   if (action.actionType === "toggle_post_like") return {};
   if (action.actionType === "create_post_comment") {
     return { content: String(action.payload.content ?? "") };
+  }
+  if (action.actionType === "create_feed_post") {
+    return {
+      caption: String(action.payload.caption ?? ""),
+      scope: String(action.payload.scope ?? "country"),
+      ...(typeof action.payload.latitude === "number" &&
+      typeof action.payload.longitude === "number"
+        ? {
+            latitude: action.payload.latitude,
+            longitude: action.payload.longitude,
+          }
+        : {}),
+    };
   }
   if (action.actionType === "create_post") {
     const imageUri =

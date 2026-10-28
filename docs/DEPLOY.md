@@ -233,6 +233,10 @@ privées à la commande et supprimées 30 jours après livraison.
 5. Pour le workflow GitHub de génération APK, ajoutez aussi cette URL dans
    **Settings → Secrets and variables → Actions** sous le nom
    `EXPO_PUBLIC_API_URL`, puis relancez le workflow de build Android.
+   6. `EXPO_PUBLIC_SENTRY_DSN` est facultative. Sans cette variable, l'envoi vers
+      Sentry reste désactivé; si elle est renseignée au build mobile, le SDK
+      s'initialise sans collecte de données personnelles. Les erreurs de démarrage
+      transmises explicitement sont expurgées.
 
 Le workflow `.github/workflows/render-keepalive.yml` vérifie l'endpoint
 `/health` de l'API toutes les 10 minutes et peut aussi être lancé manuellement.
@@ -245,3 +249,7 @@ pas que Render maintiendra le service éveillé.
 `EXPO_PUBLIC_API_URL` est intégrée à l'application mobile et n'est pas une
 variable à mettre sur le service backend Render. Les valeurs `EXPO_PUBLIC_*`
 ne doivent pas contenir de secrets serveur.
+
+Les nouveaux modules natifs `expo-video`, `expo-media-library` et Sentry
+nécessitent un nouveau build APK/AAB avant leur utilisation; FlashList et
+`expo-image` seuls ne nécessitent pas de changement serveur.

@@ -27,6 +27,9 @@ export type AppPreferences = {
   theme: "light" | "dark" | "system";
   language: "fr" | "en";
   sosNotificationsEnabled: boolean;
+  sosNotificationsPriority: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
   defaultRadiusKm: 3 | 10 | 30;
   voiceAssistantFloatingButton: boolean;
 };
@@ -52,6 +55,9 @@ const defaultPreferences = (): AppPreferences => ({
   theme: "system",
   language: "fr",
   sosNotificationsEnabled: true,
+  sosNotificationsPriority: true,
+  quietHoursStart: "22:00",
+  quietHoursEnd: "07:00",
   defaultRadiusKm: 3,
   voiceAssistantFloatingButton: false,
 });
@@ -367,6 +373,9 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
         theme: values.get("theme"),
         language: values.get("language"),
         sosNotificationsEnabled: values.get("sos_notifications") !== "false",
+        sosNotificationsPriority: values.get("sos_notifications_priority") !== "false",
+        quietHoursStart: values.get("quiet_hours_start") ?? "22:00",
+        quietHoursEnd: values.get("quiet_hours_end") ?? "07:00",
         defaultRadiusKm: Number(values.get("default_radius_km")),
         voiceAssistantFloatingButton:
           values.get("voice_assistant_floating_button") === "true",
@@ -379,6 +388,9 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
         ["theme", preferences.theme],
         ["language", preferences.language],
         ["sos_notifications", String(preferences.sosNotificationsEnabled)],
+        ["sos_notifications_priority", String(preferences.sosNotificationsPriority)],
+        ["quiet_hours_start", preferences.quietHoursStart],
+        ["quiet_hours_end", preferences.quietHoursEnd],
         ["default_radius_km", String(preferences.defaultRadiusKm)],
         [
           "voice_assistant_floating_button",
@@ -443,6 +455,17 @@ const normalizePreferences = (value: unknown): AppPreferences => {
           : defaultPreferences().theme,
     language: preferences.language === "en" ? "en" : "fr",
     sosNotificationsEnabled: preferences.sosNotificationsEnabled !== false,
+    sosNotificationsPriority: preferences.sosNotificationsPriority !== false,
+    quietHoursStart:
+      typeof preferences.quietHoursStart === "string" &&
+      /^([01]\d|2[0-3]):[0-5]\d$/.test(preferences.quietHoursStart)
+        ? preferences.quietHoursStart
+        : "22:00",
+    quietHoursEnd:
+      typeof preferences.quietHoursEnd === "string" &&
+      /^([01]\d|2[0-3]):[0-5]\d$/.test(preferences.quietHoursEnd)
+        ? preferences.quietHoursEnd
+        : "07:00",
     defaultRadiusKm: radius === 10 || radius === 30 ? radius : 3,
     voiceAssistantFloatingButton:
       preferences.voiceAssistantFloatingButton === true,

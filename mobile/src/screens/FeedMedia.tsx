@@ -10,13 +10,30 @@ type Props = {
   type: CloudinaryMediaType;
   onDoubleTap?: () => void;
   height?: number;
+  active?: boolean;
+  preloadUri?: string;
+  lowDataMode?: boolean;
 };
 
-export default function FeedMedia({ uri, type, onDoubleTap, height }: Props) {
+export default function FeedMedia({
+  uri,
+  type,
+  onDoubleTap,
+  height,
+  active = true,
+  preloadUri,
+  lowDataMode = false,
+}: Props) {
   const [muted, setMuted] = useState(true);
   const [progress, setProgress] = useState(0);
   const lastTap = useRef(0);
   const heartProgress = useRef(new Animated.Value(0)).current;
+  const optimizeUri = (source: string) =>
+    lowDataMode && source.includes("/upload/")
+      ? source.replace("/upload/", "/upload/q_auto:low,w_720,c_limit/")
+      : source;
+  const mediaUri = optimizeUri(uri);
+  const optimizedPreloadUri = preloadUri ? optimizeUri(preloadUri) : undefined;
   const handleTap = () => {
     const now = Date.now();
     if (now - lastTap.current < 320) {
@@ -51,13 +68,27 @@ export default function FeedMedia({ uri, type, onDoubleTap, height }: Props) {
       },
     ],
   };
-  const player = useVideoPlayer(type === "video" ? uri : null, (instance) => {
+  const player = useVideoPlayer(type === "video" ? mediaUri : null, (instance) => {
     instance.muted = true;
     instance.loop = true;
     instance.timeUpdateEventInterval = 0.25;
     instance.audioMixingMode = "mixWithOthers";
-    instance.play();
+    if (active) instance.play();
   });
+
+  useEffect(() => {
+    if (type !== "video") return;
+    if (active) player.play();
+    else player.pause();
+  }, [active, player, type]);
+
+  useEffect(() => {
+    if (optimizedPreloadUri && type === "image") {
+      void Image.prefetch(optimizedPreloadUri).catch((error: unknown) => {
+        console.error("Unable to preload next feed image:", error);
+      });
+    }
+  }, [optimizedPreloadUri, type]);
 
   useEffect(() => {
     if (type !== "video") return;
@@ -76,7 +107,7 @@ export default function FeedMedia({ uri, type, onDoubleTap, height }: Props) {
           accessibilityLabel="Photo publiée"
           cachePolicy="memory-disk"
           contentFit="cover"
-          source={{ uri }}
+          source={{ uri: mediaUri }}
           style={StyleSheet.absoluteFill}
           transition={180}
         />

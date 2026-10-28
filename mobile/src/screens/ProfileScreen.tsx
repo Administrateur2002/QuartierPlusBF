@@ -13,6 +13,7 @@ import {
   PhoneCall,
   Settings,
   Shield,
+  ShieldCheck,
   Siren,
   Star,
   Trash2,
@@ -145,6 +146,9 @@ export default function ProfileScreen() {
     theme: "system",
     language: "fr",
     sosNotificationsEnabled: true,
+    sosNotificationsPriority: true,
+    quietHoursStart: "22:00",
+    quietHoursEnd: "07:00",
     defaultRadiusKm: 3,
     voiceAssistantFloatingButton: false,
   });
@@ -1254,6 +1258,67 @@ export default function ProfileScreen() {
                 value={sosNotificationsEnabled}
               />
             </View>
+            <View style={[styles.menuRow, styles.menuRowBorder]}>
+              <ShieldCheck color="#dc2626" size={19} />
+              <View style={styles.notificationCopy}>
+                <Text style={[styles.menuLabel, { color: colors.text }]}>Priorité aux alertes SOS</Text>
+                <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
+                  Les alertes SOS passent outre les heures calmes
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel="Donner la priorité aux alertes SOS"
+                onValueChange={(enabled) =>
+                  void updatePreferences({
+                    ...preferences,
+                    sosNotificationsPriority: enabled,
+                  })
+                }
+                value={preferences.sosNotificationsPriority}
+              />
+            </View>
+            <View style={[styles.quietHoursGroup, styles.menuRowBorder]}>
+              <Text style={[styles.menuLabel, { color: colors.text }]}>Heures calmes</Text>
+              <View style={styles.quietHoursInputs}>
+                <TextInput
+                  accessibilityLabel="Début des heures calmes"
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={5}
+                  onBlur={() => {
+                    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(preferences.quietHoursStart)) {
+                      Alert.alert("Heure invalide", "Saisissez une heure au format 22:00.");
+                      return;
+                    }
+                    void updatePreferences(preferences);
+                  }}
+                  onChangeText={(quietHoursStart) =>
+                    setPreferences((current) => ({ ...current, quietHoursStart }))
+                  }
+                  placeholder="22:00"
+                  style={[styles.quietHoursInput, { color: colors.text, borderColor: colors.border }]}
+                  value={preferences.quietHoursStart}
+                />
+                <Text style={{ color: colors.secondaryText }}>à</Text>
+                <TextInput
+                  accessibilityLabel="Fin des heures calmes"
+                  keyboardType="numbers-and-punctuation"
+                  maxLength={5}
+                  onBlur={() => {
+                    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(preferences.quietHoursEnd)) {
+                      Alert.alert("Heure invalide", "Saisissez une heure au format 07:00.");
+                      return;
+                    }
+                    void updatePreferences(preferences);
+                  }}
+                  onChangeText={(quietHoursEnd) =>
+                    setPreferences((current) => ({ ...current, quietHoursEnd }))
+                  }
+                  placeholder="07:00"
+                  style={[styles.quietHoursInput, { color: colors.text, borderColor: colors.border }]}
+                  value={preferences.quietHoursEnd}
+                />
+              </View>
+            </View>
             <View style={[styles.preferenceGroup, styles.menuRowBorder]}>
               <View style={styles.preferenceHeading}>
                 <Settings color={colors.primary} size={19} />
@@ -2152,6 +2217,24 @@ const styles = StyleSheet.create({
   },
   notificationCopy: {
     flex: 1,
+  },
+  quietHoursGroup: {
+    gap: 8,
+    paddingVertical: 11,
+  },
+  quietHoursInputs: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 9,
+  },
+  quietHoursInput: {
+    borderRadius: 8,
+    borderWidth: 1,
+    fontSize: 13,
+    minWidth: 72,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    textAlign: "center",
   },
   settingDescription: {
     color: "#94a3b8",
