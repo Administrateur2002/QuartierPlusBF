@@ -61,6 +61,14 @@
         }
       ],
       [
+        "expo-media-library",
+        {
+          "photosPermission": "QuartierPlus accède à votre galerie uniquement lorsque vous choisissez d’enregistrer un média.",
+          "savePhotosPermission": "QuartierPlus enregistre dans votre galerie les médias que vous choisissez de télécharger.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
         "expo-camera",
         {
           "cameraPermission": "QuartierPlus utilise la caméra pour scanner les billets d’événements."

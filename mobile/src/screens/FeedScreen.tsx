@@ -1,12 +1,11 @@
 import * as Location from "expo-location";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { File } from "expo-file-system";
+import { File, Paths } from "expo-file-system";
 import {
   AlertTriangle,
   MapPin,
   Mic,
-  Play,
   Plus,
   RefreshCw,
   ShoppingBag,
@@ -20,13 +19,16 @@ import {
   Modal,
   Pressable,
   RefreshControl,
+  Share,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  Vibration,
   View,
   useWindowDimensions,
 } from "react-native";
+import * as MediaLibrary from "expo-media-library";
 import * as SecureStore from "expo-secure-store";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -46,6 +48,7 @@ import {
 } from "../services/cloudinaryUpload";
 import { MediaUploadError } from "../services/mediaUploadError";
 import { compressVideoForUpload } from "../services/videoCompression";
+import FeedMedia from "./FeedMedia";
 import {
   FEED_SCOPES,
   isFeedCoordinates,
@@ -65,6 +68,13 @@ type FeedEntry = {
   price?: string;
   imageUrl?: string;
   mediaType?: CloudinaryMediaType;
+  authorId?: string;
+  authorName?: string;
+  likesCount: number;
+  commentsCount: number;
+  likedByMe: boolean;
+  authorIsAlly: boolean;
+  allianceStatus?: "PENDING" | "ALLIED" | null;
 };
 
 type FeedError = {
@@ -144,6 +154,13 @@ const normalizePost = (value: unknown): FeedEntry | null => {
         ? String(value.media_url ?? value.image_url)
         : undefined,
     mediaType,
+    authorId: typeof value.author_id === "string" ? value.author_id : undefined,
+    authorName:
+      typeof value.author_name === "string" ? value.author_name : undefined,
+    likesCount: Number(value.likes_count ?? 0),
+    commentsCount: Number(value.comments_count ?? 0),
+    likedByMe: value.liked_by_me === true,
+    authorIsAlly: value.author_is_ally === true,
     price:
       free
         ? "Gratuit / Don"
@@ -173,6 +190,10 @@ const normalizeAlert = (value: unknown): FeedEntry | null => {
     location: distanceLabel,
     createdAt: String(value.created_at ?? value.createdAt ?? ""),
     category: String(value.category ?? value.emergency_type ?? "Urgence"),
+    likesCount: 0,
+    commentsCount: 0,
+    likedByMe: false,
+    authorIsAlly: false,
   };
 };
 
@@ -202,9 +223,10 @@ const formatDate = (date: string) => {
 
 export default function FeedScreen() {
   const { colors } = useTheme();
-  const { authStatus, isOffline, requestAuthentication, user } = useAuth();
+  const { authStatus, isOffline, requestAuthentication, queueOfflineAction, user } = useAuth();
   const { requestAssistant } = useVoiceAssistant();
   const { width: pageWidth } = useWindowDimensions();
+  const { height: windowHeight } = useWindowDimensions();
   const pagerRef = useRef<ScrollView>(null);
   const [scope, setScope] = useState<FeedScope>("country");
   const [countryCode, setCountryCode] = useState<string | null>(null);
@@ -227,6 +249,12 @@ export default function FeedScreen() {
   const [isPublishing, setIsPublishing] = useState(false);
   const [isCompressingVideo, setIsCompressingVideo] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [selectedPost, setSelectedPost] = useState<FeedEntry | null>(null);
+  const [comments, setComments] = useState<
+    { id: string; user_name?: string; content: string }[]
+  >([]);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [sendingComment, setSendingComment] = useState(false);
   const uploadControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -577,6 +605,231 @@ export default function FeedScreen() {
   const refresh = () => {
     setIsRefreshing(true);
     setRefreshKey((current) => current + 1);
+  };
+
+  const likePost = async (entry: FeedEntry) => {
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    const likedByMe = !entry.likedByMe;
+    const nextCount = Math.max(0, entry.likesCount + (likedByMe ? 1 : -1));
+    const update = (postId: string, liked: boolean, count: number) => {
+      setEntries((current) =>
+        current.map((item) =>
+          item.id === postId
+            ? { ...item, likedByMe: liked, likesCount: count }
+            : item,
+        ),
+      );
+    };
+    update(entry.id, likedByMe, nextCount);
+    Vibration.vibrate(10);
+    if (isOffline) {
+      try {
+        await queueOfflineAction("toggle_post_like", { post_id: entry.id });
+      } catch (queueError) {
+        update(entry.id, entry.likedByMe, entry.likesCount);
+        Alert.alert(
+          "J’adore non enregistré",
+          queueError instanceof Error ? queueError.message : "Réessayez.",
+        );
+      }
+      return;
+    }
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/posts/${encodeURIComponent(entry.id)}/like`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error(`J’adore indisponible (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || typeof payload.liked !== "boolean" || typeof payload.count !== "number") {
+        throw new Error("La réponse du serveur pour J’adore est invalide.");
+      }
+      update(entry.id, payload.liked, payload.count);
+    } catch (actionError) {
+      update(entry.id, entry.likedByMe, entry.likesCount);
+      Alert.alert(
+        "J’adore non envoyé",
+        actionError instanceof Error ? actionError.message : "Réessayez.",
+      );
+    }
+  };
+
+  const openComments = async (entry: FeedEntry) => {
+    setSelectedPost(entry);
+    setComments([]);
+    if (!API_BASE_URL) return;
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/posts/${encodeURIComponent(entry.id)}/comments`,
+      );
+      if (!response.ok) throw new Error(`Commentaires indisponibles (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !Array.isArray(payload.comments)) {
+        throw new Error("La liste des commentaires est invalide.");
+      }
+      setComments(payload.comments.filter(
+        (item): item is { id: string; user_name?: string; content: string } =>
+          isRecord(item) && typeof item.id === "string" && typeof item.content === "string",
+      ));
+    } catch (commentError) {
+      Alert.alert(
+        "Commentaires indisponibles",
+        commentError instanceof Error ? commentError.message : "Réessayez.",
+      );
+    }
+  };
+
+  const sendComment = async () => {
+    const post = selectedPost;
+    const content = commentDraft.trim();
+    if (!post || !content || sendingComment) return;
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    const optimisticId = `local-${Date.now()}`;
+    setComments((current) => [{ id: optimisticId, content }, ...current]);
+    setCommentDraft("");
+    setSendingComment(true);
+    setEntries((current) => current.map((entry) =>
+      entry.id === post.id
+        ? { ...entry, commentsCount: entry.commentsCount + 1 }
+        : entry,
+    ));
+    Vibration.vibrate(10);
+    if (isOffline) {
+      try {
+        await queueOfflineAction("create_post_comment", {
+          post_id: post.id,
+          content,
+        });
+      } catch (queueError) {
+        setComments((current) => current.filter((item) => item.id !== optimisticId));
+        setEntries((current) => current.map((entry) =>
+          entry.id === post.id
+            ? { ...entry, commentsCount: Math.max(0, entry.commentsCount - 1) }
+            : entry,
+        ));
+        setCommentDraft(content);
+        Alert.alert(
+          "Commentaire non enregistré",
+          queueError instanceof Error ? queueError.message : "Réessayez.",
+        );
+      } finally {
+        setSendingComment(false);
+      }
+      return;
+    }
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/posts/${encodeURIComponent(post.id)}/comments`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content }),
+        },
+      );
+      if (!response.ok) throw new Error(`Commentaire refusé (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !isRecord(payload.comment) || typeof payload.comment.id !== "string") {
+        throw new Error("La réponse du commentaire est invalide.");
+      }
+      const commentId = payload.comment.id;
+      setComments((current) => current.map((item) =>
+        item.id === optimisticId
+          ? {
+              id: commentId,
+              content,
+              user_name: typeof user?.name === "string" ? user.name : "Vous",
+            }
+          : item,
+      ));
+    } catch (commentError) {
+      setComments((current) => current.filter((item) => item.id !== optimisticId));
+      setEntries((current) => current.map((entry) =>
+        entry.id === post.id
+          ? { ...entry, commentsCount: Math.max(0, entry.commentsCount - 1) }
+          : entry,
+      ));
+      setCommentDraft(content);
+      Alert.alert(
+        "Commentaire non envoyé",
+        commentError instanceof Error ? commentError.message : "Réessayez.",
+      );
+    } finally {
+      setSendingComment(false);
+    }
+  };
+
+  const requestAlliance = async (entry: FeedEntry) => {
+    if (!entry.authorId || entry.authorId === user?.id) return;
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/alliance/${encodeURIComponent(entry.authorId)}`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error(`Demande impossible (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !["PENDING", "ALLIED"].includes(String(payload.status))) {
+        throw new Error("La réponse d’alliance est invalide.");
+      }
+      const status = payload.status as "PENDING" | "ALLIED";
+      setEntries((current) => current.map((item) =>
+        item.authorId === entry.authorId
+          ? { ...item, allianceStatus: status, authorIsAlly: status === "ALLIED" }
+          : item,
+      ));
+    } catch (allianceError) {
+      Alert.alert(
+        "Alliance indisponible",
+        allianceError instanceof Error ? allianceError.message : "Réessayez.",
+      );
+    }
+  };
+
+  const sharePost = async (entry: FeedEntry) => {
+    try {
+      await Share.share({
+        message: `${entry.title}${entry.imageUrl ? `\n${entry.imageUrl}` : ""}`,
+        url: entry.imageUrl,
+      });
+    } catch (shareError) {
+      Alert.alert(
+        "Partage impossible",
+        shareError instanceof Error ? shareError.message : "Réessayez.",
+      );
+    }
+  };
+
+  const downloadMedia = async (entry: FeedEntry) => {
+    if (!entry.imageUrl) return;
+    try {
+      const permission = await MediaLibrary.requestPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error("Autorisez l’accès à la galerie pour enregistrer ce média.");
+      }
+      const localFile = await File.downloadFileAsync(
+        entry.imageUrl,
+        new File(Paths.cache, `quartierplus-${entry.id}.${entry.mediaType === "video" ? "mp4" : "jpg"}`),
+      );
+      await MediaLibrary.saveToLibraryAsync(localFile.uri);
+      Alert.alert("Enregistré", "Le média est dans votre galerie.");
+    } catch (downloadError) {
+      Alert.alert(
+        "Téléchargement impossible",
+        downloadError instanceof Error ? downloadError.message : "Réessayez.",
+      );
+    }
   };
 
   const createPublication = () => {
@@ -1095,14 +1348,24 @@ export default function FeedScreen() {
             ) : (
               <ScrollView
                 contentContainerStyle={styles.list}
+                decelerationRate="fast"
                 nestedScrollEnabled
+                pagingEnabled
                 refreshControl={
                   <RefreshControl refreshing={isRefreshing} onRefresh={refresh} />
                 }
                 style={styles.feedPage}
               >
                 {entries.map((entry) => (
-                  <View key={`${entry.kind}:${entry.id}`} style={styles.card}>
+                  <View
+                    key={`${entry.kind}:${entry.id}`}
+                    style={[
+                      styles.card,
+                      entry.imageUrl
+                        ? { height: Math.max(520, windowHeight - 245) }
+                        : null,
+                    ]}
+                  >
                     <View style={styles.cardHeader}>
                       <View style={[styles.icon, entry.kind === "alert" && styles.alertIcon]}>
                         {entry.kind === "alert" ? (
@@ -1112,41 +1375,108 @@ export default function FeedScreen() {
                         )}
                       </View>
                       <View style={styles.cardHeading}>
+                        {entry.authorName ? (
+                          <Text style={styles.authorName}>{entry.authorName}</Text>
+                        ) : null}
                         <Text style={styles.category}>{entry.category}</Text>
                         <Text style={styles.date}>{formatDate(entry.createdAt)}</Text>
                       </View>
                       {entry.price ? <Text style={styles.price}>{entry.price}</Text> : null}
                     </View>
-                    {entry.imageUrl && entry.mediaType === "video" ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Ouvrir la vidéo publiée"
-                        onPress={() => {
-                          const mediaUrl = entry.imageUrl;
-                          if (!mediaUrl) return;
-                          void Linking.openURL(mediaUrl).catch((error: unknown) => {
-                            console.error("Unable to open published video:", error);
-                            Alert.alert(
-                              "Vidéo indisponible",
-                              "Impossible d’ouvrir cette vidéo sur cet appareil.",
-                            );
-                          });
+                    {entry.imageUrl ? (
+                      <FeedMedia
+                        height={Math.max(280, windowHeight - 455)}
+                        onDoubleTap={() => {
+                          if (!entry.likedByMe) void likePost(entry);
                         }}
-                        style={[styles.cardImage, styles.videoAction]}
-                      >
-                        <Play color="#2563eb" fill="#2563eb" size={25} />
-                        <Text style={styles.videoActionText}>Ouvrir la vidéo</Text>
-                      </Pressable>
-                    ) : entry.imageUrl ? (
-                      <Image
-                        accessibilityLabel="Photo publiée"
-                        resizeMode="cover"
-                        source={{ uri: entry.imageUrl }}
-                        style={styles.cardImage}
+                        type={entry.mediaType ?? "image"}
+                        uri={entry.imageUrl}
                       />
                     ) : null}
-                    <Text style={styles.cardTitle}>{entry.title}</Text>
-                    {entry.body ? <Text style={styles.body}>{entry.body}</Text> : null}
+                    {entry.body ? (
+                      <Text numberOfLines={2} style={styles.body}>{entry.body}</Text>
+                    ) : null}
+                    {entry.kind === "post" ? (
+                      <View style={styles.postActions}>
+                        <Pressable
+                          accessibilityLabel={`Adorer, ${entry.likesCount} mentions J’adore`}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: entry.likedByMe }}
+                          onPress={() => void likePost(entry)}
+                          style={styles.postAction}
+                        >
+                          <Text style={[styles.actionText, entry.likedByMe && styles.actionSelected]}>
+                            {entry.likedByMe ? "♥ Adoré" : "♡ Adorer"} · {entry.likesCount}
+                          </Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel={`Commenter, ${entry.commentsCount} commentaires`}
+                          accessibilityRole="button"
+                          onPress={() => void openComments(entry)}
+                          style={styles.postAction}
+                        >
+                          <Text style={styles.actionText}>Commenter · {entry.commentsCount}</Text>
+                        </Pressable>
+                        <Pressable accessibilityRole="button" onPress={() => void sharePost(entry)} style={styles.postAction}>
+                          <Text style={styles.actionText}>Propager</Text>
+                        </Pressable>
+                        {entry.imageUrl ? (
+                          <Pressable accessibilityRole="button" onPress={() => void downloadMedia(entry)} style={styles.postAction}>
+                            <Text style={styles.actionText}>Télécharger</Text>
+                          </Pressable>
+                        ) : null}
+                        {entry.authorId && entry.authorId !== user?.id ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: entry.authorIsAlly }}
+                            onPress={() => void requestAlliance(entry)}
+                            style={styles.postAction}
+                          >
+                            <Text style={styles.actionText}>
+                              {entry.authorIsAlly
+                                ? "Allié ✓"
+                                : entry.allianceStatus === "PENDING"
+                                  ? "Demande envoyée"
+                                  : "Se rallier"}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                        <Pressable
+                          accessibilityLabel="Signaler cette publication"
+                          accessibilityRole="button"
+                          onPress={() => {
+                            if (!API_BASE_URL || authStatus !== "connected") {
+                              requestAuthentication();
+                              return;
+                            }
+                            Alert.alert("Signaler la publication ?", "Notre équipe la vérifiera.", [
+                              { text: "Annuler", style: "cancel" },
+                              {
+                                text: "Signaler",
+                                style: "destructive",
+                                onPress: () => {
+                                  void apiFetch(`${API_BASE_URL}/v1/posts/${encodeURIComponent(entry.id)}/report`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ reason: "Contenu inapproprié" }),
+                                  }).then((response) => {
+                                    if (!response.ok) throw new Error(`Signalement refusé (HTTP ${response.status}).`);
+                                    Alert.alert("Signalement envoyé", "Merci de contribuer à la modération.");
+                                  }).catch((reportError: unknown) => {
+                                    Alert.alert("Signalement impossible", reportError instanceof Error ? reportError.message : "Réessayez.");
+                                  });
+                                },
+                              },
+                            ]);
+                          }}
+                          style={styles.postAction}
+                        >
+                          <Text style={styles.actionText}>Signaler</Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <Text style={styles.cardTitle}>{entry.title}</Text>
+                    )}
                     {entry.location ? (
                       <View style={styles.location}>
                         <MapPin color="#64748b" size={14} />
@@ -1326,6 +1656,59 @@ export default function FeedScreen() {
           </View>
         </View>
       </Modal>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setSelectedPost(null)}
+        transparent
+        visible={selectedPost !== null}
+      >
+        <View style={styles.commentBackdrop}>
+          <View style={styles.commentSheet}>
+            <View style={styles.commentHeader}>
+              <Text style={styles.composerTitle}>Commentaires</Text>
+              <Pressable
+                accessibilityLabel="Fermer les commentaires"
+                accessibilityRole="button"
+                onPress={() => setSelectedPost(null)}
+              >
+                <Text style={styles.actionText}>Fermer</Text>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.commentList}>
+              {comments.map((item) => (
+                <View key={item.id} style={styles.commentItem}>
+                  <Text style={styles.commentAuthor}>{item.user_name ?? "Voisin"}</Text>
+                  <Text style={styles.commentText}>{item.content}</Text>
+                </View>
+              ))}
+              {!comments.length ? (
+                <Text style={styles.emptyText}>Soyez le premier à commenter.</Text>
+              ) : null}
+            </ScrollView>
+            <View style={styles.commentComposer}>
+              <TextInput
+                accessibilityLabel="Votre commentaire"
+                editable={!sendingComment}
+                maxLength={1000}
+                onChangeText={setCommentDraft}
+                placeholder="Écrire un commentaire…"
+                style={styles.commentInput}
+                value={commentDraft}
+              />
+              <Pressable
+                accessibilityRole="button"
+                disabled={!commentDraft.trim() || sendingComment}
+                onPress={() => void sendComment()}
+                style={styles.publishButton}
+              >
+                <Text style={styles.publishButtonText}>
+                  {sendingComment ? "…" : "Envoyer"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1412,10 +1795,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 15,
   },
+  immersiveCard: { justifyContent: "space-between" },
   cardHeader: { alignItems: "center", flexDirection: "row" },
   icon: { alignItems: "center", backgroundColor: "#eff6ff", borderRadius: 12, height: 40, justifyContent: "center", width: 40 },
   alertIcon: { backgroundColor: "#fef2f2" },
   cardHeading: { flex: 1, marginLeft: 10 },
+  authorName: { color: "#0f172a", fontSize: 13, fontWeight: "800" },
   category: { color: "#475569", fontSize: 12, fontWeight: "700" },
   date: { color: "#94a3b8", fontSize: 11, marginTop: 3 },
   price: { color: "#15803d", fontSize: 12, fontWeight: "700", marginLeft: 8 },
@@ -1435,6 +1820,22 @@ const styles = StyleSheet.create({
   videoActionText: { color: "#1d4ed8", fontSize: 14, fontWeight: "700" },
   cardTitle: { color: "#0f172a", fontSize: 17, fontWeight: "700", marginTop: 13 },
   body: { color: "#475569", fontSize: 14, lineHeight: 21, marginTop: 6 },
+  postActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+    marginTop: 8,
+  },
+  postAction: {
+    backgroundColor: "#f1f5f9",
+    borderRadius: 16,
+    minHeight: 32,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  actionText: { color: "#334155", fontSize: 11, fontWeight: "700" },
+  actionSelected: { color: "#dc2626" },
   location: { alignItems: "center", flexDirection: "row", gap: 5, marginTop: 11 },
   locationText: { color: "#64748b", fontSize: 12 },
   loading: { alignItems: "center", flex: 1, justifyContent: "center" },
@@ -1493,6 +1894,44 @@ const styles = StyleSheet.create({
     paddingBottom: 28,
     paddingHorizontal: 20,
     paddingTop: 22,
+  },
+  commentBackdrop: {
+    backgroundColor: "rgba(15,23,42,0.5)",
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  commentSheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    height: "70%",
+    padding: 18,
+    paddingBottom: 28,
+  },
+  commentHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingBottom: 12,
+  },
+  commentList: { gap: 12, paddingBottom: 12 },
+  commentItem: {
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    gap: 4,
+    padding: 11,
+  },
+  commentAuthor: { color: "#334155", fontSize: 12, fontWeight: "800" },
+  commentText: { color: "#475569", fontSize: 13, lineHeight: 19 },
+  commentComposer: { alignItems: "center", flexDirection: "row", gap: 8 },
+  commentInput: {
+    borderColor: "#cbd5e1",
+    borderRadius: 10,
+    borderWidth: 1,
+    color: "#0f172a",
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   composerTitle: { color: "#0f172a", fontSize: 20, fontWeight: "800" },
   composerOption: {

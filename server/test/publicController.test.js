@@ -42,7 +42,7 @@ test("public marketplace returns an empty successful feed when there are no item
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.payload, { items: [] });
-  assert.deepEqual(queryValues, [null, null, null, null, null, null, null]);
+  assert.deepEqual(queryValues, [null, null, null, null, null, null, null, null]);
 });
 
 test("nearby SOS alerts accept valid radius filters and return an empty list", async (context) => {
@@ -111,7 +111,7 @@ test("country scope filters marketplace posts by country without coordinates", a
   );
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(queryValues, [null, null, null, "BF", "country", null, null]);
+  assert.deepEqual(queryValues, [null, null, null, "BF", "country", null, null, null]);
 });
 
 test("neighborhood scope rejects missing position and country code", async (context) => {

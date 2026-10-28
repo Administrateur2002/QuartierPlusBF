@@ -367,7 +367,21 @@ export const listFeed = async (request, response, next) => {
     const result = await pool.query(
       `SELECT post.id, post.caption, post.scope, post.media_url,
               post.media_type, post.created_at, post.author_id,
-              author.full_name AS author_name
+              author.full_name AS author_name,
+              (SELECT COUNT(*)::int FROM post_likes like_row
+               WHERE like_row.post_id = post.id) AS likes_count,
+              (SELECT COUNT(*)::int FROM post_comments comment_row
+               WHERE comment_row.post_id = post.id) AS comments_count,
+              CASE WHEN $5::uuid IS NULL THEN FALSE ELSE EXISTS (
+                SELECT 1 FROM post_likes like_row
+                WHERE like_row.post_id = post.id AND like_row.user_id = $5
+              ) END AS liked_by_me,
+              CASE WHEN $5::uuid IS NULL THEN FALSE ELSE EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = $5 AND alliance.recipient_id = post.author_id)
+                    OR (alliance.recipient_id = $5 AND alliance.requester_id = post.author_id))
+              ) END AS author_is_ally
        FROM posts AS post
        JOIN users AS author ON author.id = post.author_id
        WHERE post.status = 'ACTIVE'
@@ -407,13 +421,14 @@ export const listFeed = async (request, response, next) => {
                )
              )
          END
-       ORDER BY post.created_at DESC
+       ORDER BY author_is_ally DESC, post.created_at DESC
        LIMIT 100`,
       [
         scope,
         countryCode,
         coordinates?.latitude ?? null,
         coordinates?.longitude ?? null,
+        request.auth?.userId ?? null,
       ],
     );
     return response.status(200).json({ posts: result.rows });

@@ -174,6 +174,7 @@ export default function ProfileScreen() {
     getServerHealth,
   );
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const [allies, setAllies] = useState<{ id: string; name: string | null }[]>([]);
 
   useEffect(
     () => subscribeToTechnicalAvailability(() => setTechnicalStatus(getTechnicalAvailability())),
@@ -239,6 +240,41 @@ export default function ProfileScreen() {
       isMounted = false;
     };
   }, [isOffline, setLanguage, setTheme]);
+
+  useEffect(() => {
+    let active = true;
+    if (!user || !API_BASE_URL || isOffline) {
+      setAllies([]);
+      return () => {
+        active = false;
+      };
+    }
+    void apiFetch(`${API_BASE_URL}/v1/social/allies`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Impossible de charger les alliés (HTTP ${response.status}).`);
+        const payload: unknown = await response.json();
+        if (!isRecord(payload) || !Array.isArray(payload.allies)) {
+          throw new Error("La liste des alliés est invalide.");
+        }
+        if (active) {
+          setAllies(payload.allies.filter(
+            (ally): ally is { id: string; name: string | null } =>
+              isRecord(ally) &&
+              typeof ally.id === "string" &&
+              (ally.name === null || typeof ally.name === "string"),
+          ));
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          console.error("Unable to load profile allies:", error);
+          setDatabaseError(error instanceof Error ? error.message : "Impossible de charger les alliés.");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOffline, user]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1010,6 +1046,23 @@ export default function ProfileScreen() {
                 {profile?.isVerified ? "Voisin vérifié" : "Réputation"}
               </Text>
             </View>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Mes alliés · {allies.length}</Text>
+          <View style={[styles.settingsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {allies.length ? allies.map((ally) => (
+              <View key={ally.id} style={styles.menuRow}>
+                <User color="#2563eb" size={19} />
+                <Text style={[styles.menuLabel, { color: colors.text }]}>{ally.name || "Voisin allié"}</Text>
+                <CheckCircle2 color="#15803d" size={18} />
+              </View>
+            )) : (
+              <Text style={[styles.settingDescription, { color: colors.secondaryText, padding: 14 }]}>
+                Vos alliances confirmées apparaîtront ici.
+              </Text>
+            )}
           </View>
         </View>
 

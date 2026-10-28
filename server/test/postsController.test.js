@@ -554,7 +554,7 @@ test("feed requires a position for location-based scopes and never returns exact
   );
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(queryValues, ["neighborhood", "BF", 12.3, -1.5]);
+  assert.deepEqual(queryValues, ["neighborhood", "BF", 12.3, -1.5, null]);
   assert.equal("latitude" in response.payload.posts[0], false);
   assert.equal("longitude" in response.payload.posts[0], false);
 });

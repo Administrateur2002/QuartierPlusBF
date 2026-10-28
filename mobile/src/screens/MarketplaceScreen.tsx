@@ -60,6 +60,9 @@ type TradeCategory =
   | "Boulangerie";
 type MarketplaceItem = {
   id: string;
+  sellerId?: string;
+  isAlly: boolean;
+  alliancePending: boolean;
   name: string;
   description: string;
   price: number | null;
@@ -155,6 +158,9 @@ const normalizeItem = (value: unknown): MarketplaceItem | null => {
   }
   return {
     id,
+    sellerId: typeof value.seller_id === "string" ? value.seller_id : undefined,
+    isAlly: value.seller_is_ally === true,
+    alliancePending: value.seller_alliance_pending === true,
     name,
     description: String(value.description ?? ""),
     price,
@@ -536,6 +542,36 @@ export default function MarketplaceScreen() {
     }
   };
 
+  const allySeller = async (item: MarketplaceItem) => {
+    if (!item.sellerId || item.sellerId === user?.id) return;
+    if (!requireConnectedUser() || !API_BASE_URL) return;
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/alliance/${encodeURIComponent(item.sellerId)}`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error(`Demande impossible (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !["PENDING", "ALLIED"].includes(String(payload.status))) {
+        throw new Error("La réponse d’alliance est invalide.");
+      }
+      setItems((current) => current.map((entry) =>
+        entry.sellerId === item.sellerId
+          ? {
+              ...entry,
+              isAlly: payload.status === "ALLIED",
+              alliancePending: payload.status === "PENDING",
+            }
+          : entry,
+      ));
+    } catch (error) {
+      Alert.alert(
+        "Alliance indisponible",
+        error instanceof Error ? error.message : "Réessayez.",
+      );
+    }
+  };
+
   const openContactLink = async (url: string) => {
     try {
       await Linking.openURL(url);
@@ -878,6 +914,18 @@ export default function MarketplaceScreen() {
               <Text style={styles.sellerBadgeText}>Vérifié</Text>
             </View>
           )}
+          {item.sellerId && item.sellerId !== user?.id ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: item.isAlly }}
+              onPress={() => void allySeller(item)}
+              style={styles.allySellerButton}
+            >
+              <Text style={styles.allySellerText}>
+                {item.isAlly ? "Allié ✓" : item.alliancePending ? "Demande envoyée" : "Se rallier"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
         <Pressable
           accessibilityRole="button"
@@ -1715,6 +1763,15 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "700",
   },
+  allySellerButton: {
+    alignSelf: "flex-start",
+    backgroundColor: "#eff6ff",
+    borderRadius: 8,
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  allySellerText: { color: "#1d4ed8", fontSize: 11, fontWeight: "700" },
   contactButton: {
     alignItems: "center",
     backgroundColor: "#16a34a",

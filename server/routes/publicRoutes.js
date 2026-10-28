@@ -4,10 +4,11 @@ import {
   getPublicConfig,
   listPublicMarketplace,
 } from "../controllers/publicController.js";
+import { optionalAuthMiddleware } from "../middlewares/optionalAuthMiddleware.js";
 
 const router = Router();
 
-router.get("/marketplace", listPublicMarketplace);
+router.get("/marketplace", optionalAuthMiddleware, listPublicMarketplace);
 router.get("/config", getPublicConfig);
 router.get("/media-status", getMediaStatus);
 

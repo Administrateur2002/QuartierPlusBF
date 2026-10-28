@@ -55,6 +55,8 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 20. `migrations/017_pro_offer_publication.sql`
 21. `migrations/018_quartierplus_pro.sql`
 22. `server/db/seeds.sql`
+23. `migrations/019_quartierplus_voyage.sql`
+24. `migrations/020_social_alliance_location.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -82,7 +84,9 @@ de 404 pour un compte n'ayant encore aucune conversation.
 
 Les migrations 015 à 017 ajoutent les champs utilisés par les publications
 Made in, les épingles sponsorisées et les détails d'offres Pro. Appliquez-les
-avant de déployer cette version de l'API.
+avant de déployer cette version de l'API. Les migrations 019 et 020 ajoutent
+respectivement Voyage et les alliances, interactions du fil et positions
+partagées avec consentement.
 
 ## 2. Créer le service web Render
 

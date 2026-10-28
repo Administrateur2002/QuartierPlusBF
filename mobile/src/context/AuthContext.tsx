@@ -82,10 +82,20 @@ const readUser = (value: unknown): AuthUser | null => {
 const actionEndpoint = (action: SyncAction) => {
   if (action.actionType === "create_post") return "/v1/marketplace/items";
   if (action.actionType === "trigger_sos") return "/v1/sos";
+  if (action.actionType === "toggle_post_like") {
+    return `/v1/social/posts/${encodeURIComponent(String(action.payload.post_id))}/like`;
+  }
+  if (action.actionType === "create_post_comment") {
+    return `/v1/social/posts/${encodeURIComponent(String(action.payload.post_id))}/comments`;
+  }
   throw new Error(`Type d'action hors ligne non pris en charge: ${action.actionType}`);
 };
 
 const buildQueuedRequestBody = async (action: SyncAction) => {
+  if (action.actionType === "toggle_post_like") return {};
+  if (action.actionType === "create_post_comment") {
+    return { content: String(action.payload.content ?? "") };
+  }
   if (action.actionType === "create_post") {
     const imageUri =
       typeof action.payload.image_uri === "string"

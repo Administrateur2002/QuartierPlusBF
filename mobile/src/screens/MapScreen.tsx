@@ -50,6 +50,7 @@ import {
 import MapView, {
   Circle,
   Marker,
+  Polygon,
   PROVIDER_GOOGLE,
   type Region,
 } from "react-native-maps";
@@ -349,10 +350,35 @@ const createRegion = (center: Coordinates, radiusMeters: ScopeMeters): Region =>
   };
 };
 
+const bearingPoint = (
+  from: Coordinates,
+  bearingDegrees: number,
+  distanceMeters: number,
+): Coordinates => {
+  const bearing = (bearingDegrees * Math.PI) / 180;
+  const angularDistance = distanceMeters / 6_371_000;
+  const latitude = (from.latitude * Math.PI) / 180;
+  const longitude = (from.longitude * Math.PI) / 180;
+  const destinationLatitude = Math.asin(
+    Math.sin(latitude) * Math.cos(angularDistance) +
+      Math.cos(latitude) * Math.sin(angularDistance) * Math.cos(bearing),
+  );
+  const destinationLongitude =
+    longitude +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latitude),
+      Math.cos(angularDistance) - Math.sin(latitude) * Math.sin(destinationLatitude),
+    );
+  return {
+    latitude: (destinationLatitude * 180) / Math.PI,
+    longitude: (destinationLongitude * 180) / Math.PI,
+  };
+};
+
 export default function MapScreen() {
   const { colors } = useTheme();
   const route = useRoute<RouteProp<MainTabParamList, "CarteSOS">>();
-  const { authStatus, requestAuthentication, token, isOffline, queueOfflineAction } = useAuth();
+  const { authStatus, requestAuthentication, token, isOffline, queueOfflineAction, user } = useAuth();
 
   const requireConnectedUser = useCallback(() => {
     if (authStatus !== "connected") {
@@ -362,6 +388,21 @@ export default function MapScreen() {
     return true;
   }, [authStatus, requestAuthentication]);
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const userLocationRef = useRef<Coordinates | null>(null);
+  const [locationAccuracy, setLocationAccuracy] = useState<number | null>(null);
+  const [heading, setHeading] = useState(0);
+  const [shareMode, setShareMode] = useState<"PRIVATE" | "ALLIES" | "SELECTED">("PRIVATE");
+  const [shareDuration, setShareDuration] = useState<number | null>(1);
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [selectedAllyIds, setSelectedAllyIds] = useState<string[]>([]);
+  const [allies, setAllies] = useState<{ id: string; name: string | null }[]>([]);
+  const [sharedLocations, setSharedLocations] = useState<{
+    id: string;
+    name: string | null;
+    latitude: number;
+    longitude: number;
+    updated_at: string;
+  }[]>([]);
   const [initialRegion, setInitialRegion] = useState<Region | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [selectedScope, setSelectedScope] = useState<ScopeMeters>(10000);
@@ -494,6 +535,7 @@ export default function MapScreen() {
   useEffect(() => {
     let isMounted = true;
     let locationSubscription: Location.LocationSubscription | null = null;
+    let headingSubscription: Location.LocationSubscription | null = null;
 
     const startLocationTracking = async () => {
       try {
@@ -516,6 +558,7 @@ export default function MapScreen() {
         };
         if (isMounted) {
           setUserLocation(coordinates);
+          setLocationAccuracy(position.coords.accuracy);
           setInitialRegion(createRegion(coordinates, selectedScope));
           setLocationError(null);
         }
@@ -532,9 +575,16 @@ export default function MapScreen() {
               latitude: updatedPosition.coords.latitude,
               longitude: updatedPosition.coords.longitude,
             });
+            setLocationAccuracy(updatedPosition.coords.accuracy);
           },
         );
+        headingSubscription = await Location.watchHeadingAsync((value) => {
+          if (isMounted) {
+            setHeading(value.trueHeading >= 0 ? value.trueHeading : value.magHeading);
+          }
+        });
         if (!isMounted) locationSubscription.remove();
+        if (!isMounted) headingSubscription.remove();
       } catch (error) {
         if (isMounted) {
           setLocationError(
@@ -550,8 +600,123 @@ export default function MapScreen() {
     return () => {
       isMounted = false;
       locationSubscription?.remove();
+      headingSubscription?.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (authStatus !== "connected" || !API_BASE_URL) {
+      setSharedLocations([]);
+      return;
+    }
+    let active = true;
+    const loadSharedLocations = async () => {
+      const [locationResponse, alliesResponse, sharingResponse] = await Promise.all([
+        apiFetch(`${API_BASE_URL}/v1/social/shared-locations`),
+        apiFetch(`${API_BASE_URL}/v1/social/allies`),
+        apiFetch(`${API_BASE_URL}/v1/social/location-sharing`),
+      ]);
+      if (!locationResponse.ok || !alliesResponse.ok || !sharingResponse.ok) {
+        throw new Error("Impossible de charger les partages de position ou les alliés.");
+      }
+      const [locationPayload, alliesPayload, sharingPayload]: unknown[] = await Promise.all([
+        locationResponse.json(),
+        alliesResponse.json(),
+        sharingResponse.json(),
+      ]);
+      const locationShareMode = isRecord(sharingPayload)
+        ? sharingPayload.mode
+        : null;
+      if (
+        !isRecord(locationPayload) ||
+        !Array.isArray(locationPayload.locations) ||
+        !isRecord(alliesPayload) ||
+        !Array.isArray(alliesPayload.allies) ||
+        !isRecord(sharingPayload) ||
+        (locationShareMode !== "PRIVATE" &&
+          locationShareMode !== "ALLIES" &&
+          locationShareMode !== "SELECTED") ||
+        !Array.isArray(sharingPayload.user_ids)
+      ) {
+        throw new Error("La réponse de partage de position est invalide.");
+      }
+      if (!active) return;
+      setSharedLocations(locationPayload.locations.filter(
+        (item): item is (typeof sharedLocations)[number] =>
+          isRecord(item) &&
+          typeof item.id === "string" &&
+          typeof item.latitude === "number" &&
+          typeof item.longitude === "number" &&
+          typeof item.updated_at === "string",
+      ));
+      setAllies(alliesPayload.allies.filter(
+        (item): item is { id: string; name: string | null } =>
+          isRecord(item) &&
+          typeof item.id === "string" &&
+          (item.name === null || typeof item.name === "string"),
+      ));
+      setShareMode(locationShareMode);
+      setSelectedAllyIds(
+        sharingPayload.user_ids.filter((id): id is string => typeof id === "string"),
+      );
+      if (sharingPayload.expires_at === null || sharingPayload.expires_at === undefined) {
+        setShareDuration(null);
+      } else if (typeof sharingPayload.expires_at === "string") {
+        const remainingHours = Math.max(
+          1,
+          (new Date(sharingPayload.expires_at).getTime() - Date.now()) / 3_600_000,
+        );
+        setShareDuration(remainingHours <= 1 ? 1 : remainingHours <= 8 ? 8 : 24);
+      }
+    };
+    void loadSharedLocations().catch((error: unknown) => {
+      if (active) {
+        console.error("Unable to load consented shared locations:", error);
+        setMarkerLoadError(error instanceof Error ? error.message : "Partages indisponibles.");
+      }
+    });
+    const interval = setInterval(() => {
+      void loadSharedLocations().catch((error: unknown) => {
+        if (active) console.error("Unable to refresh shared locations:", error);
+      });
+    }, 60_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [authStatus]);
+
+  useEffect(() => {
+    userLocationRef.current = userLocation;
+  }, [userLocation]);
+
+  useEffect(() => {
+    if (shareMode === "PRIVATE" || authStatus !== "connected" || !API_BASE_URL) return;
+    const interval = setInterval(() => {
+      const current = userLocationRef.current;
+      if (!current) return;
+      void apiFetch(`${API_BASE_URL}/v1/social/location-sharing/location`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(current),
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            const payload: unknown = await response.json();
+            throw new Error(
+              isRecord(payload) && typeof payload.error === "string"
+                ? payload.error
+                : `Le partage a expiré (HTTP ${response.status}).`,
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          console.error("Unable to refresh consented location share:", error);
+          setShareMode("PRIVATE");
+        });
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [authStatus, shareMode]);
 
   useEffect(() => {
     if (!API_BASE_URL || (!userLocation && authStatus !== "guest")) return;
@@ -781,6 +946,46 @@ export default function MapScreen() {
       const region = createRegion(userLocation, meters);
       setInitialRegion(region);
       mapRef.current?.animateToRegion(region, 350);
+    }
+  };
+
+  const saveLocationSharing = async (mode = shareMode) => {
+    if (!requireConnectedUser()) return;
+    if (!userLocation || !API_BASE_URL) {
+      Alert.alert("Position indisponible", "Attendez la localisation GPS avant de partager.");
+      return;
+    }
+    if (mode === "SELECTED" && selectedAllyIds.length === 0) {
+      Alert.alert("Choisissez des alliés", "Sélectionnez au moins une personne.");
+      return;
+    }
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/social/location-sharing`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          latitude: userLocation.latitude,
+          longitude: userLocation.longitude,
+          duration_hours: shareDuration,
+          user_ids: mode === "SELECTED" ? selectedAllyIds : [],
+        }),
+      });
+      if (!response.ok) {
+        const payload: unknown = await response.json();
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `Le partage a échoué (HTTP ${response.status}).`,
+        );
+      }
+      setShareMode(mode);
+      setShareModalVisible(false);
+    } catch (error) {
+      Alert.alert(
+        "Partage impossible",
+        error instanceof Error ? error.message : "Réessayez.",
+      );
     }
   };
 
@@ -1133,7 +1338,7 @@ export default function MapScreen() {
     }
     try {
       const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
+        accuracy: Location.Accuracy.Highest,
       });
       const response = await apiFetch(`${API_BASE_URL}/v1/map/markers`, {
         method: "POST",
@@ -1299,6 +1504,46 @@ export default function MapScreen() {
             strokeColor="rgba(37, 99, 235, 0.65)"
             strokeWidth={2}
           />
+          {locationAccuracy !== null ? (
+            <Circle
+              center={userLocation}
+              fillColor="rgba(14, 165, 233, 0.10)"
+              radius={Math.max(3, locationAccuracy)}
+              strokeColor="rgba(14, 165, 233, 0.55)"
+              strokeWidth={1}
+            />
+          ) : null}
+          <Polygon
+            coordinates={[
+              userLocation,
+              bearingPoint(userLocation, heading - 18, 90),
+              bearingPoint(userLocation, heading + 18, 90),
+            ]}
+            fillColor="rgba(37,99,235,0.22)"
+            strokeColor="rgba(37,99,235,0.45)"
+            strokeWidth={1}
+          />
+          <Marker coordinate={userLocation} title="Vous" anchor={{ x: 0.5, y: 0.5 }}>
+            <View style={styles.myLocationAvatar}>
+              <Text style={styles.myLocationInitial}>
+                {user?.name?.trim().slice(0, 1).toUpperCase() || "●"}
+              </Text>
+            </View>
+          </Marker>
+          {sharedLocations.map((location) => (
+            <Marker
+              key={`shared:${location.id}`}
+              coordinate={{ latitude: location.latitude, longitude: location.longitude }}
+              title={location.name || "Allié"}
+              description={`Position actualisée ${new Date(location.updated_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`}
+            >
+              <View style={styles.allyLocationAvatar}>
+                <Text style={styles.allyLocationInitial}>
+                  {location.name?.trim().slice(0, 1).toUpperCase() || "A"}
+                </Text>
+              </View>
+            </Marker>
+          ))}
           {visibleMarkers.map((marker) => (
             <Fragment key={marker.id}>
               {marker.radiusImpactMeters > 0 && (
@@ -1432,6 +1677,35 @@ export default function MapScreen() {
           )}
         </View>
       )}
+
+      <View style={styles.mapQuickActions}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setShareModalVisible(true)}
+          style={styles.shareLocationButton}
+        >
+          <Text style={styles.shareLocationText}>
+            {shareMode === "PRIVATE"
+              ? "Mode fantôme · Moi seul"
+              : shareMode === "ALLIES"
+                ? "Position partagée · Alliés"
+                : "Position partagée · Choisis"}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Recentrer la carte sur ma position"
+          accessibilityRole="button"
+          onPress={() => {
+            if (!userLocation) return;
+            const region = createRegion(userLocation, selectedScope);
+            setInitialRegion(region);
+            mapRef.current?.animateToRegion(region, 350);
+          }}
+          style={styles.recenterButton}
+        >
+          <MapPin color="#1d4ed8" size={19} />
+        </Pressable>
+      </View>
 
       <View style={styles.scopeBar}>
         <Pressable
@@ -1727,6 +2001,99 @@ export default function MapScreen() {
       )}
 
       <Modal
+        animationType="slide"
+        onRequestClose={() => setShareModalVisible(false)}
+        transparent
+        visible={shareModalVisible}
+      >
+        <View style={styles.shareBackdrop}>
+          <View style={styles.shareDialog}>
+            <Text style={styles.shareTitle}>Partager ma position</Text>
+            <Text style={styles.shareSubtitle}>
+              Vous gardez le contrôle. Seules les personnes autorisées voient votre position.
+            </Text>
+            {([
+              ["PRIVATE", "Mode fantôme · Moi seul"],
+              ["ALLIES", "Mes alliés"],
+              ["SELECTED", "Personnes choisies"],
+            ] as const).map(([mode, label]) => (
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ checked: shareMode === mode }}
+                key={mode}
+                onPress={() => setShareMode(mode)}
+                style={[styles.shareOption, shareMode === mode && styles.shareOptionSelected]}
+              >
+                <Text style={[styles.shareOptionText, shareMode === mode && styles.shareOptionTextSelected]}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+            {shareMode === "SELECTED" ? (
+              <ScrollView style={styles.allyPicker}>
+                {allies.length ? allies.map((ally) => {
+                  const selected = selectedAllyIds.includes(ally.id);
+                  return (
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: selected }}
+                      key={ally.id}
+                      onPress={() => setSelectedAllyIds((current) =>
+                        selected
+                          ? current.filter((id) => id !== ally.id)
+                          : [...current, ally.id],
+                      )}
+                      style={styles.allyOption}
+                    >
+                      <Text style={styles.allyOptionText}>{ally.name || "Allié"}</Text>
+                      <Text style={styles.allyOptionCheck}>{selected ? "✓" : "○"}</Text>
+                    </Pressable>
+                  );
+                }) : <Text style={styles.shareSubtitle}>Vous n’avez pas encore d’alliés.</Text>}
+              </ScrollView>
+            ) : null}
+            <Text style={styles.durationLabel}>DURÉE DU PARTAGE</Text>
+            <View style={styles.durationOptions}>
+              {([
+                [1, "1 h"],
+                [8, "8 h"],
+                [24, "24 h"],
+                [null, "Jusqu’à arrêt"],
+              ] as const).map(([duration, label]) => (
+                <Pressable
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: shareDuration === duration }}
+                  key={label}
+                  onPress={() => setShareDuration(duration)}
+                  style={[styles.durationOption, shareDuration === duration && styles.shareOptionSelected]}
+                >
+                  <Text style={[styles.durationText, shareDuration === duration && styles.shareOptionTextSelected]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void saveLocationSharing()}
+              style={styles.confirmShareButton}
+            >
+              <Text style={styles.confirmShareText}>
+                {shareMode === "PRIVATE" ? "Activer le mode fantôme" : "Partager ma position"}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setShareModalVisible(false)}
+              style={styles.cancelShareButton}
+            >
+              <Text style={styles.cancelShareText}>Annuler</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         animationType="fade"
         onRequestClose={() => setIsLayersVisible(false)}
         transparent
@@ -1966,6 +2333,93 @@ const styles = StyleSheet.create({
   map: {
     ...StyleSheet.absoluteFill,
   },
+  mapQuickActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    position: "absolute",
+    right: 14,
+    top: 360,
+  },
+  shareLocationButton: {
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderRadius: 18,
+    elevation: 4,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+  },
+  shareLocationText: { color: "#1e3a8a", fontSize: 11, fontWeight: "800" },
+  recenterButton: {
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+    borderRadius: 21,
+    elevation: 4,
+    height: 42,
+    justifyContent: "center",
+    width: 42,
+  },
+  myLocationAvatar: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderColor: "#ffffff",
+    borderRadius: 18,
+    borderWidth: 3,
+    elevation: 5,
+    height: 38,
+    justifyContent: "center",
+    width: 38,
+  },
+  myLocationInitial: { color: "#ffffff", fontSize: 14, fontWeight: "900" },
+  allyLocationAvatar: {
+    alignItems: "center",
+    backgroundColor: "#059669",
+    borderColor: "#ffffff",
+    borderRadius: 16,
+    borderWidth: 2,
+    elevation: 4,
+    height: 34,
+    justifyContent: "center",
+    width: 34,
+  },
+  allyLocationInitial: { color: "#ffffff", fontSize: 13, fontWeight: "900" },
+  shareBackdrop: {
+    backgroundColor: "rgba(15,23,42,0.48)",
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  shareDialog: {
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    gap: 9,
+    paddingBottom: 32,
+    paddingHorizontal: 20,
+    paddingTop: 24,
+  },
+  shareTitle: { color: "#0f172a", fontSize: 21, fontWeight: "900" },
+  shareSubtitle: { color: "#64748b", fontSize: 12, lineHeight: 18 },
+  shareOption: {
+    backgroundColor: "#f8fafc",
+    borderColor: "#e2e8f0",
+    borderRadius: 11,
+    borderWidth: 1,
+    padding: 12,
+  },
+  shareOptionSelected: { backgroundColor: "#eff6ff", borderColor: "#2563eb" },
+  shareOptionText: { color: "#334155", fontSize: 13, fontWeight: "700" },
+  shareOptionTextSelected: { color: "#1d4ed8" },
+  allyPicker: { maxHeight: 120 },
+  allyOption: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingVertical: 9 },
+  allyOptionText: { color: "#334155", fontSize: 13 },
+  allyOptionCheck: { color: "#2563eb", fontSize: 18, fontWeight: "800" },
+  durationLabel: { color: "#64748b", fontSize: 10, fontWeight: "800", marginTop: 5 },
+  durationOptions: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  durationOption: { backgroundColor: "#f8fafc", borderColor: "#e2e8f0", borderRadius: 9, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 8 },
+  durationText: { color: "#334155", fontSize: 11, fontWeight: "700" },
+  confirmShareButton: { alignItems: "center", backgroundColor: "#1d4ed8", borderRadius: 11, marginTop: 6, padding: 13 },
+  confirmShareText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
+  cancelShareButton: { alignItems: "center", padding: 8 },
+  cancelShareText: { color: "#475569", fontSize: 12, fontWeight: "700" },
   mapLoading: {
     ...StyleSheet.absoluteFill,
     alignItems: "center",

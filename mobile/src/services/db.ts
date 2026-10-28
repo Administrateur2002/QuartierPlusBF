@@ -2,7 +2,11 @@ import * as SQLite from "expo-sqlite";
 import { getSharedDatabase, initializeSharedDatabase } from "./database";
 
 export type QueueStatus = "pending" | "processing" | "failed";
-export type SyncActionType = "create_post" | "trigger_sos";
+export type SyncActionType =
+  | "create_post"
+  | "trigger_sos"
+  | "toggle_post_like"
+  | "create_post_comment";
 export type SyncAction = {
   id: number;
   ownerId?: string;

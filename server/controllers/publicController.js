@@ -107,6 +107,19 @@ export const listPublicMarketplace = async (_request, response, next) => {
               item.item_type,
               item.price_fcfa AS price, item.price_fcfa = 0 AS is_free,
               item.country_of_origin, item.created_at, user_profile.neighborhood,
+              user_profile.id AS seller_id,
+              CASE WHEN $8::uuid IS NULL THEN FALSE ELSE EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = $8 AND alliance.recipient_id = user_profile.id)
+                    OR (alliance.recipient_id = $8 AND alliance.requester_id = user_profile.id))
+              ) END AS seller_is_ally,
+              CASE WHEN $8::uuid IS NULL THEN FALSE ELSE EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'PENDING'
+                  AND alliance.requester_id = $8
+                  AND alliance.recipient_id = user_profile.id
+              ) END AS seller_alliance_pending,
               user_profile.full_name AS seller_name,
               user_profile.phone_number AS seller_phone,
               item.whatsapp_phone, item.image_urls[1] AS image_url
@@ -151,6 +164,7 @@ export const listPublicMarketplace = async (_request, response, next) => {
         requestedCategory === "SERVICE" || requestedCategory === "MADE_IN"
           ? null
           : requestedCategory,
+        _request.auth?.userId ?? null,
       ],
     );
     return response.status(200).json({ items: result.rows });

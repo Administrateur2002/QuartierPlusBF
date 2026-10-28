@@ -11,6 +11,7 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 import mapRoutes from "./routes/mapRoutes.js";
 import marketplaceRoutes from "./routes/marketplaceRoutes.js";
 import postsRoutes from "./routes/postsRoutes.js";
+import socialRoutes from "./routes/socialRoutes.js";
 import proRoutes from "./routes/proRoutes.js";
 import publicRoutes from "./routes/publicRoutes.js";
 import publicMapRoutes from "./routes/publicMapRoutes.js";
@@ -48,6 +49,7 @@ app.get(
 app.use(["/api/v1/public", "/v1/public"], publicRoutes);
 app.use(["/api/v1/public/map", "/v1/public/map"], publicMapRoutes);
 app.use(["/api/v1", "/v1"], postsRoutes);
+app.use(["/api/v1/social", "/v1/social"], socialRoutes);
 app.use(["/api/v1/sos", "/v1/sos"], sosRoutes);
 app.use(["/api/v1/sos", "/v1/sos"], restSosRoutes);
 app.use(["/api/v1/auth", "/v1/auth"], authRoutes);
