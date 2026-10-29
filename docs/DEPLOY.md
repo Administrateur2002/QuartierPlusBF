@@ -253,3 +253,25 @@ ne doivent pas contenir de secrets serveur.
 Les nouveaux modules natifs `expo-video`, `expo-media-library` et Sentry
 nécessitent un nouveau build APK/AAB avant leur utilisation; FlashList et
 `expo-image` seuls ne nécessitent pas de changement serveur.
+
+## Builds APK Android preview
+
+Le workflow `.github/workflows/build-apk.yml` construit deux APK release sans
+client de développement : `arm64-v8a` et `armeabi-v7a`. R8/ProGuard et la
+réduction des ressources sont activés par défaut; Hermes est le moteur JS et
+les bibliothèques natives sont empaquetées compressées. Pour désactiver
+temporairement les deux optimisations après un crash, définissez
+`EXPO_ANDROID_MINIFY=false` dans **EAS > Project > Environment variables** pour
+l'environnement `preview`, puis relancez le workflow; supprimez la variable
+pour rétablir les valeurs par défaut. Les règles ProGuard conservent LiveKit,
+WebRTC, Firebase, SQLite, Sentry et Reanimated; tester chaque parcours natif
+reste nécessaire, car le code invoqué par réflexion ou JNI peut être supprimé
+par R8. Un APK par architecture évite d'inclure les bibliothèques x86 et réduit
+la taille de téléchargement, au prix d'un artefact distinct par appareil.
+Le nettoyage retire `expo-auth-session`, non référencé dans le code; aucune
+police ou autre image inutilisée n'a été trouvée. L'icône du billet QR utilise
+une vignette WebP de 1,5 Ko au lieu du PNG de 414 Ko; les PNG des icônes
+d'installation restent requis.
+Le résumé GitHub Actions publie la taille réelle, le top 10 des entrées APK et
+vérifie l'ABI ainsi que la compression des `.so`; aucune taille release exacte
+n'est connue avant une exécution EAS réussie.

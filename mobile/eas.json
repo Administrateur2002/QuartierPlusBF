@@ -8,8 +8,24 @@
       "distribution": "internal",
       "channel": "preview",
       "environment": "preview",
+      "developmentClient": false,
+      "env": {
+        "EXPO_ANDROID_BUILD_ARCHS": "arm64-v8a"
+      },
       "android": {
         "buildType": "apk"
+      }
+    },
+    "preview-arm64": {
+      "extends": "preview",
+      "env": {
+        "EXPO_ANDROID_BUILD_ARCHS": "arm64-v8a"
+      }
+    },
+    "preview-armv7": {
+      "extends": "preview",
+      "env": {
+        "EXPO_ANDROID_BUILD_ARCHS": "armeabi-v7a"
       }
     }
   }

@@ -11,6 +11,7 @@
     },
     "version": "1.0.0",
     "scheme": "quartierplus",
+    "jsEngine": "hermes",
     "ios": {
       "infoPlist": {
         "LSApplicationQueriesSchemes": [

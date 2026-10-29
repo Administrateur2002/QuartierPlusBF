@@ -232,7 +232,7 @@ export default function VoyageHomeScreen() {
           <Text style={styles.detail}>{ticket.company_name} · {ticket.traveler_name}</Text>
           <Text style={styles.detail}>{new Date(ticket.departure_at).toLocaleString("fr-FR")} · Siège {ticket.seat_number}</Text>
           <Text style={styles.detail}>{Number(ticket.price).toLocaleString("fr-FR")} FCFA · expire {new Date(ticket.expires_at).toLocaleString("fr-FR")}</Text>
-          {ticket.status === "VALID" && <View style={styles.qr}><QRCode value={ticket.qr_payload} size={190} ecl="H" logo={require("../../../assets/icon.png")} logoSize={30} logoBackgroundColor="#ffffff" quietZone={10} /><Text style={styles.code}>Code secours : {ticket.short_code}</Text></View>}
+          {ticket.status === "VALID" && <View style={styles.qr}><QRCode value={ticket.qr_payload} size={190} ecl="H" logo={require("../../../assets/icon-small.webp")} logoSize={30} logoBackgroundColor="#ffffff" quietZone={10} /><Text style={styles.code}>Code secours : {ticket.short_code}</Text></View>}
         </View>
       ))}
     </ScrollView>

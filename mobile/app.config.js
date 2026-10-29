@@ -19,6 +19,26 @@ const googleSignInPlugin = iosGoogleClientMatch
     ]
   : null;
 
+const androidMinify =
+  process.env.EXPO_ANDROID_MINIFY?.trim().toLowerCase() !== "false";
+const androidBuildArchs = (
+  process.env.EXPO_ANDROID_BUILD_ARCHS ?? "arm64-v8a,armeabi-v7a"
+)
+  .split(",")
+  .map((architecture) => architecture.trim())
+  .filter(Boolean);
+const supportedAndroidArchitectures = new Set(["arm64-v8a", "armeabi-v7a"]);
+if (
+  androidBuildArchs.length === 0 ||
+  androidBuildArchs.some(
+    (architecture) => !supportedAndroidArchitectures.has(architecture),
+  )
+) {
+  throw new Error(
+    "EXPO_ANDROID_BUILD_ARCHS doit contenir arm64-v8a et/ou armeabi-v7a.",
+  );
+}
+
 module.exports = ({ config }) => ({
   ...config,
   android: {
@@ -76,5 +96,28 @@ module.exports = ({ config }) => ({
           : plugin,
     ),
     ...(googleSignInPlugin ? [googleSignInPlugin] : []),
+    [
+      "expo-build-properties",
+      {
+        android: {
+          buildArchs: androidBuildArchs,
+          enableMinifyInReleaseBuilds: androidMinify,
+          enableShrinkResourcesInReleaseBuilds: androidMinify,
+          useLegacyPackaging: true,
+          extraProguardRules: `
+-keep class io.livekit.android.** { *; }
+-keep class io.livekit.reactnative.** { *; }
+-keep class org.webrtc.** { *; }
+-keep class com.oney.WebRTCModule.** { *; }
+-keep class com.google.firebase.FirebaseApp
+-keep class com.google.firebase.crashlytics.** { *; }
+-keep class expo.modules.sqlite.** { *; }
+-keep class io.sentry.** { *; }
+-keep class com.swmansion.reanimated.** { *; }
+-keep class com.swmansion.worklets.** { *; }
+`,
+        },
+      },
+    ],
   ],
 });

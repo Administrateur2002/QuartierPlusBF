@@ -10,14 +10,14 @@ jobs:
   build:
     permissions:
       contents: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
     concurrency:
       group: build-android-preview-apk-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - name: 🏗 Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Restore Firebase Android configuration
         env:
@@ -26,9 +26,9 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require("node:fs");
-          const encoded = process.env.GOOGLE_SERVICES_JSON_B64;
+          const encoded = process.env.GOOGLE_SERVICES_JSON_B64?.trim();
           const raw = encoded
-            ? Buffer.from(encoded, "base64").toString("utf8")
+            ? Buffer.from(encoded.replace(/\s+/g, ""), "base64").toString("utf8")
             : process.env.GOOGLE_SERVICES_JSON;
           if (!raw) {
             console.error("::error::Les secrets GOOGLE_SERVICES_JSON et GOOGLE_SERVICES_JSON_B64 sont absents.");
@@ -37,63 +37,66 @@ jobs:
 
           const hadBom = raw.includes("\uFEFF");
           const hadTypographicQuotes = /[\u2018\u2019\u201C\u201D]/.test(raw);
-          const hasTranslatedProjectKey = /["“”]?numéro_de_projet["“”]?\s*:/.test(raw);
-          let contents = raw.trim().replace(/^\uFEFF/, "").trim();
-          const enclosingQuotes = new Map([
-            ['"', '"'],
-            ["'", "'"],
-            ["“", "”"],
-            ["‘", "’"],
-          ]);
-          while (contents.length >= 2 && enclosingQuotes.get(contents[0]) === contents.at(-1)) {
+          let contents = raw.replace(/\r\n?/g, "\n").replace(/^\uFEFF+/, "").trim();
+          const enclosingQuotes = new Map([['"', '"'], ["'", "'"], ["“", "”"], ["‘", "’"]]);
+          while (
+            contents.length >= 2 &&
+            enclosingQuotes.get(contents[0]) === contents.at(-1)
+          ) {
             contents = contents.slice(1, -1).trim();
           }
+          contents = contents.replace(/[“”‘’]/g, '"');
 
           try {
             JSON.parse(contents);
           } catch (error) {
             const positionMatch = error.message.match(/position\s+(\d+)/i);
             const lineColumnMatch = error.message.match(/line\s+(\d+)\s+column\s+(\d+)/i);
-            let position = positionMatch?.[1];
-            if (!position && lineColumnMatch) {
-              const lines = contents.split(/\r\n|\r|\n/);
-              position = (
-                lines.slice(0, Number(lineColumnMatch[1]) - 1).reduce((total, line) => total + line.length + 1, 0) +
-                Number(lineColumnMatch[2]) - 1
-              );
-            }
-            if (position === undefined) {
-              let low = 0;
-              let high = contents.length;
-              while (low < high) {
-                const middle = Math.floor((low + high) / 2);
-                const prefix = contents.slice(0, middle + 1);
-                let invalidBeforeEnd = false;
-                try {
-                  JSON.parse(prefix);
-                } catch (prefixError) {
-                  const message = prefixError.message;
-                  const prefixPosition = message.match(/position\s+(\d+)/i)?.[1];
-                  invalidBeforeEnd = !/Unexpected end of JSON input/i.test(message) &&
-                    (prefixPosition === undefined || Number(prefixPosition) < prefix.length);
-                }
-                if (invalidBeforeEnd) {
-                  high = middle;
-                } else {
-                  low = middle + 1;
-                }
-              }
-              position = String(low);
-            }
-            const first = contents[0];
-            const last = contents.at(-1);
-            const braceOnly = (character) => character === "{" || character === "}" ? character : "autre";
-            const parserMessage = /Unexpected token/i.test(error.message)
-              ? "Unexpected token [contenu masqué]"
-              : error.message;
+            const frenchKeys = [
+              ["project_number", "numéro_de_projet"],
+              ["project_id", "identifiant_du_projet"],
+              ["firebase_url", "url_firebase"],
+              ["storage_bucket", "compartiment_de_stockage"],
+              ["package_name", "nom_du_package"],
+              ["mobilesdk_app_id", "identifiant_application_mobile_sdk"],
+              ["client_id", "identifiant_client"],
+              ["current_key", "clé_api"],
+              ["oauth_client", "clients_oauth"],
+            ];
+            const presentKeys = frenchKeys
+              .filter(([key]) => new RegExp(`["']?${key}["']?\\s*:`).test(contents))
+              .map(([, label]) => label);
+            const describeCharacter = (character) => {
+              const labels = new Map([
+                ["{", "accolade_ouvrante"],
+                ["}", "accolade_fermante"],
+                ["[", "crochet_ouvrant"],
+                ["]", "crochet_fermant"],
+                ['"', "guillemet_double"],
+                ["'", "apostrophe"],
+                [" ", "espace"],
+                ["\n", "retour_ligne"],
+                ["\t", "tabulation"],
+                ["\uFEFF", "BOM"],
+              ]);
+              return character
+                ? `${labels.get(character) ?? "autre"} (U+${character.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")})`
+                : "vide";
+            };
+            const position = positionMatch?.[1] ??
+              (lineColumnMatch
+                ? String(
+                    contents
+                      .split(/\r\n|\r|\n/)
+                      .slice(0, Number(lineColumnMatch[1]) - 1)
+                      .reduce((total, line) => total + line.length + 1, 0) +
+                      Number(lineColumnMatch[2]) -
+                      1,
+                  )
+                : "indisponible");
             console.error("::error::Le secret de configuration Firebase Android n’est pas un JSON valide.");
-            console.error(`Diagnostic sans contenu : longueur=${contents.length} caractères, lignes=${contents.split(/\r\n|\r|\n/).length}, premier=${braceOnly(first)}, dernier=${braceOnly(last)}, BOM=${hadBom ? "oui" : "non"}, guillemets_typographiques=${hadTypographicQuotes ? "oui" : "non"}, clé_numéro_de_projet=${hasTranslatedProjectKey ? "oui" : "non"}.`);
-            console.error(`Message du parseur : ${parserMessage} (position ${position}; détails textuels masqués si nécessaire).`);
+            console.error(`Diagnostic sans contenu : longueur_brute=${raw.length}, longueur_normalisée=${contents.length}, premier_caractère=${describeCharacter(raw[0])}, dernier_caractère=${describeCharacter(raw.at(-1))}, BOM=${hadBom ? "oui" : "non"}, guillemets_typographiques=${hadTypographicQuotes ? "oui" : "non"}, clés_reconnues=${presentKeys.length ? presentKeys.join(",") : "aucune"}.`);
+            console.error(`Erreur de syntaxe JSON (position ${position}; texte du parseur masqué).`);
             process.exit(1);
           }
           fs.writeFileSync("mobile/google-services.json", contents, { mode: 0o600 });
@@ -233,9 +236,9 @@ jobs:
           exit 1
 
       - name: 🟢 Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
@@ -342,7 +345,7 @@ jobs:
           npx expo prebuild --clean --platform android
 
       - name: Configure Expo and EAS CLI
-        uses: expo/expo-github-action@v8
+        uses: expo/expo-github-action@v9
         with:
           eas-version: latest
           packager: npm
@@ -378,8 +381,15 @@ jobs:
           if [ -n "$APP_EAS_PROJECT_ID" ]; then
             export EXPO_PUBLIC_EAS_PROJECT_ID="$APP_EAS_PROJECT_ID"
           fi
-          BUILD_JSON="$(eas build --platform android --profile preview --non-interactive --wait --json)"
-          BUILD_URL="$(BUILD_JSON="$BUILD_JSON" node <<'NODE'
+          mkdir -p artifacts
+          for architecture in arm64-v8a armeabi-v7a; do
+            if [ "$architecture" = "arm64-v8a" ]; then
+              profile="preview-arm64"
+            else
+              profile="preview-armv7"
+            fi
+            BUILD_JSON="$(eas build --platform android --profile "$profile" --non-interactive --wait --json)"
+            BUILD_URL="$(BUILD_JSON="$BUILD_JSON" node <<'NODE'
           const result = JSON.parse(process.env.BUILD_JSON);
           const builds = Array.isArray(result) ? result : [result];
           const build = [...builds].reverse().find((item) => item?.artifacts?.buildUrl);
@@ -390,23 +400,62 @@ jobs:
           }
           process.stdout.write(url);
           NODE
-          )"
-          printf 'EAS build: %s\n' "$BUILD_URL" >> "$GITHUB_STEP_SUMMARY"
-          printf 'build_url=%s\n' "$BUILD_URL" >> "$GITHUB_OUTPUT"
-          mkdir -p artifacts
-          curl --fail --location --retry 3 --output artifacts/quartierplus-preview.apk "$BUILD_URL"
-          test -s artifacts/quartierplus-preview.apk
+            )"
+            apk="artifacts/quartierplus-preview-${architecture}.apk"
+            printf 'EAS build %s: %s\n' "$architecture" "$BUILD_URL" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$architecture" = "arm64-v8a" ]; then
+              output_architecture="arm64"
+              other_architecture="armeabi-v7a"
+            else
+              output_architecture="armv7"
+              other_architecture="arm64-v8a"
+            fi
+            printf 'build_url_%s=%s\n' "$output_architecture" "$BUILD_URL" >> "$GITHUB_OUTPUT"
+            curl --fail --location --retry 3 --output "$apk" "$BUILD_URL"
+            test -s "$apk"
+            size="$(stat -c '%s' "$apk")"
+            if ! unzip -Z1 "$apk" | grep -q "^lib/${architecture}/"; then
+              echo "::error::L’APK $architecture ne contient pas ses bibliothèques natives."
+              exit 1
+            fi
+            if unzip -Z1 "$apk" | grep -Eq "^lib/(x86|x86_64|${other_architecture})/"; then
+              echo "::error::L’APK $architecture contient une architecture native inattendue."
+              exit 1
+            fi
+            if unzip -lv "$apk" | awk '$NF ~ /\.so$/ && $2 !~ /^Defl/ { uncompressed = 1 } END { exit uncompressed ? 0 : 1 }'; then
+              echo "::error::Une bibliothèque native de $apk n’est pas compressée."
+              exit 1
+            fi
+            if [ "$size" -gt 52428800 ]; then
+              echo "::warning::L’APK $architecture dépasse l’objectif de 50 Mo (${size} octets)."
+            fi
+          done
+
+          printf '\n## Taille APK et 10 plus gros éléments\n\n' >> "$GITHUB_STEP_SUMMARY"
+          for architecture in arm64-v8a armeabi-v7a; do
+            apk="artifacts/quartierplus-preview-${architecture}.apk"
+            size="$(stat -c '%s' "$apk")"
+            printf '### %s — %.1f Mo\n\n' "$architecture" "$(awk -v bytes="$size" 'BEGIN { print bytes / 1048576 }')" >> "$GITHUB_STEP_SUMMARY"
+            printf '| Taille (Mo) |\n|---:|\n| %.1f |\n\n' \
+              "$(awk -v bytes="$size" 'BEGIN { print bytes / 1048576 }')" >> "$GITHUB_STEP_SUMMARY"
+            printf '| Élément | Taille décompressée (Mo) |\n|---|---:|\n' >> "$GITHUB_STEP_SUMMARY"
+            unzip -l "$apk" | awk 'NR > 3 && $1 ~ /^[0-9]+$/ { printf "%s\t%s\n", $1, $4 }' | sort -nr | head -10 | \
+              awk -F '\t' '{ printf "| `%s` | %.2f |\n", $2, $1 / 1048576 }' >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Publish preview APK GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          EAS_BUILD_URL: ${{ steps.eas-build.outputs.build_url }}
+          EAS_BUILD_URL_ARM64: ${{ steps.eas-build.outputs.build_url_arm64 }}
+          EAS_BUILD_URL_ARMV7: ${{ steps.eas-build.outputs.build_url_armv7 }}
         run: |
           RELEASE_TAG="quartierplus-preview-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           gh release create "$RELEASE_TAG" \
-            mobile/artifacts/quartierplus-preview.apk \
+            mobile/artifacts/quartierplus-preview-arm64-v8a.apk \
+            mobile/artifacts/quartierplus-preview-armeabi-v7a.apk \
             --title "QuartierPlus Android preview ${GITHUB_RUN_NUMBER}" \
-            --notes "Build EAS: ${EAS_BUILD_URL}" \
+            --notes "APK arm64-v8a — build EAS : ${EAS_BUILD_URL_ARM64} ; APK armeabi-v7a — build EAS : ${EAS_BUILD_URL_ARMV7}" \
             --prerelease
           printf 'GitHub Release: https://github.com/%s/releases/tag/%s\n' \
             "$GITHUB_REPOSITORY" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
