@@ -19,13 +19,15 @@
     "preview-arm64": {
       "extends": "preview",
       "env": {
-        "EXPO_ANDROID_BUILD_ARCHS": "arm64-v8a"
+        "EXPO_ANDROID_BUILD_ARCHS": "arm64-v8a",
+        "EXPO_ANDROID_MINIFY": "false"
       }
     },
     "preview-armv7": {
       "extends": "preview",
       "env": {
-        "EXPO_ANDROID_BUILD_ARCHS": "armeabi-v7a"
+        "EXPO_ANDROID_BUILD_ARCHS": "armeabi-v7a",
+        "EXPO_ANDROID_MINIFY": "false"
       }
     }
   }
