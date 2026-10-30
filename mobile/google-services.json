@@ -7,19 +7,38 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:682615405169:android:412d0235ec8e42166ff9d0",
+        "mobilesdk_app_id": "1:682615405169:android:d5c6a2c19689809e6ff9d0",
         "android_client_info": {
           "package_name": "com.administrateur.quartierplus"
         }
       },
+      "oauth_client": [
+        {
+          "client_id": "682615405169-cm29frlggbhecmtof7vlgcpgpjvtpt9g.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.administrateur.quartierplus",
+            "certificate_hash": "efa08c7c8f4139a67323f5ef1220a9dbbf8a442c"
+          }
+        },
+        {
+          "client_id": "682615405169-7r4drnav40j08cdnolkgbsvfbmnb74t3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
-          "current_key": "AIzaSyDO776Yy8ZTTi1PAH95I7dYQ7LdDYHxNMc"
+          "current_key": "AIzaSyDJBeq0cUKVA2i2YHlY8ebAxZZC5tprKOw"
         }
       ],
       "services": {
-        "appanalytics_service": {
-          "status": 2
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "682615405169-7r4drnav40j08cdnolkgbsvfbmnb74t3.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
