@@ -444,6 +444,113 @@ jobs:
             printf '\n' >> "$GITHUB_STEP_SUMMARY"
           done
 
+      - name: Diagnose failed EAS build
+        if: ${{ failure() && steps.eas-build.outcome == 'failure' }}
+        continue-on-error: true
+        working-directory: mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "EAS log diagnostic unavailable: EXPO_TOKEN is not configured." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          if ! npx eas-cli build:list --platform android --git-commit-hash "$GITHUB_SHA" --limit 10 --json > "$temp_dir/builds.json" 2>/dev/null; then
+            echo "EAS log diagnostic unavailable: build:list failed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          build_id="$(node - "$temp_dir/builds.json" <<'NODE'
+          const fs = require("node:fs");
+          try {
+            const builds = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+            const failed = (Array.isArray(builds) ? builds : [])
+              .find((build) =>
+                build.platform === "ANDROID" &&
+                String(build.status).toLowerCase() === "errored"
+              );
+            if (failed?.id) process.stdout.write(failed.id);
+          } catch {
+            console.error("EAS build:list returned invalid JSON.");
+          }
+          NODE
+          )"
+          if [ -z "$build_id" ]; then
+            echo "EAS log diagnostic unavailable: no failed Android build found for this commit." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! npx eas-cli build:view "$build_id" --json > "$temp_dir/build.json" 2>/dev/null; then
+            echo "EAS log diagnostic unavailable: build:view failed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          node - "$temp_dir/build.json" "$temp_dir" <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { spawnSync } = require("node:child_process");
+
+          const maxLogBytes = 20 * 1024 * 1024;
+          let build;
+          try {
+            build = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          } catch {
+            console.log("EAS log diagnostic unavailable: build:view returned invalid JSON.");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, "EAS log diagnostic unavailable: build:view returned invalid JSON.\n");
+            process.exit(0);
+          }
+
+          const excerpts = [];
+          let downloadedLogs = 0;
+          let downloadFailures = 0;
+          for (const [index, url] of (Array.isArray(build.logFiles) ? build.logFiles : []).slice(0, 5).entries()) {
+            if (typeof url !== "string" || !url.startsWith("https://")) continue;
+            const logfile = path.join(process.argv[3], `build-${index}.log`);
+            const download = spawnSync("curl", [
+              "--fail", "--silent", "--show-error", "--location",
+              "--proto", "=https", "--proto-redir", "=https",
+              "--max-filesize", String(maxLogBytes), "--output", logfile, url,
+            ], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+            if (download.status !== 0) {
+              downloadFailures++;
+              continue;
+            }
+            downloadedLogs++;
+
+            const lines = fs.readFileSync(logfile, "utf8").split(/\r?\n/);
+            const selected = new Set();
+            for (let i = 0; i < lines.length; i++) {
+              if (!/(what went wrong|execution failed for task|\bFAILED\b|error:)/i.test(lines[i])) continue;
+              for (let j = Math.max(0, i - 20); j <= Math.min(lines.length - 1, i + 20); j++) {
+                selected.add(j);
+              }
+            }
+            const excerptsForLog = [...selected].sort((a, b) => a - b).slice(0, 160).map((line) => {
+              let text = lines[line]
+                .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
+                .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, "[REDACTED_API_KEY]")
+                .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_TOKEN]")
+                .replace(/(([a-z0-9_-]*(?:api[_-]?key|token|secret|password)|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1[REDACTED]");
+              return `${line + 1}: ${text}`;
+            });
+            if (excerptsForLog.length) excerpts.push(...excerptsForLog);
+          }
+
+          const header = `EAS build ${build.id ?? "unknown"} diagnostic excerpts (±20 lines; capped):`;
+          const body = excerpts.length
+            ? excerpts.slice(0, 200).join("\n")
+            : downloadedLogs
+              ? "No matching failure markers found in downloaded logs."
+              : `No build logs downloaded (${downloadFailures} download failures; ${Array.isArray(build.logFiles) ? build.logFiles.length : 0} log URLs reported).`;
+          const output = `${header}\n${body}`.slice(0, 12000);
+          for (const line of output.split("\n")) console.log(`| ${line}`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n### EAS build failure diagnostic\n\n\`\`\`text\n${output}\n\`\`\`\n`);
+          NODE
+
       - name: Publish preview APK GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
