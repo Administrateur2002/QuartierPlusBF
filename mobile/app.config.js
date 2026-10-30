@@ -112,7 +112,6 @@ module.exports = ({ config }) => ({
 -keep class com.google.firebase.FirebaseApp
 -keep class com.google.firebase.crashlytics.** { *; }
 -keep class expo.modules.sqlite.** { *; }
--keep class io.sentry.** { *; }
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.swmansion.worklets.** { *; }
 `,

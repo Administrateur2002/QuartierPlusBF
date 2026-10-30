@@ -32,7 +32,6 @@
     "plugins": [
       "@react-native-firebase/app",
       "@react-native-firebase/crashlytics",
-      "@sentry/react-native",
       [
         "react-native-maps",
         {

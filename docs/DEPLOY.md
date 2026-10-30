@@ -233,10 +233,6 @@ privées à la commande et supprimées 30 jours après livraison.
 5. Pour le workflow GitHub de génération APK, ajoutez aussi cette URL dans
    **Settings → Secrets and variables → Actions** sous le nom
    `EXPO_PUBLIC_API_URL`, puis relancez le workflow de build Android.
-   6. `EXPO_PUBLIC_SENTRY_DSN` est facultative. Sans cette variable, l'envoi vers
-      Sentry reste désactivé; si elle est renseignée au build mobile, le SDK
-      s'initialise sans collecte de données personnelles. Les erreurs de démarrage
-      transmises explicitement sont expurgées.
 
 Le workflow `.github/workflows/render-keepalive.yml` vérifie l'endpoint
 `/health` de l'API toutes les 10 minutes et peut aussi être lancé manuellement.
@@ -250,8 +246,8 @@ pas que Render maintiendra le service éveillé.
 variable à mettre sur le service backend Render. Les valeurs `EXPO_PUBLIC_*`
 ne doivent pas contenir de secrets serveur.
 
-Les nouveaux modules natifs `expo-video`, `expo-media-library` et Sentry
-nécessitent un nouveau build APK/AAB avant leur utilisation; FlashList et
+Les nouveaux modules natifs `expo-video` et `expo-media-library` nécessitent un
+nouveau build APK/AAB avant leur utilisation; FlashList et
 `expo-image` seuls ne nécessitent pas de changement serveur.
 
 ## Builds APK Android preview
@@ -264,7 +260,7 @@ temporairement les deux optimisations après un crash, définissez
 `EXPO_ANDROID_MINIFY=false` dans **EAS > Project > Environment variables** pour
 l'environnement `preview`, puis relancez le workflow; supprimez la variable
 pour rétablir les valeurs par défaut. Les règles ProGuard conservent LiveKit,
-WebRTC, Firebase, SQLite, Sentry et Reanimated; tester chaque parcours natif
+WebRTC, Firebase, SQLite et Reanimated; tester chaque parcours natif
 reste nécessaire, car le code invoqué par réflexion ou JNI peut être supprimé
 par R8. Un APK par architecture évite d'inclure les bibliothèques x86 et réduit
 la taille de téléchargement, au prix d'un artefact distinct par appareil.

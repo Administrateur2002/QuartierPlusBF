@@ -6,23 +6,15 @@ import {
   type ErrorInfo,
   type PropsWithChildren,
 } from "react";
-import * as Sentry from "@sentry/react-native";
 import OnboardingGate from "../components/OnboardingGate";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { captureError } from "../lib/crashReporting";
 import {
   setCrashlyticsAvailability,
   setFirebaseAvailability,
 } from "./technicalStatus";
 
 const startupApiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, "");
-const sentryDsn = process.env.EXPO_PUBLIC_SENTRY_DSN?.trim();
-if (sentryDsn) {
-  try {
-    Sentry.init({ dsn: sentryDsn, enabled: true, sendDefaultPii: false });
-  } catch (error) {
-    console.error("Sentry n'a pas pu être initialisé:", error);
-  }
-}
 
 type StartupState =
   | { status: "loading" }
@@ -62,13 +54,7 @@ const recordSanitizedError = (
   message: string,
   crashlyticsClient: CrashlyticsClient | null,
 ) => {
-  if (sentryDsn) {
-    try {
-      Sentry.captureException(new Error(message));
-    } catch (error) {
-      console.error("Sentry n'a pas pu enregistrer l'erreur de démarrage:", error);
-    }
-  }
+  captureError(new Error(message));
   if (!crashlyticsClient) return;
   try {
     crashlyticsClient.recordError(new Error(message));
