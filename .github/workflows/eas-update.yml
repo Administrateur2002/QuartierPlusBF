@@ -120,6 +120,8 @@ jobs:
         working-directory: mobile
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
           EXPO_PUBLIC_FIREBASE_API_KEY: ${{ vars.EXPO_PUBLIC_FIREBASE_API_KEY || secrets.EXPO_PUBLIC_FIREBASE_API_KEY }}
           EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || secrets.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN }}
           EXPO_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_PROJECT_ID || secrets.EXPO_PUBLIC_FIREBASE_PROJECT_ID }}
@@ -136,6 +138,37 @@ jobs:
           UPDATE_MESSAGE: ${{ inputs.message || format('Manual EAS update from {0}', github.sha) }}
         run: |
           npm ci
+          GOOGLE_SERVICES_FILE="./google-services.json"
+          trap 'rm -f "$GOOGLE_SERVICES_FILE"' EXIT
+          node <<'NODE'
+          const fs = require("node:fs");
+          const encoded = process.env.GOOGLE_SERVICES_JSON_B64?.trim();
+          const raw = encoded
+            ? Buffer.from(encoded.replace(/\s+/g, ""), "base64").toString("utf8")
+            : process.env.GOOGLE_SERVICES_JSON;
+          if (!raw) {
+            console.error("::error::Les secrets GOOGLE_SERVICES_JSON et GOOGLE_SERVICES_JSON_B64 sont absents; impossible de comparer l’empreinte native.");
+            process.exit(1);
+          }
+          let contents = raw.replace(/\r\n?/g, "\n").replace(/^\uFEFF+/, "").trim();
+          const enclosingQuotes = new Map([['"', '"'], ["'", "'"], ["“", "”"], ["‘", "’"]]);
+          while (
+            contents.length >= 2 &&
+            enclosingQuotes.get(contents[0]) === contents.at(-1)
+          ) {
+            contents = contents.slice(1, -1).trim();
+          }
+          contents = contents.replace(/[“”‘’]/g, '"');
+          try {
+            JSON.parse(contents);
+          } catch {
+            console.error("::error::La configuration Google Services n’est pas un JSON valide; impossible de comparer l’empreinte native.");
+            process.exit(1);
+          }
+          fs.writeFileSync("./google-services.json", contents);
+          NODE
+          unset GOOGLE_SERVICES_JSON GOOGLE_SERVICES_JSON_B64
+
           if [ -n "$GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" ]; then
             if [[ "$GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" =~ ^[0-9]+-[a-zA-Z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
               export EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID="$GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID"
@@ -151,6 +184,44 @@ jobs:
           else
             export EXPO_PUBLIC_EAS_PROJECT_ID="$GITHUB_EXPO_PUBLIC_EAS_PROJECT_ID"
           fi
+
+          for profile in preview-arm64 preview-armv7; do
+            if [ "$profile" = "preview-arm64" ]; then
+              architecture="arm64-v8a"
+            else
+              architecture="armeabi-v7a"
+            fi
+            BUILD_LIST="$(eas build:list --platform android --status finished --build-profile "$profile" --limit 1 --json --non-interactive)"
+            BUILD_METADATA="$(BUILD_LIST="$BUILD_LIST" node -e '
+              try {
+                const builds = JSON.parse(process.env.BUILD_LIST);
+                const build = (Array.isArray(builds) ? builds : [builds])[0];
+                if (!build?.fingerprint?.hash || !build?.gitCommitHash) throw new Error();
+                process.stdout.write(`${build.fingerprint.hash}\n${build.gitCommitHash}`);
+              } catch {
+                console.error(`::error::Empreinte native absente pour ${process.argv[1]}; impossible de garantir la compatibilité OTA. Lancez manuellement « Build Android Preview APK ».`);
+                process.exit(1);
+              }
+            ' "$profile")"
+            BASELINE_FINGERPRINT="${BUILD_METADATA%%$'\n'*}"
+            EXPO_PUBLIC_GIT_SHA="${BUILD_METADATA#*$'\n'}"
+            export EXPO_PUBLIC_GIT_SHA
+            CURRENT_FINGERPRINT="$(EXPO_ANDROID_BUILD_ARCHS="$architecture" EXPO_ANDROID_MINIFY=false node <<'NODE'
+          const { createFingerprintAsync } = require("@expo/fingerprint");
+          createFingerprintAsync(process.cwd(), { platforms: ["android"], silent: true })
+            .then(({ hash }) => process.stdout.write(hash))
+            .catch((error) => {
+              console.error("::error::Impossible de calculer l’empreinte native Android actuelle.", error);
+              process.exitCode = 1;
+            });
+          NODE
+          )"
+            if [ "$BASELINE_FINGERPRINT" != "$CURRENT_FINGERPRINT" ]; then
+              echo "::error::Les dépendances natives, plugins, permissions ou la configuration Android diffèrent du dernier APK ($profile). Une mise à jour OTA ne suffit pas : lancez manuellement le workflow « Build Android Preview APK », puis relancez EAS Update."
+              exit 1
+            fi
+          done
+
           eas update \
             --branch preview \
             --environment preview \

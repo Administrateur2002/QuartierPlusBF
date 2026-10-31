@@ -17,6 +17,19 @@
   mise à jour EAS utilisent son URL publique par défaut; un secret GitHub
   `EXPO_PUBLIC_API_URL` défini explicitement la remplace.
 
+## Flux de déploiement
+
+- Un push sur la branche reliée à Render déploie le serveur. Dans Render,
+  ouvrez **Settings → Build & Deploy → Build Filters** et ajoutez `server/**`
+  aux chemins inclus : un changement limité à `mobile/` ne redéploiera alors
+  pas l'API.
+- Pour une modification de l'interface sans changement natif, lancez
+  manuellement le workflow **EAS Update (OTA)** dans GitHub Actions. Il compare
+  l'empreinte native Android aux derniers APK avant de publier.
+- Pour une nouvelle dépendance native, un plugin ou une permission, lancez
+  manuellement **Build Android Preview APK**. Une OTA ne remplace pas un nouvel
+  APK; relancez ensuite **EAS Update (OTA)** si nécessaire.
+
 ## 1. Créer la base PostgreSQL
 
 Depuis le téléphone, créez une base dans Neon ou Supabase et copiez son URL de
