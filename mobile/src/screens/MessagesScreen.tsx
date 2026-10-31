@@ -1,6 +1,8 @@
 import { AudioSession } from "@livekit/react-native";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import { File } from "expo-file-system";
+import { VideoView, useVideoPlayer } from "expo-video";
 import {
   AlertTriangle,
   ImagePlus,
@@ -38,6 +40,11 @@ import {
   apiFetch,
   getStoredAuthToken,
 } from "../services/api";
+import {
+  uploadCloudinaryMedia,
+  type CloudinaryMediaType,
+  type CloudinaryUploadSignature,
+} from "../services/cloudinaryUpload";
 
 type ChannelId = "emergency" | "announcements";
 type Channel = {
@@ -57,6 +64,12 @@ type ChatMessage = {
   createdAt: string;
   isOwnMessage: boolean;
   imageUrl?: string;
+  mediaType?: CloudinaryMediaType;
+};
+type UploadedMessageMedia = {
+  publicId: string;
+  secureUrl: string;
+  mediaType: CloudinaryMediaType;
 };
 type PrivateConversation = {
   id: string;
@@ -86,6 +99,16 @@ const CHANNELS: Channel[] = [
     background: "#fefce8",
     icon: Megaphone,
   },
+];
+const REPORT_REASONS = [
+  "Harcèlement",
+  "Insultes",
+  "Arnaque",
+  "Faux profil",
+  "Spam",
+  "Usurpation d’identité",
+  "Contenu dangereux",
+  "Autre motif",
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -125,13 +148,23 @@ const normalizeMessage = (
     ),
     isOwnMessage: value.is_mine === true || value.isOwnMessage === true,
     imageUrl:
-      typeof value.image_url === "string"
+      typeof value.media_url === "string"
+        ? value.media_url
+        : typeof value.image_url === "string"
         ? value.image_url
         : typeof value.imageUrl === "string"
           ? value.imageUrl
           : undefined,
+    mediaType: value.media_type === "video" ? "video" : value.media_url || value.image_url ? "image" : undefined,
   };
 };
+
+function PrivateMessageVideo({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (instance) => {
+    instance.loop = false;
+  });
+  return <VideoView contentFit="contain" nativeControls player={player} style={styles.messagePhoto} />;
+}
 
 const normalizeConversation = (value: unknown): PrivateConversation | null => {
   if (!isRecord(value)) return null;
@@ -211,6 +244,8 @@ export default function MessagesScreen() {
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [mediaUploadProgress, setMediaUploadProgress] = useState<number | null>(null);
   const [selectedReport, setSelectedReport] = useState<ChatMessage | null>(null);
   const [reportReason, setReportReason] = useState("");
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
@@ -623,9 +658,9 @@ export default function MessagesScreen() {
     });
   };
 
-  const sendMessage = async (imageUri?: string) => {
+  const sendMessage = async (media?: UploadedMessageMedia) => {
     const text = draftMessage.trim();
-    if (!text && !imageUri) {
+    if (!text && !media) {
       Alert.alert("Message vide", "Saisissez un message ou joignez une photo.");
       return;
     }
@@ -649,26 +684,20 @@ export default function MessagesScreen() {
         activeTab === "Privés" && selectedConversation
           ? `${API_BASE_URL}/v1/conversations/${encodeURIComponent(selectedConversation.id)}/messages`
           : `${API_BASE_URL}/v1/channels/${encodeURIComponent(selectedChannelId)}/messages`;
-      let body: FormData | string;
-      let headers: Record<string, string> | undefined;
-      if (imageUri) {
-        const formData = new FormData();
-        formData.append("content", text);
-        const file = {
-          uri: imageUri,
-          name: `message-${Date.now()}.webp`,
-          type: "image/webp",
-        };
-        const nativeFormData = formData as FormData & {
-          append: (key: string, value: string | typeof file) => void;
-        };
-        nativeFormData.append("image", file);
-        body = formData;
-      } else {
-        headers = { "Content-Type": "application/json" };
-        body = JSON.stringify({ content: text });
-      }
-      const response = await apiFetch(url, { method: "POST", headers, body });
+      const response = await apiFetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: text,
+          ...(media
+            ? {
+                media_url: media.secureUrl,
+                media_type: media.mediaType,
+                media_public_id: media.publicId,
+              }
+            : {}),
+        }),
+      });
       if (!response.ok) {
         throw new Error(`L'envoi a échoué (HTTP ${response.status}).`);
       }
@@ -689,7 +718,7 @@ export default function MessagesScreen() {
             conversation.id === selectedConversation.id
               ? {
                   ...conversation,
-                  lastMessage: text || "Photo",
+                  lastMessage: text || (media?.mediaType === "video" ? "Vidéo" : "Photo"),
                   updatedAt: message.createdAt,
                 }
               : conversation,
@@ -707,34 +736,93 @@ export default function MessagesScreen() {
     }
   };
 
-  const pickAndSendPhoto = async () => {
+  const pickAndSendMedia = async () => {
+    setIsUploadingMedia(true);
+    setMediaUploadProgress(0);
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
         throw new Error(
-          "L'accès à la photothèque est nécessaire pour joindre une photo.",
+          "L'accès à la photothèque est nécessaire pour joindre un média.",
         );
       }
       const selection = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
+        mediaTypes: ["images", "videos"],
         allowsEditing: false,
         quality: 1,
       });
       if (selection.canceled) return;
       const asset = selection.assets[0];
-      if (!asset?.uri) throw new Error("La photo sélectionnée est indisponible.");
-      const compressed = await ImageManipulator.manipulateAsync(
-        asset.uri,
-        [{ resize: { width: 1600 } }],
-        { compress: 0.72, format: ImageManipulator.SaveFormat.WEBP },
+      if (!asset?.uri) throw new Error("Le média sélectionné est indisponible.");
+      const mediaType: CloudinaryMediaType = asset.type === "video" ? "video" : "image";
+      let uri = asset.uri;
+      let filename = asset.fileName ?? `message-${Date.now()}.${mediaType === "video" ? "mp4" : "webp"}`;
+      let mimeType = asset.mimeType ?? (mediaType === "video" ? "video/mp4" : "image/webp");
+      if (mediaType === "image") {
+        const compressed = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 1600 } }],
+          { compress: 0.72, format: ImageManipulator.SaveFormat.WEBP },
+        );
+        if (!compressed.uri) throw new Error("La compression WebP a échoué.");
+        uri = compressed.uri;
+        filename = `message-${Date.now()}.webp`;
+        mimeType = "image/webp";
+      }
+      const size = new File(uri).size;
+      const signatureResponse = await apiFetch(`${API_BASE_URL}/v1/posts/media/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ media_type: mediaType }),
+      });
+      if (!signatureResponse.ok) {
+        throw new Error(`Préparation du téléversement refusée (HTTP ${signatureResponse.status}).`);
+      }
+      const signaturePayload: unknown = await signatureResponse.json();
+      if (
+        !isRecord(signaturePayload) ||
+        typeof signaturePayload.apiKey !== "string" ||
+        typeof signaturePayload.cloudName !== "string" ||
+        typeof signaturePayload.folder !== "string" ||
+        typeof signaturePayload.public_id !== "string" ||
+        typeof signaturePayload.signature !== "string" ||
+        typeof signaturePayload.timestamp !== "number" ||
+        typeof signaturePayload.max_bytes !== "number" ||
+        signaturePayload.resource_type !== mediaType
+      ) {
+        throw new Error("La signature de téléversement est invalide.");
+      }
+      if (size > signaturePayload.max_bytes) {
+        throw new Error("Le média dépasse la taille maximale autorisée.");
+      }
+      if (
+        mediaType === "video" &&
+        typeof signaturePayload.max_duration_seconds === "number" &&
+        typeof asset.duration === "number" &&
+        asset.duration / 1000 > signaturePayload.max_duration_seconds
+      ) {
+        throw new Error(`La vidéo doit durer au maximum ${signaturePayload.max_duration_seconds} secondes.`);
+      }
+      const upload = await uploadCloudinaryMedia(
+        signaturePayload as unknown as CloudinaryUploadSignature,
+        { uri, name: filename, type: mimeType, size },
+        { onProgress: setMediaUploadProgress },
       );
-      if (!compressed.uri) throw new Error("La compression WebP a échoué.");
-      await sendMessage(compressed.uri);
+      if (!upload.secureUrl) throw new Error("Cloudinary n’a pas confirmé l’adresse du média.");
+      setMediaUploadProgress(100);
+      await sendMessage({
+        publicId: upload.publicId,
+        secureUrl: upload.secureUrl,
+        mediaType,
+      });
     } catch (error) {
       Alert.alert(
-        "Impossible de joindre la photo",
+        "Impossible de joindre le média",
         error instanceof Error ? error.message : "Une erreur est survenue.",
       );
+    } finally {
+      setIsUploadingMedia(false);
+      setMediaUploadProgress(null);
     }
   };
 
@@ -747,7 +835,7 @@ export default function MessagesScreen() {
       );
       return;
     }
-    if (reportReason.trim().length < 3) {
+    if (!REPORT_REASONS.includes(reportReason.trim())) {
       Alert.alert("Motif requis", "Précisez le motif du signalement.");
       return;
     }
@@ -765,11 +853,15 @@ export default function MessagesScreen() {
       if (!response.ok) {
         throw new Error(`Le signalement a échoué (HTTP ${response.status}).`);
       }
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || payload.reported !== true) {
+        throw new Error("Le serveur n’a pas confirmé le signalement.");
+      }
       setSelectedReport(null);
       setReportReason("");
       Alert.alert(
         "Signalement transmis",
-        "Le message a été transmis à la modération.",
+        "Statut : en attente de vérification. Le message n’a pas été supprimé.",
       );
     } catch (error) {
       Alert.alert(
@@ -1207,13 +1299,15 @@ export default function MessagesScreen() {
               {!message.isOwnMessage && (
                 <Text style={styles.messageSender}>{message.senderName}</Text>
               )}
-              {message.imageUrl && (
+              {message.imageUrl && message.mediaType === "video" ? (
+                <PrivateMessageVideo uri={message.imageUrl} />
+              ) : message.imageUrl ? (
                 <Image
                   accessibilityLabel="Photo jointe au message"
                   source={{ uri: message.imageUrl }}
                   style={styles.messagePhoto}
                 />
-              )}
+              ) : null}
               {message.text.length > 0 && (
                 <Text
                   style={[
@@ -1239,14 +1333,19 @@ export default function MessagesScreen() {
 
       {(activeTab === "Canaux" || selectedConversation) && <View style={styles.composer}>
         <Pressable
-          accessibilityLabel="Joindre une photo compressée en WebP"
+          accessibilityLabel="Joindre une photo ou une vidéo"
           accessibilityRole="button"
-          disabled={isSending}
-          onPress={() => void pickAndSendPhoto()}
+          disabled={isSending || isUploadingMedia}
+          onPress={() => void pickAndSendMedia()}
           style={styles.attachButton}
         >
           <ImagePlus color="#475569" size={20} />
         </Pressable>
+        {mediaUploadProgress !== null ? (
+          <Text accessibilityRole="text" style={styles.mediaUploadProgress}>
+            {`Téléversement ${mediaUploadProgress} %`}
+          </Text>
+        ) : null}
         {activeTab === "Canaux" && selectedChannelId === "emergency" && (
           <Pressable
             accessibilityLabel="Ouvrir le talkie-walkie URGENCES"
@@ -1271,9 +1370,9 @@ export default function MessagesScreen() {
         <Pressable
           accessibilityLabel="Envoyer le message"
           accessibilityRole="button"
-          disabled={isSending}
+          disabled={isSending || isUploadingMedia}
           onPress={() => void sendMessage()}
-          style={[styles.sendButton, isSending && styles.disabledButton]}
+          style={[styles.sendButton, (isSending || isUploadingMedia) && styles.disabledButton]}
         >
           <Send color="#ffffff" size={18} />
         </Pressable>
@@ -1304,18 +1403,25 @@ export default function MessagesScreen() {
             <Text style={styles.dialogDescription}>
               Indiquez pourquoi ce message doit être examiné par la modération.
             </Text>
-            <VoiceTextInput
-              accessibilityLabel="Motif du signalement"
-              multiline
-              onChangeText={setReportReason}
-              placeholder="Motif du signalement"
-              placeholderTextColor="#94a3b8"
-              style={styles.reportInput}
-              value={reportReason}
-            />
+            <ScrollView style={styles.reportReasons}>
+              {REPORT_REASONS.map((reason) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: reportReason === reason }}
+                  key={reason}
+                  onPress={() => setReportReason(reason)}
+                  style={[
+                    styles.reportReasonButton,
+                    reportReason === reason && styles.reportReasonButtonSelected,
+                  ]}
+                >
+                  <Text style={styles.reportReasonText}>{reason}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
             <Pressable
               accessibilityRole="button"
-              disabled={isSubmittingReport}
+              disabled={isSubmittingReport || !reportReason}
               onPress={() => void submitReport()}
               style={[
                 styles.reportButton,
@@ -1790,6 +1896,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 38,
   },
+  mediaUploadProgress: { color: "#475569", fontSize: 11, maxWidth: 75 },
   disabledButton: {
     opacity: 0.55,
   },
@@ -1850,6 +1957,10 @@ const styles = StyleSheet.create({
     padding: 11,
     textAlignVertical: "top",
   },
+  reportReasons: { maxHeight: 240 },
+  reportReasonButton: { borderBottomColor: "#e2e8f0", borderBottomWidth: 1, minHeight: 42, justifyContent: "center", paddingHorizontal: 8 },
+  reportReasonButtonSelected: { backgroundColor: "#fee2e2" },
+  reportReasonText: { color: "#172b4d", fontSize: 14 },
   reportButton: {
     alignItems: "center",
     backgroundColor: "#b91c1c",

@@ -91,6 +91,35 @@ test("channel message creation accepts text and returns the mobile channel alias
   assert.equal(response.payload.message.content, "Besoin d'aide");
 });
 
+test("channel message creation rejects a media ID not owned by the sender", async (context) => {
+  let queries = 0;
+  context.mock.method(pool, "query", async (statement) => {
+    queries += 1;
+    assert.match(statement, /FROM channels AS channel/);
+    return { rows: [{ id: "channel-uuid", name: "URGENCES" }] };
+  });
+  const response = createResponse();
+
+  await createChannelMessage(
+    {
+      params: { channelId: "emergency" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: {
+        content: "",
+        media_url: "https://res.cloudinary.com/test/image/upload/photo.webp",
+        media_type: "image",
+        media_public_id: "someone-else_photo",
+      },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.payload, { error: "Le média ne vous appartient pas." });
+  assert.equal(queries, 1);
+});
+
 test("empty public channel history is a successful empty list", async (context) => {
   context.mock.method(pool, "query", async (statement) =>
     statement.includes("FROM channels AS channel")

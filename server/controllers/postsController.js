@@ -389,6 +389,10 @@ export const listFeed = async (request, response, next) => {
        FROM posts AS post
        JOIN users AS author ON author.id = post.author_id
        WHERE post.status = 'ACTIVE'
+         AND ($5::uuid IS NULL OR NOT EXISTS (
+           SELECT 1 FROM user_blocks blocked
+           WHERE blocked.blocker_id = $5 AND blocked.blocked_id = post.author_id
+         ))
          AND CASE
            WHEN $1 = 'international' THEN TRUE
            WHEN $1 = 'country' THEN

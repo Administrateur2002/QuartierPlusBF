@@ -13,6 +13,7 @@ import { optionalAuthMiddleware } from "../middlewares/optionalAuthMiddleware.js
 const router = Router();
 
 router.get("/feed", optionalAuthMiddleware, listFeed);
+router.post("/posts/media/sign", authMiddleware, signMediaUpload);
 router.post("/media/sign", authMiddleware, signMediaUpload);
 router.post("/media/upload-error", authMiddleware, logMediaUploadFailure);
 router.post("/posts", authMiddleware, createPost);

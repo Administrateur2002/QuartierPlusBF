@@ -1,4 +1,5 @@
 import { pool } from "../db/pool.js";
+import { verifyMessageMedia } from "../services/messageMedia.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -29,6 +30,15 @@ export const listConversations = async (request, response, next) => {
          LIMIT 1
        ) AS latest ON TRUE
        WHERE own.user_id = $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM conversation_participants blocked_participant
+           JOIN user_blocks blocked
+             ON (blocked.blocker_id = $1 AND blocked.blocked_id = blocked_participant.user_id)
+             OR (blocked.blocker_id = blocked_participant.user_id AND blocked.blocked_id = $1)
+           WHERE blocked_participant.conversation_id = conversation.id
+             AND blocked_participant.user_id <> $1
+         )
        ORDER BY COALESCE(latest.created_at, conversation.created_at) DESC`,
       [request.auth.userId],
     );
@@ -46,7 +56,8 @@ export const listPrivateMessages = async (request, response, next) => {
     const result = await pool.query(
       `SELECT message.id, message.conversation_id, message.sender_id,
               profile.full_name AS sender_name, message.body AS content,
-              message.created_at, message.sender_id = $2 AS is_mine
+        message.media_url, message.media_type,
+        message.created_at, message.sender_id = $2 AS is_mine
        FROM private_messages AS message
        JOIN conversation_participants AS participant
          ON participant.conversation_id = message.conversation_id
@@ -87,17 +98,49 @@ export const createPrivateMessage = async (request, response, next) => {
     typeof request.body?.content === "string"
       ? request.body.content.trim()
       : "";
-  if (!content || content.length > 5000) {
+  const mediaUrl = typeof request.body?.media_url === "string"
+    ? request.body.media_url.trim()
+    : "";
+  const mediaType = request.body?.media_type;
+  const mediaPublicId = typeof request.body?.media_public_id === "string"
+    ? request.body.media_public_id.trim()
+    : "";
+  const hasMedia = Boolean(mediaUrl || mediaType || mediaPublicId);
+  if (
+    content.length > 5000 ||
+    (!content && !hasMedia) ||
+    (hasMedia && (!mediaUrl || !mediaPublicId || !["image", "video"].includes(mediaType)))
+  ) {
     return response.status(400).json({ error: "Contenu du message invalide." });
   }
   try {
+    if (hasMedia) {
+      const verifiedMedia = await verifyMessageMedia({
+        userId: request.auth.userId,
+        mediaUrl,
+        mediaType,
+        mediaPublicId,
+      });
+      if (verifiedMedia.error) return response.status(400).json({ error: verifiedMedia.error });
+    }
     const result = await pool.query(
-      `INSERT INTO private_messages (conversation_id, sender_id, body)
-       SELECT participant.conversation_id, participant.user_id, $3
+      `INSERT INTO private_messages
+         (conversation_id, sender_id, body, media_url, media_type)
+       SELECT participant.conversation_id, participant.user_id, $3, $4, $5
        FROM conversation_participants AS participant
        WHERE participant.conversation_id = $1 AND participant.user_id = $2
-       RETURNING id, conversation_id, sender_id, body AS content, created_at`,
-      [request.params.conversationId, request.auth.userId, content],
+         AND NOT EXISTS (
+           SELECT 1
+           FROM conversation_participants other_participant
+           JOIN user_blocks blocked
+             ON (blocked.blocker_id = $2 AND blocked.blocked_id = other_participant.user_id)
+             OR (blocked.blocker_id = other_participant.user_id AND blocked.blocked_id = $2)
+           WHERE other_participant.conversation_id = participant.conversation_id
+             AND other_participant.user_id <> $2
+         )
+      RETURNING id, conversation_id, sender_id, body AS content,
+            media_url, media_type, created_at`,
+      [request.params.conversationId, request.auth.userId, content, mediaUrl || null, mediaType || null],
     );
     if (!result.rowCount) {
       return response.status(404).json({ error: "Conversation introuvable." });

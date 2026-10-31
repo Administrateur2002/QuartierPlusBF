@@ -1,6 +1,7 @@
 import * as Location from "expo-location";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import * as Clipboard from "expo-clipboard";
 import { File, Paths } from "expo-file-system";
 import {
   AlertTriangle,
@@ -17,6 +18,7 @@ import {
   Alert,
   Image,
   Linking,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
   RefreshControl,
@@ -79,6 +81,18 @@ type FeedEntry = {
   likedByMe: boolean;
   authorIsAlly: boolean;
   allianceStatus?: "PENDING" | "ALLIED" | null;
+};
+
+type FeedComment = {
+  id: string;
+  user_id?: string;
+  user_name?: string;
+  content: string;
+  created_at?: string;
+  edited_at?: string | null;
+  parent_comment_id?: string | null;
+  likes_count?: number;
+  liked_by_me?: boolean;
 };
 
 type FeedError = {
@@ -244,6 +258,8 @@ export default function FeedScreen() {
   const [isWifiConnected, setIsWifiConnected] = useState(false);
   const [feedPreferencesReady, setFeedPreferencesReady] = useState(false);
   const [feedSettingsOpen, setFeedSettingsOpen] = useState(false);
+  const [blockedUsers, setBlockedUsers] = useState<Array<{ id: string; name: string }>>([]);
+  const [blockedUsersError, setBlockedUsersError] = useState<string | null>(null);
   const lowDataMode = dataSaverEnabled || autoDataSaver;
   const [pageOffsets, setPageOffsets] = useState({ marketplace: 0, feed: 0 });
   const [hasMoreMarketplace, setHasMoreMarketplace] = useState(true);
@@ -268,11 +284,25 @@ export default function FeedScreen() {
   const [isCompressingVideo, setIsCompressingVideo] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedPost, setSelectedPost] = useState<FeedEntry | null>(null);
-  const [comments, setComments] = useState<
-    { id: string; user_name?: string; content: string }[]
-  >([]);
+  const [actionPost, setActionPost] = useState<FeedEntry | null>(null);
+  const [reportTarget, setReportTarget] = useState<{
+    type: "post" | "comment" | "profile";
+    id: string;
+    label: string;
+  } | null>(null);
+  const [repostPost, setRepostPost] = useState<FeedEntry | null>(null);
+  const [repostCaption, setRepostCaption] = useState("");
+  const [isReposting, setIsReposting] = useState(false);
+  const [comments, setComments] = useState<FeedComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
+  const [commentsHasMore, setCommentsHasMore] = useState(false);
+  const [commentsOffset, setCommentsOffset] = useState(0);
+  const [loadingMoreComments, setLoadingMoreComments] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
   const [sendingComment, setSendingComment] = useState(false);
+  const [replyingToComment, setReplyingToComment] = useState<FeedComment | null>(null);
+  const [editingComment, setEditingComment] = useState<FeedComment | null>(null);
   const uploadControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -816,10 +846,17 @@ export default function FeedScreen() {
   const openComments = async (entry: FeedEntry) => {
     setSelectedPost(entry);
     setComments([]);
-    if (!API_BASE_URL) return;
+    setCommentsError(null);
+    setCommentsHasMore(false);
+    setCommentsOffset(0);
+    if (!API_BASE_URL) {
+      setCommentsError("Le service de commentaires est indisponible.");
+      return;
+    }
+    setCommentsLoading(true);
     try {
       const response = await apiFetch(
-        `${API_BASE_URL}/v1/social/posts/${encodeURIComponent(entry.id)}/comments`,
+        `${API_BASE_URL}/v1/social/posts/${encodeURIComponent(entry.id)}/comments?limit=30&offset=0`,
       );
       if (!response.ok) throw new Error(`Commentaires indisponibles (HTTP ${response.status}).`);
       const payload: unknown = await response.json();
@@ -827,14 +864,46 @@ export default function FeedScreen() {
         throw new Error("La liste des commentaires est invalide.");
       }
       setComments(payload.comments.filter(
-        (item): item is { id: string; user_name?: string; content: string } =>
+        (item): item is FeedComment =>
           isRecord(item) && typeof item.id === "string" && typeof item.content === "string",
       ));
+      setCommentsHasMore(payload.has_more === true);
+      setCommentsOffset(typeof payload.next_offset === "number" ? payload.next_offset : 0);
     } catch (commentError) {
-      Alert.alert(
-        "Commentaires indisponibles",
-        commentError instanceof Error ? commentError.message : "Réessayez.",
+      setCommentsError(commentError instanceof Error ? commentError.message : "Réessayez.");
+    } finally {
+      setCommentsLoading(false);
+    }
+  };
+
+  const loadMoreComments = async () => {
+    const post = selectedPost;
+    if (!post || !API_BASE_URL || !commentsHasMore || loadingMoreComments) return;
+    setLoadingMoreComments(true);
+    setCommentsError(null);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/posts/${encodeURIComponent(post.id)}/comments?limit=30&offset=${commentsOffset}`,
       );
+      if (!response.ok) throw new Error(`Commentaires indisponibles (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !Array.isArray(payload.comments)) {
+        throw new Error("La liste des commentaires est invalide.");
+      }
+      const nextComments = payload.comments.filter(
+        (item): item is FeedComment =>
+          isRecord(item) && typeof item.id === "string" && typeof item.content === "string",
+      );
+      setComments((current) => {
+        const existingIds = new Set(current.map((item) => item.id));
+        return [...current, ...nextComments.filter((item) => !existingIds.has(item.id))];
+      });
+      setCommentsHasMore(payload.has_more === true);
+      setCommentsOffset(typeof payload.next_offset === "number" ? payload.next_offset : commentsOffset);
+    } catch (commentError) {
+      setCommentsError(commentError instanceof Error ? commentError.message : "Réessayez.");
+    } finally {
+      setLoadingMoreComments(false);
     }
   };
 
@@ -847,8 +916,54 @@ export default function FeedScreen() {
       return;
     }
     if (!API_BASE_URL) return;
+
+    if (editingComment) {
+      setSendingComment(true);
+      try {
+        const response = await apiFetch(
+          `${API_BASE_URL}/v1/social/comments/${encodeURIComponent(editingComment.id)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content }),
+          },
+        );
+        if (!response.ok) throw new Error(`Modification refusée (HTTP ${response.status}).`);
+        const payload: unknown = await response.json();
+        if (!isRecord(payload) || !isRecord(payload.comment)) {
+          throw new Error("La réponse de modification est invalide.");
+        }
+        const updatedComment = payload.comment as Record<string, unknown>;
+        setComments((current) => current.map((item) => item.id === editingComment.id
+          ? { ...item, content, edited_at: typeof updatedComment.edited_at === "string" ? updatedComment.edited_at : new Date().toISOString() }
+          : item));
+        setCommentDraft("");
+        setEditingComment(null);
+      } catch (commentError) {
+        Alert.alert("Modification impossible", commentError instanceof Error ? commentError.message : "Réessayez.");
+      } finally {
+        setSendingComment(false);
+      }
+      return;
+    }
+
+    if (isOffline && replyingToComment) {
+      Alert.alert("Connexion requise", "Reconnectez-vous pour répondre à ce commentaire.");
+      return;
+    }
+
     const optimisticId = `local-${Date.now()}`;
-    setComments((current) => [{ id: optimisticId, content }, ...current]);
+    const optimisticComment: FeedComment = {
+      id: optimisticId,
+      user_id: user?.id,
+      user_name: typeof user?.name === "string" ? user.name : "Vous",
+      content,
+      created_at: new Date().toISOString(),
+      parent_comment_id: replyingToComment?.id ?? null,
+      likes_count: 0,
+      liked_by_me: false,
+    };
+    setComments((current) => [optimisticComment, ...current]);
     setCommentDraft("");
     setSendingComment(true);
     setEntries((current) => current.map((entry) =>
@@ -886,7 +1001,10 @@ export default function FeedScreen() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({
+            content,
+            parent_comment_id: replyingToComment?.id ?? null,
+          }),
         },
       );
       if (!response.ok) throw new Error(`Commentaire refusé (HTTP ${response.status}).`);
@@ -894,16 +1012,19 @@ export default function FeedScreen() {
       if (!isRecord(payload) || !isRecord(payload.comment) || typeof payload.comment.id !== "string") {
         throw new Error("La réponse du commentaire est invalide.");
       }
-      const commentId = payload.comment.id;
+      const createdComment = payload.comment as Record<string, unknown>;
       setComments((current) => current.map((item) =>
         item.id === optimisticId
           ? {
-              id: commentId,
+              ...optimisticComment,
+              ...createdComment,
+              user_id: user?.id,
+              user_name: optimisticComment.user_name,
               content,
-              user_name: typeof user?.name === "string" ? user.name : "Vous",
             }
           : item,
       ));
+      setReplyingToComment(null);
     } catch (commentError) {
       setComments((current) => current.filter((item) => item.id !== optimisticId));
       setEntries((current) => current.map((entry) =>
@@ -919,6 +1040,66 @@ export default function FeedScreen() {
     } finally {
       setSendingComment(false);
     }
+  };
+
+  const toggleCommentLike = async (comment: FeedComment) => {
+    if (!API_BASE_URL || comment.id.startsWith("local-")) return;
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    const wasLiked = comment.liked_by_me === true;
+    const previousCount = comment.likes_count ?? 0;
+    setComments((current) => current.map((item) => item.id === comment.id
+      ? { ...item, liked_by_me: !wasLiked, likes_count: Math.max(0, previousCount + (wasLiked ? -1 : 1)) }
+      : item));
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/comments/${encodeURIComponent(comment.id)}/like`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error(`Réaction refusée (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || typeof payload.liked !== "boolean" || typeof payload.count !== "number") {
+        throw new Error("La réponse de réaction est invalide.");
+      }
+      setComments((current) => current.map((item) => item.id === comment.id
+        ? { ...item, liked_by_me: payload.liked as boolean, likes_count: payload.count as number }
+        : item));
+    } catch (reactionError) {
+      setComments((current) => current.map((item) => item.id === comment.id
+        ? { ...item, liked_by_me: wasLiked, likes_count: previousCount }
+        : item));
+      Alert.alert("Réaction non envoyée", reactionError instanceof Error ? reactionError.message : "Réessayez.");
+    }
+  };
+
+  const deleteComment = (comment: FeedComment) => {
+    if (!API_BASE_URL || comment.id.startsWith("local-")) return;
+    Alert.alert("Supprimer ce commentaire ?", "Cette action est définitive.", [
+      { text: "Annuler", style: "cancel" },
+      {
+        text: "Supprimer",
+        style: "destructive",
+        onPress: () => {
+          void (async () => {
+            try {
+              const response = await apiFetch(
+                `${API_BASE_URL}/v1/social/comments/${encodeURIComponent(comment.id)}`,
+                { method: "DELETE" },
+              );
+              if (!response.ok) throw new Error(`Suppression refusée (HTTP ${response.status}).`);
+              setComments((current) => current.filter((item) => item.id !== comment.id));
+              setEntries((current) => current.map((entry) => entry.id === selectedPost?.id
+                ? { ...entry, commentsCount: Math.max(0, entry.commentsCount - 1) }
+                : entry));
+            } catch (deleteError) {
+              Alert.alert("Suppression impossible", deleteError instanceof Error ? deleteError.message : "Réessayez.");
+            }
+          })();
+        },
+      },
+    ]);
   };
 
   const requestAlliance = async (entry: FeedEntry) => {
@@ -964,6 +1145,219 @@ export default function FeedScreen() {
         shareError instanceof Error ? shareError.message : "Réessayez.",
       );
     }
+  };
+
+  const copyPostLink = async (entry: FeedEntry) => {
+    if (!entry.imageUrl) {
+      Alert.alert("Lien indisponible", "Cette publication ne contient pas de lien média public.");
+      return;
+    }
+    try {
+      await Clipboard.setStringAsync(entry.imageUrl);
+      setActionPost(null);
+      Alert.alert("Lien copié", "Le lien du média est dans le presse-papiers.");
+    } catch (clipboardError) {
+      Alert.alert(
+        "Copie impossible",
+        clipboardError instanceof Error ? clipboardError.message : "Réessayez.",
+      );
+    }
+  };
+
+  const savePostFavorite = async (entry: FeedEntry) => {
+    try {
+      const saved = await SecureStore.getItemAsync("quartierplus.feed.saved-posts");
+      const savedIds: unknown = saved ? JSON.parse(saved) : [];
+      if (!Array.isArray(savedIds)) throw new Error("La liste des favoris est invalide.");
+      if (!savedIds.includes(entry.id)) {
+        await SecureStore.setItemAsync(
+          "quartierplus.feed.saved-posts",
+          JSON.stringify([...savedIds, entry.id]),
+        );
+      }
+      setActionPost(null);
+      Alert.alert("Ajouté aux favoris", "Cette publication est enregistrée sur cet appareil.");
+    } catch (favoriteError) {
+      Alert.alert(
+        "Favori non enregistré",
+        favoriteError instanceof Error ? favoriteError.message : "Réessayez.",
+      );
+    }
+  };
+
+  const hidePost = (entry: FeedEntry) => {
+    setEntries((current) => current.filter((item) => item.id !== entry.id));
+    setActionPost(null);
+  };
+
+  const loadBlockedUsers = async () => {
+    if (!API_BASE_URL || authStatus !== "connected") {
+      setBlockedUsers([]);
+      setBlockedUsersError("Connectez-vous pour gérer les comptes bloqués.");
+      return;
+    }
+    setBlockedUsersError(null);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/social/blocked-users`);
+      if (!response.ok) throw new Error(`Chargement refusé (HTTP ${response.status}).`);
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !Array.isArray(payload.blocked_users)) {
+        throw new Error("La liste des comptes bloqués est invalide.");
+      }
+      setBlockedUsers(payload.blocked_users.filter(
+        (item): item is { id: string; name: string } =>
+          isRecord(item) && typeof item.id === "string" && typeof item.name === "string",
+      ));
+    } catch (blockedError) {
+      setBlockedUsersError(blockedError instanceof Error ? blockedError.message : "Réessayez.");
+    }
+  };
+
+  const unblockAuthor = async (blockedId: string) => {
+    if (!API_BASE_URL) return;
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/users/${encodeURIComponent(blockedId)}/block`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) throw new Error(`Déblocage refusé (HTTP ${response.status}).`);
+      setBlockedUsers((current) => current.filter((blocked) => blocked.id !== blockedId));
+      refresh();
+    } catch (unblockError) {
+      Alert.alert("Déblocage impossible", unblockError instanceof Error ? unblockError.message : "Réessayez.");
+    }
+  };
+
+  const blockAuthor = (entry: FeedEntry) => {
+    if (!entry.authorId || entry.authorId === user?.id) return;
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    const authorId = entry.authorId;
+    setActionPost(null);
+    Alert.alert(
+      "Bloquer cet utilisateur ?",
+      "Ses publications seront masquées et il ne pourra plus vous envoyer de message privé.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Bloquer",
+          style: "destructive",
+          onPress: () => {
+            void apiFetch(`${API_BASE_URL}/v1/social/users/${encodeURIComponent(authorId)}/block`, {
+              method: "POST",
+            }).then(async (response) => {
+              if (!response.ok) throw new Error(`Blocage refusé (HTTP ${response.status}).`);
+              const payload: unknown = await response.json();
+              if (!isRecord(payload) || payload.blocked !== true) {
+                throw new Error("La confirmation du blocage est invalide.");
+              }
+              setEntries((current) => current.filter((item) => item.authorId !== authorId));
+              Alert.alert("Utilisateur bloqué", "Ses publications sont masquées et les messages privés sont bloqués.");
+            }).catch((blockError: unknown) => {
+              Alert.alert("Blocage impossible", blockError instanceof Error ? blockError.message : "Réessayez.");
+            });
+          },
+        },
+      ],
+    );
+  };
+
+  const openReportReasons = (
+    type: "post" | "comment" | "profile",
+    id: string,
+    label: string,
+  ) => {
+    if (!API_BASE_URL || authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    setActionPost(null);
+    setReportTarget({ type, id, label });
+  };
+
+  const confirmReport = (reason: string) => {
+    const target = reportTarget;
+    if (!target || !API_BASE_URL) return;
+    setReportTarget(null);
+    Alert.alert(
+      "Motif du signalement",
+      `${target.label} ne sera pas supprimé automatiquement. Confirmer l’envoi ?`,
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Confirmer",
+          style: "destructive",
+          onPress: () => {
+            void apiFetch(`${API_BASE_URL}/v1/reports`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                target_type: target.type,
+                target_id: target.id,
+                reason,
+              }),
+            }).then(async (response) => {
+              if (!response.ok) throw new Error(`Signalement refusé (HTTP ${response.status}).`);
+              const payload: unknown = await response.json();
+              if (!isRecord(payload) || payload.reported !== true) {
+                throw new Error("La confirmation du signalement est invalide.");
+              }
+              Alert.alert("Signalement reçu", "Statut : en attente de vérification.");
+            }).catch((reportError: unknown) => {
+              Alert.alert(
+                "Signalement impossible",
+                reportError instanceof Error ? reportError.message : "Réessayez.",
+              );
+            });
+          },
+        },
+      ],
+    );
+  };
+
+  const confirmRepost = (entry: FeedEntry) => {
+    const caption = [
+      repostCaption.trim(),
+      `${entry.title}${entry.imageUrl ? `\n${entry.imageUrl}` : ""}`,
+    ].filter(Boolean).join("\n\n").slice(0, 1000);
+    if (!caption || isReposting) return;
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    Alert.alert(
+      "Publier dans votre fil ?",
+      "Cette action créera une nouvelle publication texte. Rien ne sera publié sans votre confirmation.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Confirmer et publier",
+          onPress: () => {
+            setIsReposting(true);
+            void apiFetch(`${API_BASE_URL}/v1/posts`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ caption, scope: draftScope, media_type: null }),
+            }).then((response) => {
+              if (!response.ok) throw new Error(`Publication refusée (HTTP ${response.status}).`);
+              setRepostPost(null);
+              setRepostCaption("");
+              refresh();
+              Alert.alert("Publication créée", "Le repartage est visible dans votre fil.");
+            }).catch((repostError: unknown) => {
+              Alert.alert(
+                "Repartage impossible",
+                repostError instanceof Error ? repostError.message : "Réessayez.",
+              );
+            }).finally(() => setIsReposting(false));
+          },
+        },
+      ],
+    );
   };
 
   const downloadMedia = async (entry: FeedEntry) => {
@@ -1418,7 +1812,10 @@ export default function FeedScreen() {
           <Pressable
             accessibilityLabel="Préférences du fil"
             accessibilityRole="button"
-            onPress={() => setFeedSettingsOpen(true)}
+            onPress={() => {
+              setFeedSettingsOpen(true);
+              void loadBlockedUsers();
+            }}
             style={styles.microphoneButton}
           >
             <Settings2 color={colors.secondaryText} size={18} />
@@ -1621,6 +2018,8 @@ export default function FeedScreen() {
                         onDoubleTap={() => {
                           if (!entry.likedByMe) void likePost(entry);
                         }}
+                        onTripleTap={() => setActionPost(entry)}
+                        onLongPress={() => setActionPost(entry)}
                         preloadUri={
                           option.id === scope &&
                           index === activeMediaIndex &&
@@ -1661,7 +2060,7 @@ export default function FeedScreen() {
                         >
                           <Text style={[styles.actionText, { color: colors.text }]}>Commenter · {entry.commentsCount}</Text>
                         </Pressable>
-                        <Pressable accessibilityRole="button" onPress={() => void sharePost(entry)} style={[styles.postAction, { backgroundColor: colors.background }]}>
+                        <Pressable accessibilityLabel="Propager cette publication" accessibilityRole="button" onPress={() => setActionPost(entry)} style={[styles.postAction, { backgroundColor: colors.background }]}>
                           <Text style={[styles.actionText, { color: colors.text }]}>Propager</Text>
                         </Pressable>
                         {entry.imageUrl ? (
@@ -1688,31 +2087,7 @@ export default function FeedScreen() {
                         <Pressable
                           accessibilityLabel="Signaler cette publication"
                           accessibilityRole="button"
-                          onPress={() => {
-                            if (!API_BASE_URL || authStatus !== "connected") {
-                              requestAuthentication();
-                              return;
-                            }
-                            Alert.alert("Signaler la publication ?", "Notre équipe la vérifiera.", [
-                              { text: "Annuler", style: "cancel" },
-                              {
-                                text: "Signaler",
-                                style: "destructive",
-                                onPress: () => {
-                                  void apiFetch(`${API_BASE_URL}/v1/posts/${encodeURIComponent(entry.id)}/report`, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ reason: "Contenu inapproprié" }),
-                                  }).then((response) => {
-                                    if (!response.ok) throw new Error(`Signalement refusé (HTTP ${response.status}).`);
-                                    Alert.alert("Signalement envoyé", "Merci de contribuer à la modération.");
-                                  }).catch((reportError: unknown) => {
-                                    Alert.alert("Signalement impossible", reportError instanceof Error ? reportError.message : "Réessayez.");
-                                  });
-                                },
-                              },
-                            ]);
-                          }}
+                          onPress={() => openReportReasons("post", entry.id, "Cette publication")}
                           style={[styles.postAction, { backgroundColor: colors.background }]}
                         >
                           <Text style={[styles.actionText, { color: colors.text }]}>Signaler</Text>
@@ -1955,8 +2330,258 @@ export default function FeedScreen() {
                 value={wifiOnlyVideoAutoplay}
               />
             </View>
+            <View style={styles.blockedUsersSection}>
+              <Text style={[styles.preferenceLabel, { color: colors.text }]}>Comptes bloqués</Text>
+              {blockedUsersError ? (
+                <Text accessibilityRole="alert" style={[styles.preferenceDescription, { color: colors.secondaryText }]}>
+                  {blockedUsersError}
+                </Text>
+              ) : blockedUsers.length === 0 ? (
+                <Text style={[styles.preferenceDescription, { color: colors.secondaryText }]}>Aucun compte bloqué.</Text>
+              ) : (
+                <ScrollView keyboardShouldPersistTaps="handled" style={styles.blockedUsersList}>
+                  {blockedUsers.map((blocked) => (
+                    <View key={blocked.id} style={styles.blockedUserRow}>
+                      <Text numberOfLines={1} style={[styles.preferenceDescription, { color: colors.text }]}>{blocked.name}</Text>
+                      <Pressable
+                        accessibilityLabel={`Débloquer ${blocked.name}`}
+                        accessibilityRole="button"
+                        onPress={() => void unblockAuthor(blocked.id)}
+                        style={styles.preferenceClose}
+                      >
+                        <Text style={[styles.actionText, { color: colors.primary }]}>Débloquer</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
           </View>
         </View>
+      </Modal>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setReportTarget(null)}
+        transparent
+        visible={reportTarget !== null}
+      >
+        <View style={styles.commentBackdrop}>
+          <View style={[styles.actionSheet, { backgroundColor: colors.card }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.composerTitle, { color: colors.text }]}>Signaler</Text>
+              <Pressable
+                accessibilityLabel="Fermer le signalement"
+                accessibilityRole="button"
+                onPress={() => setReportTarget(null)}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>
+              {reportTarget?.label}: choisissez un motif. Le contenu restera visible pendant la vérification.
+            </Text>
+            <ScrollView style={styles.actionOptions}>
+              {[
+                "Harcèlement",
+                "Insultes",
+                "Arnaque",
+                "Faux profil",
+                "Spam",
+                "Usurpation d’identité",
+                "Contenu dangereux",
+                "Autre motif",
+              ].map((reason) => (
+                <Pressable
+                  accessibilityRole="button"
+                  key={reason}
+                  onPress={() => confirmReport(reason)}
+                  style={styles.actionOption}
+                >
+                  <Text style={[styles.actionOptionText, { color: colors.text }]}>{reason}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setActionPost(null)}
+        transparent
+        visible={actionPost !== null}
+      >
+        <View style={styles.commentBackdrop}>
+          <View style={[styles.actionSheet, { backgroundColor: colors.card }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.composerTitle, { color: colors.text }]}>Actions de publication</Text>
+              <Pressable
+                accessibilityLabel="Fermer les actions"
+                accessibilityRole="button"
+                onPress={() => setActionPost(null)}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled" style={styles.actionOptions}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (!actionPost) return;
+                  setRepostPost(actionPost);
+                  setRepostCaption("");
+                  setActionPost(null);
+                }}
+                style={styles.actionOption}
+              >
+                <Text style={[styles.actionOptionText, { color: colors.text }]}>Repartager dans mon fil</Text>
+                <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Ajouter un commentaire puis confirmer la publication</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (!actionPost) return;
+                  const post = actionPost;
+                  setActionPost(null);
+                  void sharePost(post);
+                }}
+                style={styles.actionOption}
+              >
+                <Text style={[styles.actionOptionText, { color: colors.text }]}>Envoyer à un ami</Text>
+                <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Ouvrir les options de partage de l’appareil</Text>
+              </Pressable>
+              {(["une alliance", "un groupe"] as const).map((destination) => (
+                <Pressable
+                  accessibilityRole="button"
+                  key={destination}
+                  onPress={() => {
+                    setActionPost(null);
+                    Alert.alert(
+                      `Partager dans ${destination}`,
+                      "Cette destination n’est pas encore reliée à une route de partage sur le serveur.",
+                    );
+                  }}
+                  style={styles.actionOption}
+                >
+                  <Text style={[styles.actionOptionText, { color: colors.text }]}>Partager dans {destination}</Text>
+                  <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Destination interne indisponible</Text>
+                </Pressable>
+              ))}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => actionPost && void copyPostLink(actionPost)}
+                style={styles.actionOption}
+              >
+                <Text style={[styles.actionOptionText, { color: colors.text }]}>Copier le lien du média</Text>
+              </Pressable>
+              {actionPost?.imageUrl ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    if (!actionPost) return;
+                    const post = actionPost;
+                    setActionPost(null);
+                    void downloadMedia(post);
+                  }}
+                  style={styles.actionOption}
+                >
+                  <Text style={[styles.actionOptionText, { color: colors.text }]}>
+                    Télécharger {actionPost.mediaType === "video" ? "la vidéo" : "la photo"}
+                  </Text>
+                  <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Demande d’autorisation avant l’enregistrement</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => actionPost && void savePostFavorite(actionPost)}
+                style={styles.actionOption}
+              >
+                <Text style={[styles.actionOptionText, { color: colors.text }]}>Enregistrer dans les favoris</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => actionPost && openReportReasons("post", actionPost.id, "Cette publication")}
+                style={styles.actionOption}
+              >
+                <Text style={[styles.actionOptionText, styles.destructiveAction]}>Signaler</Text>
+              </Pressable>
+              {actionPost?.authorId && actionPost.authorId !== user?.id ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => actionPost && openReportReasons("profile", actionPost.authorId!, "Ce profil")}
+                  style={styles.actionOption}
+                >
+                  <Text style={[styles.actionOptionText, styles.destructiveAction]}>Signaler le profil</Text>
+                </Pressable>
+              ) : null}
+              {actionPost?.authorId && actionPost.authorId !== user?.id ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => actionPost && blockAuthor(actionPost)}
+                  style={styles.actionOption}
+                >
+                  <Text style={[styles.actionOptionText, styles.destructiveAction]}>Bloquer cet utilisateur</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => actionPost && hidePost(actionPost)}
+                style={styles.actionOption}
+              >
+                <Text style={[styles.actionOptionText, { color: colors.text }]}>Masquer la publication</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setRepostPost(null)}
+        transparent
+        visible={repostPost !== null}
+      >
+        <KeyboardAvoidingView behavior="padding" style={styles.commentBackdrop}>
+          <View style={[styles.repostSheet, { backgroundColor: colors.card }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.composerTitle, { color: colors.text }]}>Repartager</Text>
+              <Pressable
+                accessibilityLabel="Fermer le repartage"
+                accessibilityRole="button"
+                disabled={isReposting}
+                onPress={() => setRepostPost(null)}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            {repostPost ? (
+              <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>
+                {repostPost.title}{repostPost.imageUrl ? ` · ${repostPost.imageUrl}` : ""}
+              </Text>
+            ) : null}
+            <TextInput
+              accessibilityLabel="Commentaire avant repartage"
+              editable={!isReposting}
+              maxLength={850}
+              multiline
+              onChangeText={setRepostCaption}
+              placeholder="Ajouter un commentaire (facultatif)"
+              style={[styles.commentInput, styles.repostInput]}
+              value={repostCaption}
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={isReposting}
+              onPress={() => repostPost && confirmRepost(repostPost)}
+              style={[styles.publishButton, isReposting && styles.disabledButton]}
+            >
+              <Text style={styles.publishButtonText}>
+                {isReposting ? "Publication…" : "Continuer vers la confirmation"}
+              </Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
       <Modal
         animationType="slide"
@@ -1964,7 +2589,7 @@ export default function FeedScreen() {
         transparent
         visible={selectedPost !== null}
       >
-        <View style={styles.commentBackdrop}>
+        <KeyboardAvoidingView behavior="padding" style={styles.commentBackdrop}>
           <View style={[styles.commentSheet, { backgroundColor: colors.card }]}>
             <View style={styles.commentHeader}>
               <Text style={[styles.composerTitle, { color: colors.text }]}>Commentaires</Text>
@@ -1976,20 +2601,124 @@ export default function FeedScreen() {
                 <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
               </Pressable>
             </View>
+            {commentsLoading ? (
+              <View style={styles.commentStatus}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={[styles.commentStatusText, { color: colors.secondaryText }]}>Chargement des commentaires…</Text>
+              </View>
+            ) : null}
+            {commentsError ? (
+              <View style={styles.commentStatus}>
+                <Text accessibilityRole="alert" style={[styles.commentStatusText, { color: colors.secondaryText }]}>{commentsError}</Text>
+                <Pressable accessibilityRole="button" onPress={() => selectedPost && void openComments(selectedPost)}>
+                  <Text style={[styles.actionText, { color: colors.primary }]}>Réessayer</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <FlashList
               contentContainerStyle={styles.commentList}
               data={comments}
               keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              onEndReached={() => void loadMoreComments()}
+              onEndReachedThreshold={0.4}
+              ListFooterComponent={loadingMoreComments ? <ActivityIndicator color={colors.primary} /> : null}
               ListEmptyComponent={
-                <Text style={styles.emptyText}>Soyez le premier à commenter.</Text>
+                !commentsLoading && !commentsError
+                  ? <Text style={styles.emptyText}>Soyez le premier à commenter.</Text>
+                  : null
               }
               renderItem={({ item }) => (
-                <View style={styles.commentItem}>
-                  <Text style={[styles.commentAuthor, { color: colors.text }]}>{item.user_name ?? "Voisin"}</Text>
+                <View style={[styles.commentItem, item.parent_comment_id ? styles.commentReplyItem : null]}>
+                  <View style={styles.commentMeta}>
+                    <Text style={[styles.commentAuthor, { color: colors.text }]}>{item.user_name ?? "Voisin"}</Text>
+                    {item.created_at ? (
+                      <Text style={[styles.commentDate, { color: colors.secondaryText }]}>
+                        {new Date(item.created_at).toLocaleString()} {item.edited_at ? "· modifié" : ""}
+                      </Text>
+                    ) : null}
+                  </View>
                   <Text style={[styles.commentText, { color: colors.secondaryText }]}>{item.content}</Text>
+                  <View style={styles.commentActions}>
+                    <Pressable
+                      accessibilityLabel={item.liked_by_me ? "Retirer la réaction" : "Aimer ce commentaire"}
+                      accessibilityRole="button"
+                      onPress={() => void toggleCommentLike(item)}
+                      style={styles.commentActionButton}
+                    >
+                      <Text style={[styles.commentActionText, { color: item.liked_by_me ? colors.primary : colors.secondaryText }]}>
+                        {item.liked_by_me ? "Aimé" : "J’aime"} {item.likes_count ? `· ${item.likes_count}` : ""}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityLabel={`Répondre à ${item.user_name ?? "ce commentaire"}`}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setEditingComment(null);
+                        setCommentDraft("");
+                        setReplyingToComment(item);
+                      }}
+                      style={styles.commentActionButton}
+                    >
+                      <Text style={[styles.commentActionText, { color: colors.secondaryText }]}>Répondre</Text>
+                    </Pressable>
+                    {item.user_id !== user?.id ? (
+                      <Pressable
+                        accessibilityLabel="Signaler ce commentaire"
+                        accessibilityRole="button"
+                        onPress={() => openReportReasons("comment", item.id, "Ce commentaire")}
+                        style={styles.commentActionButton}
+                      >
+                        <Text style={[styles.commentActionText, { color: colors.secondaryText }]}>Signaler</Text>
+                      </Pressable>
+                    ) : null}
+                    {item.user_id === user?.id ? (
+                      <>
+                        <Pressable
+                          accessibilityLabel="Modifier mon commentaire"
+                          accessibilityRole="button"
+                          onPress={() => {
+                            setReplyingToComment(null);
+                            setEditingComment(item);
+                            setCommentDraft(item.content);
+                          }}
+                          style={styles.commentActionButton}
+                        >
+                          <Text style={[styles.commentActionText, { color: colors.secondaryText }]}>Modifier</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel="Supprimer mon commentaire"
+                          accessibilityRole="button"
+                          onPress={() => deleteComment(item)}
+                          style={styles.commentActionButton}
+                        >
+                          <Text style={[styles.commentActionText, { color: colors.secondaryText }]}>Supprimer</Text>
+                        </Pressable>
+                      </>
+                    ) : null}
+                  </View>
                 </View>
               )}
             />
+            {replyingToComment || editingComment ? (
+              <View style={styles.commentContext}>
+                <Text style={[styles.commentContextText, { color: colors.secondaryText }]}>
+                  {editingComment ? "Modification du commentaire" : `Réponse à ${replyingToComment?.user_name ?? "un voisin"}`}
+                </Text>
+                <Pressable
+                  accessibilityLabel="Annuler cette action"
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setReplyingToComment(null);
+                    setEditingComment(null);
+                    setCommentDraft("");
+                  }}
+                  style={styles.commentActionButton}
+                >
+                  <Text style={[styles.commentActionText, { color: colors.primary }]}>Annuler</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.commentComposer}>
               <TextInput
                 accessibilityLabel="Votre commentaire"
@@ -2001,18 +2730,36 @@ export default function FeedScreen() {
                 value={commentDraft}
               />
               <Pressable
+                accessibilityLabel="Ajouter un emoji"
+                accessibilityRole="button"
+                disabled={sendingComment}
+                onPress={() => setCommentDraft((current) => `${current}${current ? " " : ""}😊`)}
+                style={styles.commentAccessoryButton}
+              >
+                <Text style={[styles.commentActionText, { color: colors.text }]}>😊</Text>
+              </Pressable>
+              <Pressable
+                accessibilityLabel="Insérer une mention"
+                accessibilityRole="button"
+                disabled={sendingComment}
+                onPress={() => setCommentDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@`)}
+                style={styles.commentAccessoryButton}
+              >
+                <Text style={[styles.commentActionText, { color: colors.text }]}>@</Text>
+              </Pressable>
+              <Pressable
                 accessibilityRole="button"
                 disabled={!commentDraft.trim() || sendingComment}
                 onPress={() => void sendComment()}
                 style={styles.publishButton}
               >
                 <Text style={styles.publishButtonText}>
-                  {sendingComment ? "…" : "Envoyer"}
+                  {sendingComment ? "…" : editingComment ? "Enregistrer" : "Envoyer"}
                 </Text>
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -2215,6 +2962,35 @@ const styles = StyleSheet.create({
     padding: 18,
     paddingBottom: 28,
   },
+  actionSheet: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    maxHeight: "85%",
+    paddingBottom: 28,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+  },
+  actionOptions: { maxHeight: 520 },
+  actionOption: {
+    borderBottomColor: "#e2e8f0",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    justifyContent: "center",
+    minHeight: 48,
+    paddingVertical: 10,
+  },
+  actionOptionText: { fontSize: 14, fontWeight: "700" },
+  actionOptionDescription: { fontSize: 12, lineHeight: 17, marginTop: 3 },
+  destructiveAction: { color: "#b91c1c" },
+  repostSheet: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    gap: 12,
+    paddingBottom: 28,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+  },
+  repostInput: { minHeight: 100, textAlignVertical: "top" },
+  disabledButton: { opacity: 0.55 },
   preferenceSheet: {
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
@@ -2236,6 +3012,9 @@ const styles = StyleSheet.create({
   preferenceCopy: { flex: 1, gap: 4, minWidth: 0 },
   preferenceLabel: { fontSize: 14, fontWeight: "700" },
   preferenceDescription: { fontSize: 12, lineHeight: 17 },
+  blockedUsersSection: { gap: 8, paddingTop: 16 },
+  blockedUsersList: { maxHeight: 150 },
+  blockedUserRow: { alignItems: "center", borderBottomColor: "#e2e8f0", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between" },
   commentHeader: {
     alignItems: "center",
     flexDirection: "row",
@@ -2243,13 +3022,24 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   commentList: { gap: 12, paddingBottom: 12 },
+  commentStatus: { alignItems: "center", flexDirection: "row", gap: 10, paddingVertical: 12 },
+  commentStatusText: { flex: 1, fontSize: 13 },
   commentItem: {
     backgroundColor: "#f8fafc",
     borderRadius: 12,
     gap: 4,
     padding: 11,
   },
+  commentReplyItem: { marginLeft: 16 },
+  commentActions: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: 14, marginTop: 4 },
+  commentActionButton: { justifyContent: "center", minHeight: 32 },
+  commentActionText: { fontSize: 11, fontWeight: "700" },
+  commentContext: { alignItems: "center", borderTopColor: "#e2e8f0", borderTopWidth: 1, flexDirection: "row", justifyContent: "space-between", paddingVertical: 5 },
+  commentContextText: { flex: 1, fontSize: 12 },
+  commentAccessoryButton: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 36 },
+  commentMeta: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", gap: 8 },
   commentAuthor: { color: "#334155", fontSize: 12, fontWeight: "800" },
+  commentDate: { fontSize: 10 },
   commentText: { color: "#475569", fontSize: 13, lineHeight: 19 },
   commentComposer: { alignItems: "center", flexDirection: "row", gap: 8 },
   commentInput: {

@@ -19,6 +19,8 @@ type Props = {
   uri: string;
   type: CloudinaryMediaType;
   onDoubleTap?: () => void;
+  onTripleTap?: () => void;
+  onLongPress?: () => void;
   height?: number;
   active?: boolean;
   preloadUri?: string;
@@ -32,6 +34,8 @@ export default function FeedMedia({
   uri,
   type,
   onDoubleTap,
+  onTripleTap,
+  onLongPress,
   height,
   active = true,
   preloadUri,
@@ -50,6 +54,8 @@ export default function FeedMedia({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const lastTap = useRef(0);
+  const tapCount = useRef(0);
+  const tapTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastViewerTap = useRef(0);
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
@@ -120,9 +126,19 @@ export default function FeedMedia({
       },
     }),
   ).current;
-  const handleTap = () => {
-    const now = Date.now();
-    if (now - lastTap.current < 320) {
+  const handleTap = (onSingleTap?: () => void) => {
+    lastTap.current = Date.now();
+    tapCount.current += 1;
+    const count = tapCount.current;
+    if (tapTimeout.current) clearTimeout(tapTimeout.current);
+    tapTimeout.current = setTimeout(() => {
+      tapCount.current = 0;
+      tapTimeout.current = null;
+      if (count >= 3) {
+        onTripleTap?.();
+        return;
+      }
+      if (count === 2) {
       heartProgress.setValue(0);
       Vibration.vibrate(10);
       Animated.sequence([
@@ -140,8 +156,16 @@ export default function FeedMedia({
         }),
       ]).start();
       onDoubleTap?.();
-    }
-    lastTap.current = now;
+        return;
+      }
+      onSingleTap?.();
+    }, 320);
+  };
+  const handleLongPress = () => {
+    if (tapTimeout.current) clearTimeout(tapTimeout.current);
+    tapTimeout.current = null;
+    tapCount.current = 0;
+    onLongPress?.();
   };
   const heartStyle = {
     opacity: heartProgress,
@@ -227,7 +251,12 @@ export default function FeedMedia({
           style={StyleSheet.absoluteFill}
           transition={180}
         />
-        <Pressable accessibilityLabel="Ouvrir la photo en plein écran" onPress={handleTap} style={StyleSheet.absoluteFill} />
+        <Pressable
+          accessibilityLabel="Ouvrir la photo en plein écran"
+          onLongPress={handleLongPress}
+          onPress={() => handleTap()}
+          style={StyleSheet.absoluteFill}
+        />
         <Animated.View pointerEvents="none" style={[styles.heartOverlay, heartStyle]}>
           <Heart color="#ffffff" fill="#ffffff" size={76} />
         </Animated.View>
@@ -313,10 +342,12 @@ export default function FeedMedia({
     <View style={[styles.media, height ? { height } : null]}>
       <Pressable
         accessibilityLabel="Vidéo de la publication"
+        onLongPress={handleLongPress}
         onPress={() => {
-          handleTap();
-          if (player.playing) player.pause();
-          else if (!playbackError) player.play();
+          handleTap(() => {
+            if (player.playing) player.pause();
+            else if (!playbackError) player.play();
+          });
         }}
         style={StyleSheet.absoluteFill}
       >

@@ -101,6 +101,56 @@ export const listAllies = async (request, response, next) => {
   }
 };
 
+export const listBlockedUsers = async (request, response, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT users.id, users.full_name AS name, user_blocks.created_at AS blocked_at
+       FROM user_blocks JOIN users ON users.id = user_blocks.blocked_id
+       WHERE user_blocks.blocker_id = $1
+       ORDER BY user_blocks.created_at DESC`,
+      [request.auth.userId],
+    );
+    return response.status(200).json({ blocked_users: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const blockUser = async (request, response, next) => {
+  const blockedId = request.params.userId;
+  if (!validId(blockedId) || blockedId === request.auth.userId) {
+    return response.status(400).json({ error: "Profil à bloquer invalide." });
+  }
+  try {
+    const user = await pool.query("SELECT id FROM users WHERE id = $1", [blockedId]);
+    if (!user.rowCount) return response.status(404).json({ error: "Profil introuvable." });
+    await pool.query(
+      `INSERT INTO user_blocks (blocker_id, blocked_id)
+       VALUES ($1, $2) ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+      [request.auth.userId, blockedId],
+    );
+    return response.status(200).json({ blocked: true });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const unblockUser = async (request, response, next) => {
+  const blockedId = request.params.userId;
+  if (!validId(blockedId) || blockedId === request.auth.userId) {
+    return response.status(400).json({ error: "Profil à débloquer invalide." });
+  }
+  try {
+    await pool.query(
+      "DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2",
+      [request.auth.userId, blockedId],
+    );
+    return response.status(204).end();
+  } catch (error) {
+    return next(error);
+  }
+};
+
 export const removeAlliance = async (request, response, next) => {
   const otherId = request.params.userId;
   if (!validId(otherId) || otherId === request.auth.userId) {
@@ -153,17 +203,37 @@ export const togglePostLike = async (request, response, next) => {
 
 export const listPostComments = async (request, response, next) => {
   const postId = request.params.postId;
-  if (!validId(postId)) return response.status(400).json({ error: "Publication invalide." });
+  const limit = Number(request.query?.limit ?? 30);
+  const offset = Number(request.query?.offset ?? 0);
+  if (
+    !validId(postId) ||
+    !Number.isInteger(limit) || limit < 1 || limit > 50 ||
+    !Number.isInteger(offset) || offset < 0 || offset > 10000
+  ) {
+    return response.status(400).json({ error: "Paramètres des commentaires invalides." });
+  }
   try {
     const result = await pool.query(
       `SELECT comment.id, comment.content, comment.created_at,
-              user_profile.id AS user_id, user_profile.full_name AS user_name
+              comment.edited_at, comment.parent_comment_id,
+              user_profile.id AS user_id, user_profile.full_name AS user_name,
+              (SELECT COUNT(*)::int FROM post_comment_likes comment_like
+               WHERE comment_like.comment_id = comment.id) AS likes_count,
+              EXISTS (SELECT 1 FROM post_comment_likes own_like
+                WHERE own_like.comment_id = comment.id AND own_like.user_id = $4) AS liked_by_me
        FROM post_comments comment JOIN users user_profile ON user_profile.id = comment.user_id
        WHERE comment.post_id = $1
-       ORDER BY comment.created_at DESC LIMIT 100`,
-      [postId],
+       ORDER BY comment.created_at DESC, comment.id DESC
+       LIMIT $2 OFFSET $3`,
+            [postId, limit + 1, offset, request.auth.userId],
     );
-    return response.status(200).json({ comments: result.rows });
+    const hasMore = result.rows.length > limit;
+    const comments = hasMore ? result.rows.slice(0, limit) : result.rows;
+    return response.status(200).json({
+      comments,
+      has_more: hasMore,
+      next_offset: offset + comments.length,
+    });
   } catch (error) {
     return next(error);
   }
@@ -171,22 +241,97 @@ export const listPostComments = async (request, response, next) => {
 
 export const createPostComment = async (request, response, next) => {
   const postId = request.params.postId;
+  const rawParentId = request.body?.parent_comment_id;
+  const parentCommentId = rawParentId == null ? null : rawParentId;
   const content = typeof request.body?.content === "string"
     ? request.body.content.trim()
     : "";
-  if (!validId(postId) || !content || content.length > 1000) {
+  if (
+    !validId(postId) || !content || content.length > 1000 ||
+    (parentCommentId !== null && !validId(parentCommentId))
+  ) {
     return response.status(400).json({ error: "Commentaire invalide (1 à 1 000 caractères)." });
   }
   try {
     const result = await pool.query(
-      `INSERT INTO post_comments (post_id, user_id, content)
-       SELECT post.id, $2, $3 FROM posts post
+      `INSERT INTO post_comments (post_id, user_id, content, parent_comment_id)
+       SELECT post.id, $2, $3, $4 FROM posts post
        WHERE post.id = $1 AND post.status = 'ACTIVE'
-       RETURNING id, post_id, user_id, content, created_at`,
-      [postId, request.auth.userId, content],
+         AND ($4::uuid IS NULL OR EXISTS (
+           SELECT 1 FROM post_comments parent
+           WHERE parent.id = $4 AND parent.post_id = post.id
+         ))
+       RETURNING id, post_id, user_id, content, parent_comment_id, created_at`,
+      [postId, request.auth.userId, content, parentCommentId],
     );
-    if (!result.rowCount) return response.status(404).json({ error: "Publication introuvable." });
+    if (!result.rowCount) return response.status(404).json({ error: "Publication ou commentaire parent introuvable." });
     return response.status(201).json({ comment: result.rows[0] });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const updatePostComment = async (request, response, next) => {
+  const commentId = request.params.commentId;
+  const content = typeof request.body?.content === "string"
+    ? request.body.content.trim()
+    : "";
+  if (!validId(commentId) || !content || content.length > 1000) {
+    return response.status(400).json({ error: "Commentaire invalide (1 à 1 000 caractères)." });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE post_comments SET content = $3, edited_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, content, edited_at`,
+      [commentId, request.auth.userId, content],
+    );
+    if (!result.rowCount) return response.status(404).json({ error: "Commentaire introuvable." });
+    return response.status(200).json({ comment: result.rows[0] });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const deletePostComment = async (request, response, next) => {
+  const commentId = request.params.commentId;
+  if (!validId(commentId)) return response.status(400).json({ error: "Commentaire invalide." });
+  try {
+    const result = await pool.query(
+      "DELETE FROM post_comments WHERE id = $1 AND user_id = $2 RETURNING id",
+      [commentId, request.auth.userId],
+    );
+    if (!result.rowCount) return response.status(404).json({ error: "Commentaire introuvable." });
+    return response.status(204).end();
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const togglePostCommentLike = async (request, response, next) => {
+  const commentId = request.params.commentId;
+  if (!validId(commentId)) return response.status(400).json({ error: "Commentaire invalide." });
+  try {
+    const comment = await pool.query(
+      "SELECT id FROM post_comments WHERE id = $1",
+      [commentId],
+    );
+    if (!comment.rowCount) return response.status(404).json({ error: "Commentaire introuvable." });
+    const removed = await pool.query(
+      "DELETE FROM post_comment_likes WHERE comment_id = $1 AND user_id = $2 RETURNING comment_id",
+      [commentId, request.auth.userId],
+    );
+    if (!removed.rowCount) {
+      await pool.query(
+        "INSERT INTO post_comment_likes (comment_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [commentId, request.auth.userId],
+      );
+    }
+    const count = await pool.query(
+      "SELECT COUNT(*)::int AS count FROM post_comment_likes WHERE comment_id = $1",
+      [commentId],
+    );
+    return response.status(200).json({ liked: !removed.rowCount, count: count.rows[0].count });
   } catch (error) {
     return next(error);
   }

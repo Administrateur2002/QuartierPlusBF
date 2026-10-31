@@ -1,4 +1,5 @@
 import { pool } from "../db/pool.js";
+import { verifyMessageMedia } from "../services/messageMedia.js";
 
 const CHANNEL_ALIASES = new Map([
   ["EMERGENCY", "EMERGENCY"],
@@ -76,7 +77,15 @@ export const createChannelMessage = async (request, response, next) => {
       : typeof request.body?.body === "string"
         ? request.body.body.trim()
         : "";
-  if (!body || body.length > 5000) {
+  const mediaUrl = typeof request.body?.media_url === "string" ? request.body.media_url.trim() : "";
+  const mediaType = request.body?.media_type;
+  const mediaPublicId = typeof request.body?.media_public_id === "string" ? request.body.media_public_id.trim() : "";
+  const hasMedia = Boolean(mediaUrl || mediaType || mediaPublicId);
+  if (
+    body.length > 5000 ||
+    (!body && !hasMedia) ||
+    (hasMedia && (!mediaUrl || !mediaPublicId || !["image", "video"].includes(mediaType)))
+  ) {
     return response.status(400).json({ error: "Contenu du message invalide." });
   }
   try {
@@ -84,11 +93,20 @@ export const createChannelMessage = async (request, response, next) => {
     if (!channel) {
       return response.status(404).json({ error: "Canal public introuvable." });
     }
+    if (hasMedia) {
+      const verifiedMedia = await verifyMessageMedia({
+        userId: request.auth.userId,
+        mediaUrl,
+        mediaType,
+        mediaPublicId,
+      });
+      if (verifiedMedia.error) return response.status(400).json({ error: verifiedMedia.error });
+    }
     const result = await pool.query(
-      `INSERT INTO messages (channel_id, sender_id, body)
-       VALUES ($1, $2, $3)
-       RETURNING id, channel_id, sender_id, body, created_at`,
-      [channel.id, request.auth.userId, body],
+      `INSERT INTO messages (channel_id, sender_id, body, media_url, media_type)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, channel_id, sender_id, body, media_url, media_type, created_at`,
+      [channel.id, request.auth.userId, body, mediaUrl || null, mediaType || null],
     );
     return response.status(201).json({
       message: {

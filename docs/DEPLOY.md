@@ -70,6 +70,9 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 22. `server/db/seeds.sql`
 23. `migrations/019_quartierplus_voyage.sql`
 24. `migrations/020_social_alliance_location.sql`
+25. `migrations/021_post_comment_interactions.sql`
+26. `migrations/022_user_blocks.sql`
+27. `migrations/023_private_message_media.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -99,7 +102,13 @@ Les migrations 015 à 017 ajoutent les champs utilisés par les publications
 Made in, les épingles sponsorisées et les détails d'offres Pro. Appliquez-les
 avant de déployer cette version de l'API. Les migrations 019 et 020 ajoutent
 respectivement Voyage et les alliances, interactions du fil et positions
-partagées avec consentement.
+partagées avec consentement. La migration 021 ajoute les réponses, réactions
+et dates de modification des commentaires; appliquez-la avant de déployer les
+routes sociales correspondantes.
+La migration 022 ajoute les blocages persistants et doit être appliquée avant
+le déploiement des filtres du fil et de la messagerie.
+La migration 023 ajoute les champs média aux messages privés; déployez-la avant
+la version mobile qui permet d’y joindre des photos ou vidéos.
 
 ## 2. Créer le service web Render
 
