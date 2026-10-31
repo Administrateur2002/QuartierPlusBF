@@ -25,6 +25,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import VoiceAssistantModal from "./src/components/VoiceAssistantModal";
@@ -70,14 +71,14 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 const renderTabLabel =
-  (label: string) =>
+  (label: string, compact = false) =>
   ({ color }: { color: string }) => (
     <Text
       allowFontScaling={false}
-      ellipsizeMode="clip"
+      ellipsizeMode="tail"
       maxFontSizeMultiplier={1.1}
       numberOfLines={1}
-      style={{ color, fontSize: 12, fontWeight: "500", lineHeight: 14 }}
+      style={{ color, fontSize: compact ? 9 : 12, fontWeight: "600", lineHeight: 14 }}
     >
       {label}
     </Text>
@@ -85,9 +86,12 @@ const renderTabLabel =
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const { colors, t } = useTheme();
   const [proCommerceEnabled, setProCommerceEnabled] = useState(false);
   const [voyageEnabled, setVoyageEnabled] = useState(false);
+  const compactTabs = width < 430 && proCommerceEnabled && voyageEnabled;
+  const compactMessageLabel = t("tabHome") === "Accueil" ? "Messa" : "Msg";
   useEffect(() => {
     let active = true;
     void api
@@ -128,9 +132,9 @@ function MainTabs() {
           backgroundColor: colors.card,
           borderTopColor: colors.border,
           justifyContent: "space-around",
-          height: 64 + insets.bottom,
+          height: 68 + insets.bottom,
           paddingBottom: Math.max(insets.bottom, 4),
-          paddingTop: 6,
+          paddingTop: 5,
         },
         tabBarItemStyle: { flex: 1, minWidth: 0 },
       }}
@@ -163,10 +167,12 @@ function MainTabs() {
         name="Messages"
         component={MessagesScreen}
         options={{
-          tabBarLabel: renderTabLabel(t("tabMessages")),
-          tabBarIcon: ({ color, size }) => (
-            <MessageSquare color={color} size={size} />
+          tabBarLabel: renderTabLabel(
+            compactTabs ? compactMessageLabel : t("tabMessages"),
+            compactTabs,
           ),
+          tabBarAccessibilityLabel: t("tabMessages"),
+          tabBarIcon: ({ color, size }) => <MessageSquare color={color} size={compactTabs ? 19 : size} />,
         }}
       />
       <Tab.Screen
@@ -182,8 +188,9 @@ function MainTabs() {
           name="Grossistes"
           component={ProCommerceScreen}
           options={{
-            tabBarLabel: renderTabLabel("Grossistes"),
-            tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
+            tabBarLabel: renderTabLabel(compactTabs ? "Grossis" : "Grossistes", compactTabs),
+            tabBarAccessibilityLabel: "Grossistes",
+            tabBarIcon: ({ color, size }) => <Store color={color} size={compactTabs ? 19 : size} />,
           }}
         />
       )}

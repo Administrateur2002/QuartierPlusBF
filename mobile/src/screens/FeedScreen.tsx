@@ -8,6 +8,7 @@ import {
   Mic,
   Plus,
   RefreshCw,
+  Settings2,
   ShoppingBag,
 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,6 +23,7 @@ import {
   Share,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   Vibration,
@@ -236,14 +238,20 @@ export default function FeedScreen() {
   const [scopeReady, setScopeReady] = useState(false);
   const [locationInvitation, setLocationInvitation] = useState(false);
   const [entries, setEntries] = useState<FeedEntry[]>([]);
-  const [lowDataMode, setLowDataMode] = useState(false);
+  const [dataSaverEnabled, setDataSaverEnabled] = useState(false);
+  const [autoDataSaver, setAutoDataSaver] = useState(false);
+  const [wifiOnlyVideoAutoplay, setWifiOnlyVideoAutoplay] = useState(false);
+  const [isWifiConnected, setIsWifiConnected] = useState(false);
+  const [feedPreferencesReady, setFeedPreferencesReady] = useState(false);
+  const [feedSettingsOpen, setFeedSettingsOpen] = useState(false);
+  const lowDataMode = dataSaverEnabled || autoDataSaver;
   const [pageOffsets, setPageOffsets] = useState({ marketplace: 0, feed: 0 });
   const [hasMoreMarketplace, setHasMoreMarketplace] = useState(true);
   const [hasMoreFeed, setHasMoreFeed] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
-  const [feedViewportHeight, setFeedViewportHeight] = useState(0);
+  const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<FeedError | null>(null);
@@ -267,9 +275,39 @@ export default function FeedScreen() {
   const [sendingComment, setSendingComment] = useState(false);
   const uploadControllerRef = useRef<AbortController | null>(null);
 
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      SecureStore.getItemAsync("quartierplus.feed.data-saver"),
+      SecureStore.getItemAsync("quartierplus.feed.wifi-autoplay"),
+    ]).then(([dataSaver, wifiAutoplay]) => {
+      if (!active) return;
+      setDataSaverEnabled(dataSaver === "true");
+      setWifiOnlyVideoAutoplay(wifiAutoplay === "true");
+      setFeedPreferencesReady(true);
+    }).catch((preferenceError: unknown) => {
+      console.warn("Unable to load feed preferences:", preferenceError);
+      if (active) setFeedPreferencesReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!feedPreferencesReady) return;
+    void Promise.all([
+      SecureStore.setItemAsync("quartierplus.feed.data-saver", String(dataSaverEnabled)),
+      SecureStore.setItemAsync("quartierplus.feed.wifi-autoplay", String(wifiOnlyVideoAutoplay)),
+    ]).catch((preferenceError: unknown) => {
+      console.warn("Unable to save feed preferences:", preferenceError);
+    });
+  }, [dataSaverEnabled, feedPreferencesReady, wifiOnlyVideoAutoplay]);
+
   useEffect(
     () =>
       NetInfo.addEventListener((state) => {
+        setIsWifiConnected(state.type === "wifi" && state.isConnected === true);
         const expensive =
           state.details !== null &&
           "isConnectionExpensive" in state.details &&
@@ -278,9 +316,7 @@ export default function FeedScreen() {
           state.type === "cellular" &&
           (state.details.cellularGeneration === "2g" ||
             state.details.cellularGeneration === "3g");
-        setLowDataMode(
-          expensive || lowGeneration,
-        );
+        setAutoDataSaver(expensive || lowGeneration);
       }),
     [],
   );
@@ -435,6 +471,7 @@ export default function FeedScreen() {
 
   useEffect(() => {
     setActiveMediaIndex(0);
+    cardLayoutsRef.current = [];
   }, [scope, refreshKey]);
 
   useEffect(() => {
@@ -1368,7 +1405,7 @@ export default function FeedScreen() {
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
-        <View>
+        <View style={styles.headerCopy}>
           <Text style={styles.eyebrow}>QUARTIERPLUS</Text>
           <Text style={styles.title}>Fil du quartier</Text>
           <Text style={styles.subtitle}>
@@ -1378,6 +1415,14 @@ export default function FeedScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
+          <Pressable
+            accessibilityLabel="Préférences du fil"
+            accessibilityRole="button"
+            onPress={() => setFeedSettingsOpen(true)}
+            style={styles.microphoneButton}
+          >
+            <Settings2 color={colors.secondaryText} size={18} />
+          </Pressable>
           <Pressable
             accessibilityLabel="Assistant vocal"
             accessibilityRole="button"
@@ -1502,47 +1547,52 @@ export default function FeedScreen() {
                 ))}
               </View>
             ) : (
-              <ScrollView
+              <FlashList
+                data={entries}
+                drawDistance={Math.min(800, windowHeight * 1.5)}
                 contentContainerStyle={styles.list}
                 decelerationRate="fast"
+                extraData={activeMediaIndex}
+                keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
+                onEndReached={() => void loadMore()}
+                onEndReachedThreshold={0.6}
                 onScroll={(event) => {
-                  const { contentOffset, contentSize, layoutMeasurement } =
-                    event.nativeEvent;
-                  if (
-                    contentOffset.y + layoutMeasurement.height >=
-                    contentSize.height - 600
-                  ) {
-                    void loadMore();
-                  }
+                  const { contentOffset, layoutMeasurement } = event.nativeEvent;
+                  const viewportTop = contentOffset.y;
+                  const viewportBottom = viewportTop + layoutMeasurement.height;
+                  let nextActiveMedia = -1;
+                  let greatestVisibility = 0;
+                  entries.forEach((entry, entryIndex) => {
+                    const layout = cardLayoutsRef.current[entryIndex];
+                    if (!entry.imageUrl || !layout) return;
+                    const visibleHeight = Math.max(
+                      0,
+                      Math.min(layout.top + layout.height, viewportBottom) -
+                        Math.max(layout.top, viewportTop),
+                    );
+                    if (visibleHeight > greatestVisibility) {
+                      greatestVisibility = visibleHeight;
+                      nextActiveMedia = entryIndex;
+                    }
+                  });
+                  if (nextActiveMedia >= 0) setActiveMediaIndex(nextActiveMedia);
                 }}
-                scrollEventThrottle={300}
-                onLayout={(event) =>
-                  setFeedViewportHeight(event.nativeEvent.layout.height)
-                }
-                onMomentumScrollEnd={(event) => {
-                  if (feedViewportHeight <= 0) return;
-                  setActiveMediaIndex(
-                    Math.round(
-                      event.nativeEvent.contentOffset.y / feedViewportHeight,
-                    ),
-                  );
-                }}
-                pagingEnabled
+                scrollEventThrottle={150}
                 refreshControl={
                   <RefreshControl refreshing={isRefreshing} onRefresh={refresh} />
                 }
-                style={styles.feedPage}
-              >
-                {entries.map((entry, index) => (
+                renderItem={({ item: entry, index }) => (
                   <View
-                    key={`${entry.kind}:${entry.id}`}
+                    onLayout={(event) => {
+                      cardLayoutsRef.current[index] = {
+                        top: event.nativeEvent.layout.y,
+                        height: event.nativeEvent.layout.height,
+                      };
+                    }}
                     style={[
                       styles.card,
                       { backgroundColor: colors.card, borderColor: colors.border },
-                      entry.imageUrl
-                        ? { height: Math.max(520, windowHeight - 245) }
-                        : null,
                     ]}
                   >
                     <View style={styles.cardHeader}>
@@ -1564,19 +1614,31 @@ export default function FeedScreen() {
                     </View>
                     {entry.imageUrl ? (
                       <FeedMedia
-                        height={Math.max(280, windowHeight - 455)}
-                        active={index === activeMediaIndex}
+                        height={Math.min(420, Math.max(220, windowHeight * 0.46))}
+                        active={option.id === scope && index === activeMediaIndex}
+                        autoPlay={!wifiOnlyVideoAutoplay || isWifiConnected}
+                        creatorName={entry.authorName}
                         onDoubleTap={() => {
                           if (!entry.likedByMe) void likePost(entry);
                         }}
-                        preloadUri={entries[index + 1]?.mediaType === "image" ? entries[index + 1]?.imageUrl : undefined}
+                        preloadUri={
+                          option.id === scope &&
+                          index === activeMediaIndex &&
+                          (entries[index + 1]?.mediaType === "image" ||
+                            (entries[index + 1]?.mediaType === "video" &&
+                              isWifiConnected &&
+                              !lowDataMode))
+                            ? entries[index + 1]?.imageUrl
+                            : undefined
+                        }
+                        preloadType={entries[index + 1]?.mediaType}
                         lowDataMode={lowDataMode}
                         type={entry.mediaType ?? "image"}
                         uri={entry.imageUrl}
                       />
                     ) : null}
                     {entry.body ? (
-                      <Text numberOfLines={2} style={[styles.body, { color: colors.secondaryText }]}>{entry.body}</Text>
+                      <Text style={[styles.body, { color: colors.secondaryText }]}>{entry.body}</Text>
                     ) : null}
                     {entry.kind === "post" ? (
                       <View style={styles.postActions}>
@@ -1666,24 +1728,27 @@ export default function FeedScreen() {
                       </View>
                     ) : null}
                   </View>
-                ))}
-                {isLoadingMore ? (
+                )}
+                ListEmptyComponent={
+                  !entries.length && !isLoading ? (
+                    <View style={styles.empty}>
+                      <MapPin color="#94a3b8" size={30} />
+                      <Text style={styles.emptyTitle}>Rien à signaler pour le moment</Text>
+                      <Text style={styles.emptyText}>
+                        Les publications correspondant à la portée sélectionnée apparaîtront ici.
+                      </Text>
+                    </View>
+                  ) : null
+                }
+                ListFooterComponent={isLoadingMore ? (
                   <ActivityIndicator
                     accessibilityLabel="Chargement des publications suivantes"
                     color={colors.primary}
                     style={styles.loadMoreIndicator}
                   />
                 ) : null}
-                {!entries.length && !isLoading && (
-                  <View style={styles.empty}>
-                    <MapPin color="#94a3b8" size={30} />
-                    <Text style={styles.emptyTitle}>Rien à signaler pour le moment</Text>
-                    <Text style={styles.emptyText}>
-                      Les publications correspondant à la portée sélectionnée apparaîtront ici.
-                    </Text>
-                  </View>
-                )}
-              </ScrollView>
+                style={styles.feedPage}
+              />
             )}
           </View>
         ))}
@@ -1847,6 +1912,54 @@ export default function FeedScreen() {
       </Modal>
       <Modal
         animationType="slide"
+        onRequestClose={() => setFeedSettingsOpen(false)}
+        transparent
+        visible={feedSettingsOpen}
+      >
+        <View style={styles.commentBackdrop}>
+          <View style={[styles.preferenceSheet, { backgroundColor: colors.card }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.preferenceTitle, { color: colors.text }]}>Préférences du fil</Text>
+              <Pressable
+                accessibilityLabel="Fermer les préférences"
+                accessibilityRole="button"
+                onPress={() => setFeedSettingsOpen(false)}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            <View style={[styles.preferenceRow, { borderBottomColor: colors.border }]}>
+              <View style={styles.preferenceCopy}>
+                <Text style={[styles.preferenceLabel, { color: colors.text }]}>Économie de données</Text>
+                <Text style={[styles.preferenceDescription, { color: colors.secondaryText }]}>Réduit la qualité des médias chargés.</Text>
+              </View>
+              <Switch
+                accessibilityLabel="Économie de données"
+                accessibilityRole="switch"
+                onValueChange={setDataSaverEnabled}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                value={dataSaverEnabled}
+              />
+            </View>
+            <View style={styles.preferenceRow}>
+              <View style={styles.preferenceCopy}>
+                <Text style={[styles.preferenceLabel, { color: colors.text }]}>Lecture vidéo sur Wi-Fi</Text>
+                <Text style={[styles.preferenceDescription, { color: colors.secondaryText }]}>Les vidéos ne démarrent pas automatiquement sur le réseau mobile.</Text>
+              </View>
+              <Switch
+                accessibilityLabel="Lecture vidéo automatique uniquement sur Wi-Fi"
+                accessibilityRole="switch"
+                onValueChange={setWifiOnlyVideoAutoplay}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                value={wifiOnlyVideoAutoplay}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="slide"
         onRequestClose={() => setSelectedPost(null)}
         transparent
         visible={selectedPost !== null}
@@ -1920,6 +2033,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 16,
   },
+  headerCopy: { flex: 1, minWidth: 0 },
   eyebrow: { color: "#2563eb", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   title: { color: "#0f172a", fontSize: 24, fontWeight: "800", marginTop: 3 },
   subtitle: { color: "#64748b", fontSize: 13, marginTop: 3 },
@@ -2101,6 +2215,27 @@ const styles = StyleSheet.create({
     padding: 18,
     paddingBottom: 28,
   },
+  preferenceSheet: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    minHeight: 250,
+    paddingBottom: 32,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+  },
+  preferenceTitle: { fontSize: 18, fontWeight: "800" },
+  preferenceClose: { minHeight: 40, justifyContent: "center", paddingHorizontal: 8 },
+  preferenceRow: {
+    alignItems: "center",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    gap: 12,
+    minHeight: 78,
+    paddingVertical: 12,
+  },
+  preferenceCopy: { flex: 1, gap: 4, minWidth: 0 },
+  preferenceLabel: { fontSize: 14, fontWeight: "700" },
+  preferenceDescription: { fontSize: 12, lineHeight: 17 },
   commentHeader: {
     alignItems: "center",
     flexDirection: "row",
