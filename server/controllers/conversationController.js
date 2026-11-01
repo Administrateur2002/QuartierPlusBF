@@ -9,6 +9,14 @@ export const listConversations = async (request, response, next) => {
     const result = await pool.query(
       `SELECT conversation.id, other_user.id AS participant_id,
               other_user.full_name AS participant_name,
+              other_user.profile_photo_url AS participant_photo_url,
+              other_user.badge AS participant_badge,
+              EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = $1 AND alliance.recipient_id = other_user.id)
+                    OR (alliance.recipient_id = $1 AND alliance.requester_id = other_user.id))
+              ) AS participant_is_ally,
               latest.body AS last_message,
               COALESCE(latest.created_at, conversation.created_at) AS updated_at,
               (SELECT COUNT(*)::int
@@ -55,7 +63,16 @@ export const listPrivateMessages = async (request, response, next) => {
   try {
     const result = await pool.query(
       `SELECT message.id, message.conversation_id, message.sender_id,
-              profile.full_name AS sender_name, message.body AS content,
+              profile.full_name AS sender_name,
+              profile.profile_photo_url AS sender_photo_url,
+              profile.badge AS sender_badge,
+              EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = $2 AND alliance.recipient_id = profile.id)
+                    OR (alliance.recipient_id = $2 AND alliance.requester_id = profile.id))
+              ) AS sender_is_ally,
+              message.body AS content,
         message.media_url, message.media_type,
         message.created_at, message.sender_id = $2 AS is_mine
        FROM private_messages AS message

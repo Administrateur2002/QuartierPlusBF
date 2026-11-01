@@ -11,7 +11,6 @@ import {
   Plus,
   RefreshCw,
   Settings2,
-  ShoppingBag,
 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -61,6 +60,7 @@ import {
 import { MediaUploadError } from "../services/mediaUploadError";
 import { compressVideoForUpload } from "../services/videoCompression";
 import FeedMedia from "./FeedMedia";
+import ProfileAvatar from "../components/ProfileAvatar";
 import {
   FEED_SCOPES,
   isFeedCoordinates,
@@ -82,6 +82,8 @@ type FeedEntry = {
   mediaType?: CloudinaryMediaType;
   authorId?: string;
   authorName?: string;
+  authorPhotoUrl?: string;
+  authorBadge?: string | null;
   likesCount: number;
   commentsCount: number;
   likedByMe: boolean;
@@ -93,6 +95,9 @@ type FeedComment = {
   id: string;
   user_id?: string;
   user_name?: string;
+  user_photo_url?: string | null;
+  user_badge?: string | null;
+  user_is_ally?: boolean;
   content: string;
   created_at?: string;
   edited_at?: string | null;
@@ -181,6 +186,10 @@ const normalizePost = (value: unknown): FeedEntry | null => {
     authorId: typeof value.author_id === "string" ? value.author_id : undefined,
     authorName:
       typeof value.author_name === "string" ? value.author_name : undefined,
+    authorPhotoUrl:
+      typeof value.author_photo_url === "string" ? value.author_photo_url : undefined,
+    authorBadge:
+      typeof value.author_badge === "string" ? value.author_badge : null,
     likesCount: Number(value.likes_count ?? 0),
     commentsCount: Number(value.comments_count ?? 0),
     likedByMe: value.liked_by_me === true,
@@ -993,6 +1002,10 @@ export default function FeedScreen() {
       id: optimisticId,
       user_id: user?.id,
       user_name: typeof user?.name === "string" ? user.name : "Vous",
+      user_photo_url:
+        typeof user?.profile_photo_url === "string" ? user.profile_photo_url : null,
+      user_badge: typeof user?.badge === "string" ? user.badge : null,
+      user_is_ally: false,
       content,
       created_at: new Date().toISOString(),
       parent_comment_id: replyingToComment?.id ?? null,
@@ -2060,13 +2073,19 @@ export default function FeedScreen() {
                     ]}
                   >
                     <View style={styles.cardHeader}>
-                      <View style={[styles.icon, entry.kind === "alert" && styles.alertIcon]}>
-                        {entry.kind === "alert" ? (
+                      {entry.kind === "post" ? (
+                        <ProfileAvatar
+                          name={entry.authorName}
+                          photoUrl={entry.authorPhotoUrl}
+                          size={40}
+                          isAlly={entry.authorIsAlly}
+                          isProVerified={entry.authorBadge === "Commerçant Certifié"}
+                        />
+                      ) : (
+                        <View style={[styles.icon, styles.alertIcon]}>
                           <AlertTriangle color="#dc2626" size={19} />
-                        ) : (
-                          <ShoppingBag color="#2563eb" size={19} />
-                        )}
-                      </View>
+                        </View>
+                      )}
                       <View style={styles.cardHeading}>
                         {entry.authorName ? (
                           <Text style={[styles.authorName, { color: colors.text }]}>{entry.authorName}</Text>
@@ -2704,7 +2723,25 @@ export default function FeedScreen() {
               renderItem={({ item }) => (
                 <View style={[styles.commentItem, item.parent_comment_id ? styles.commentReplyItem : null]}>
                   <View style={styles.commentMeta}>
-                    <Text style={[styles.commentAuthor, { color: colors.text }]}>{item.user_name ?? "Voisin"}</Text>
+                    <View style={styles.commentAuthorWrap}>
+                      <ProfileAvatar
+                        name={item.user_name}
+                        photoUrl={
+                          item.user_id === user?.id &&
+                          typeof user?.profile_photo_url === "string"
+                            ? user.profile_photo_url
+                            : item.user_photo_url
+                        }
+                        size={32}
+                        isAlly={item.user_is_ally}
+                        isProVerified={
+                          item.user_badge === "Commerçant Certifié" ||
+                          (item.user_id === user?.id &&
+                            user?.badge === "Commerçant Certifié")
+                        }
+                      />
+                      <Text style={[styles.commentAuthor, { color: colors.text }]}>{item.user_name ?? "Voisin"}</Text>
+                    </View>
                     {item.created_at ? (
                       <Text style={[styles.commentDate, { color: colors.secondaryText }]}>
                         {new Date(item.created_at).toLocaleString()} {item.edited_at ? "· modifié" : ""}
@@ -3142,6 +3179,7 @@ const styles = StyleSheet.create({
   commentContextText: { flex: 1, fontSize: 12 },
   commentAccessoryButton: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 36 },
   commentMeta: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", gap: 8 },
+  commentAuthorWrap: { alignItems: "center", flex: 1, flexDirection: "row", gap: 8 },
   commentAuthor: { color: "#334155", fontSize: 12, fontWeight: "800" },
   commentDate: { fontSize: 10 },
   commentText: { color: "#475569", fontSize: 13, lineHeight: 19 },

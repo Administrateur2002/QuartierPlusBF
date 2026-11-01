@@ -111,14 +111,16 @@ export const acceptAlliance = async (request, response, next) => {
 export const listAllies = async (request, response, next) => {
   try {
     const result = await pool.query(
-      `SELECT users.id, users.full_name AS name, MAX(alliance.updated_at) AS allied_at
+      `SELECT users.id, users.full_name AS name,
+              users.profile_photo_url, users.badge,
+              MAX(alliance.updated_at) AS allied_at
        FROM user_alliances alliance
        JOIN users ON users.id = CASE
          WHEN alliance.requester_id = $1 THEN alliance.recipient_id
          ELSE alliance.requester_id END
        WHERE (alliance.requester_id = $1 OR alliance.recipient_id = $1)
          AND alliance.status = 'ALLIED'
-       GROUP BY users.id, users.full_name
+       GROUP BY users.id, users.full_name, users.profile_photo_url, users.badge
        ORDER BY users.full_name NULLS LAST`,
       [request.auth.userId],
     );
@@ -415,6 +417,14 @@ export const listPostComments = async (request, response, next) => {
       `SELECT comment.id, comment.content, comment.created_at,
               comment.edited_at, comment.parent_comment_id,
               user_profile.id AS user_id, user_profile.full_name AS user_name,
+              user_profile.profile_photo_url AS user_photo_url,
+              user_profile.badge AS user_badge,
+              EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = $4 AND alliance.recipient_id = user_profile.id)
+                    OR (alliance.recipient_id = $4 AND alliance.requester_id = user_profile.id))
+              ) AS user_is_ally,
               (SELECT COUNT(*)::int FROM post_comment_likes comment_like
                WHERE comment_like.comment_id = comment.id) AS likes_count,
               EXISTS (SELECT 1 FROM post_comment_likes own_like
@@ -668,6 +678,13 @@ export const listSharedLocations = async (request, response, next) => {
   try {
     const result = await pool.query(
       `SELECT users.id, users.full_name AS name,
+              users.profile_photo_url, users.badge,
+              EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = users.id AND alliance.recipient_id = $1)
+                    OR (alliance.recipient_id = users.id AND alliance.requester_id = $1))
+              ) AS is_ally,
               ST_Y(share.location::geometry) AS latitude,
               ST_X(share.location::geometry) AS longitude,
               share.updated_at, share.expires_at

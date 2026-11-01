@@ -35,7 +35,7 @@ export const authenticateSocket = async (socket, next) => {
       return next(new Error("Jeton invalide."));
     }
     const result = await pool.query(
-      `SELECT id, full_name, role
+      `SELECT id, full_name, role, profile_photo_url, badge
        FROM users
        WHERE id = $1`,
       [payload.sub],

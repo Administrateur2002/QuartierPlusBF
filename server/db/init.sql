@@ -40,9 +40,15 @@ CREATE TABLE IF NOT EXISTS users (
     email_verified_at TIMESTAMPTZ,
     terms_accepted_at TIMESTAMPTZ,
     badge VARCHAR(100),
+    profile_photo_public_id TEXT,
+    profile_photo_url TEXT,
     last_location GEOMETRY(Point, 4326),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS profile_photo_public_id TEXT,
+    ADD COLUMN IF NOT EXISTS profile_photo_url TEXT;
 
 CREATE TABLE IF NOT EXISTS otp_verifications (
     phone_number VARCHAR(20) PRIMARY KEY,

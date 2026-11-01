@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import api from "../../services/api";
 import type { EventsStackParamList } from "../../navigation/types";
+import ProfileAvatar from "../../components/ProfileAvatar";
 
 type Navigation = NativeStackNavigationProp<EventsStackParamList, "MyTickets">;
 type Ticket = {
@@ -25,6 +26,8 @@ type Ticket = {
   event_title: string;
   location_name: string;
   event_date: string;
+  ticket_owner_photo_url?: string | null;
+  ticket_owner_badge?: string | null;
 };
 
 export default function MyTicketsScreen() {
@@ -89,6 +92,14 @@ export default function MyTicketsScreen() {
         tickets.map((ticket) => (
           <View key={ticket.id} style={styles.card}>
             <View style={styles.statusLine}>
+              <ProfileAvatar
+                name="Vous"
+                photoUrl={ticket.ticket_owner_photo_url}
+                size={38}
+                isProVerified={
+                  ticket.ticket_owner_badge === "Commerçant Certifié"
+                }
+              />
               <Text style={styles.eventTitle}>{ticket.event_title}</Text>
               <Text
                 style={[

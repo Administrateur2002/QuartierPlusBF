@@ -60,6 +60,7 @@ import { io, type Socket } from "socket.io-client";
 import SosButton from "../components/SosButton";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
+import ProfileAvatar from "../components/ProfileAvatar";
 import { API_BASE_URL, apiFetch, getStoredAuthToken } from "../services/api";
 import type { MainTabParamList } from "../navigation/types";
 
@@ -104,6 +105,18 @@ type MapMarker = {
   confirmationsCount: number;
   status: "CONFIRMING" | "ACTIVE" | "RESOLVED" | "EXPIRED";
   expiresAt?: string;
+};
+type AllyProfile = {
+  id: string;
+  name: string | null;
+  photoUrl: string | null;
+  badge: string | null;
+};
+type SharedLocation = AllyProfile & {
+  isAlly: boolean;
+  latitude: number;
+  longitude: number;
+  updated_at: string;
 };
 
 type ScopeMeters = 3000 | 10000 | 30000;
@@ -397,14 +410,8 @@ export default function MapScreen() {
   const [shareDuration, setShareDuration] = useState<number | null>(1);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [selectedAllyIds, setSelectedAllyIds] = useState<string[]>([]);
-  const [allies, setAllies] = useState<{ id: string; name: string | null }[]>([]);
-  const [sharedLocations, setSharedLocations] = useState<{
-    id: string;
-    name: string | null;
-    latitude: number;
-    longitude: number;
-    updated_at: string;
-  }[]>([]);
+  const [allies, setAllies] = useState<AllyProfile[]>([]);
+  const [sharedLocations, setSharedLocations] = useState<SharedLocation[]>([]);
   const [initialRegion, setInitialRegion] = useState<Region | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [selectedScope, setSelectedScope] = useState<ScopeMeters>(10000);
@@ -649,20 +656,44 @@ export default function MapScreen() {
         throw new Error("La réponse de partage de position est invalide.");
       }
       if (!active) return;
-      setSharedLocations(locationPayload.locations.filter(
-        (item): item is (typeof sharedLocations)[number] =>
-          isRecord(item) &&
-          typeof item.id === "string" &&
-          typeof item.latitude === "number" &&
-          typeof item.longitude === "number" &&
-          typeof item.updated_at === "string",
-      ));
-      setAllies(alliesPayload.allies.filter(
-        (item): item is { id: string; name: string | null } =>
-          isRecord(item) &&
-          typeof item.id === "string" &&
-          (item.name === null || typeof item.name === "string"),
-      ));
+      setSharedLocations(
+        locationPayload.locations.flatMap((item): SharedLocation[] => {
+          if (
+            !isRecord(item) ||
+            typeof item.id !== "string" ||
+            typeof item.latitude !== "number" ||
+            typeof item.longitude !== "number" ||
+            typeof item.updated_at !== "string"
+          ) return [];
+          return [{
+            id: item.id,
+            name: typeof item.name === "string" ? item.name : null,
+            photoUrl:
+              typeof item.profile_photo_url === "string"
+                ? item.profile_photo_url
+                : null,
+            badge: typeof item.badge === "string" ? item.badge : null,
+            isAlly: item.is_ally === true,
+            latitude: item.latitude,
+            longitude: item.longitude,
+            updated_at: item.updated_at,
+          }];
+        }),
+      );
+      setAllies(
+        alliesPayload.allies.flatMap((item): AllyProfile[] => {
+          if (!isRecord(item) || typeof item.id !== "string") return [];
+          return [{
+            id: item.id,
+            name: typeof item.name === "string" ? item.name : null,
+            photoUrl:
+              typeof item.profile_photo_url === "string"
+                ? item.profile_photo_url
+                : null,
+            badge: typeof item.badge === "string" ? item.badge : null,
+          }];
+        }),
+      );
       setShareMode(locationShareMode);
       setSelectedAllyIds(
         sharingPayload.user_ids.filter((id): id is string => typeof id === "string"),
@@ -1532,11 +1563,16 @@ export default function MapScreen() {
             strokeWidth={1}
           />
           <Marker coordinate={userLocation} title="Vous" anchor={{ x: 0.5, y: 0.5 }}>
-            <View style={styles.myLocationAvatar}>
-              <Text style={styles.myLocationInitial}>
-                {user?.name?.trim().slice(0, 1).toUpperCase() || "●"}
-              </Text>
-            </View>
+            <ProfileAvatar
+              name={user?.name}
+              photoUrl={
+                typeof user?.profile_photo_url === "string"
+                  ? user.profile_photo_url
+                  : null
+              }
+              size={42}
+              isProVerified={user?.badge === "Commerçant Certifié"}
+            />
           </Marker>
           {sharedLocations.map((location) => (
             <Marker
@@ -1545,11 +1581,13 @@ export default function MapScreen() {
               title={location.name || "Allié"}
               description={`Position actualisée ${new Date(location.updated_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`}
             >
-              <View style={styles.allyLocationAvatar}>
-                <Text style={styles.allyLocationInitial}>
-                  {location.name?.trim().slice(0, 1).toUpperCase() || "A"}
-                </Text>
-              </View>
+              <ProfileAvatar
+                name={location.name}
+                photoUrl={location.photoUrl}
+                size={42}
+                isAlly={location.isAlly}
+                isProVerified={location.badge === "Commerçant Certifié"}
+              />
             </Marker>
           ))}
           {visibleMarkers.map((marker) => (
@@ -2070,6 +2108,13 @@ export default function MapScreen() {
                       )}
                       style={styles.allyOption}
                     >
+                      <ProfileAvatar
+                        name={ally.name}
+                        photoUrl={ally.photoUrl}
+                        size={34}
+                        isAlly
+                        isProVerified={ally.badge === "Commerçant Certifié"}
+                      />
                       <Text style={styles.allyOptionText}>{ally.name || "Allié"}</Text>
                       <Text style={styles.allyOptionCheck}>{selected ? "✓" : "○"}</Text>
                     </Pressable>

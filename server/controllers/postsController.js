@@ -372,6 +372,8 @@ export const listFeed = async (request, response, next) => {
       `SELECT post.id, post.caption, post.scope, post.media_url,
               post.media_type, post.created_at, post.author_id,
               author.full_name AS author_name,
+              author.profile_photo_url AS author_photo_url,
+              author.badge AS author_badge,
               (SELECT COUNT(*)::int FROM post_likes like_row
                WHERE like_row.post_id = post.id) AS likes_count,
               (SELECT COUNT(*)::int FROM post_comments comment_row

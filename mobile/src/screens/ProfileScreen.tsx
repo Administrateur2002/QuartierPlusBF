@@ -18,9 +18,12 @@ import {
   Star,
   Trash2,
   User,
+  ImagePlus,
 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import * as Updates from "expo-updates";
+import * as ImageManipulator from "expo-image-manipulator";
+import * as ImagePicker from "expo-image-picker";
 import { useNavigation, type NavigationProp } from "@react-navigation/native";
 import {
   openProfileStore,
@@ -45,12 +48,14 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import VoiceTextInput from "../components/VoiceTextInput";
+import ProfileAvatar from "../components/ProfileAvatar";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
 import {
   EMERGENCY_COUNTRIES,
   type EmergencyCountry,
 } from "../services/emergencyServices";
 import { API_BASE_URL, apiFetch } from "../services/api";
+import { uploadProfilePhoto } from "../services/uploadProfilePhoto";
 import {
   checkServerContract,
   getServerHealth,
@@ -83,6 +88,7 @@ type UserProfile = {
   reputationScore: number | null;
   isVerified: boolean;
   badge: string | null;
+  photoUrl: string | null;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -113,6 +119,10 @@ const normalizeProfile = (value: unknown): UserProfile | null => {
       typeof user.badge === "string" && user.badge.length > 0
         ? user.badge
         : null,
+    photoUrl:
+      typeof user.profile_photo_url === "string"
+        ? user.profile_photo_url
+        : null,
   };
 };
 
@@ -131,7 +141,7 @@ const PLUS_DESTINATIONS = [
 
 export default function ProfileScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
-  const { isOffline, requestAuthentication, signOut, user } = useAuth();
+  const { isOffline, refreshUser, requestAuthentication, signOut, user } = useAuth();
   const { colors, language, setLanguage, setTheme, t, theme } = useTheme();
   const { setFloatingButtonEnabled } = useVoiceAssistant();
   const [selectedCountry, setSelectedCountry] = useState<Country>(COUNTRIES[3]);
@@ -157,6 +167,7 @@ export default function ProfileScreen() {
   const [draftName, setDraftName] = useState("");
   const [draftNeighborhood, setDraftNeighborhood] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isUploadingProfilePhoto, setIsUploadingProfilePhoto] = useState(false);
   const [editingContact, setEditingContact] =
     useState<TrustedContact | null>(null);
   const [contactName, setContactName] = useState("");
@@ -448,6 +459,7 @@ export default function ProfileScreen() {
           isVerified: false,
           phoneNumber: "",
           badge: null,
+          photoUrl: null,
         }),
         name,
         neighborhood,
@@ -466,6 +478,66 @@ export default function ProfileScreen() {
     } finally {
       setIsSavingProfile(false);
     }
+  };
+
+  const uploadSelectedProfilePhoto = async (source: "camera" | "gallery") => {
+    try {
+      const permission =
+        source === "camera"
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error(
+          source === "camera"
+            ? "Autorisez l’accès à la caméra."
+            : "Autorisez l’accès à vos photos.",
+        );
+      }
+      const picked =
+        source === "camera"
+          ? await ImagePicker.launchCameraAsync({
+              mediaTypes: ["images"],
+              allowsEditing: true,
+              aspect: [1, 1],
+              quality: 1,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              allowsEditing: true,
+              aspect: [1, 1],
+              quality: 1,
+            });
+      if (picked.canceled) return;
+      const selected = picked.assets[0];
+      if (!selected?.uri) {
+        throw new Error("La photo sélectionnée est indisponible.");
+      }
+      setIsUploadingProfilePhoto(true);
+      const resized = await ImageManipulator.manipulateAsync(
+        selected.uri,
+        [{ resize: { width: 720 } }],
+        { compress: 0.78, format: ImageManipulator.SaveFormat.WEBP },
+      );
+      const photoUrl = await uploadProfilePhoto(resized.uri);
+      setProfile((current) => current ? { ...current, photoUrl } : current);
+      await refreshUser();
+    } catch (error) {
+      Alert.alert(
+        "Photo de profil indisponible",
+        error instanceof Error ? error.message : "Impossible d’enregistrer la photo.",
+      );
+    } finally {
+      setIsUploadingProfilePhoto(false);
+    }
+  };
+
+  const showProfilePhotoOptions = () => {
+    if (isUploadingProfilePhoto) return;
+    Alert.alert("Photo de profil", "Choisissez une source pour votre photo.", [
+      { text: "Caméra", onPress: () => void uploadSelectedProfilePhoto("camera") },
+      { text: "Galerie", onPress: () => void uploadSelectedProfilePhoto("gallery") },
+      { text: "Annuler", style: "cancel" },
+    ]);
   };
 
   const openContactEditor = (contact?: TrustedContact) => {
@@ -955,9 +1027,12 @@ export default function ProfileScreen() {
       >
         <View style={styles.profileHeader}>
           <View style={styles.avatarWrapper}>
-            <View style={styles.avatar}>
-              <User color="#2563eb" size={34} />
-            </View>
+            <ProfileAvatar
+              name={profile?.name}
+              photoUrl={profile?.photoUrl}
+              size={72}
+              isProVerified={profile?.badge === "Commerçant Certifié"}
+            />
             {profile?.isVerified && (
               <View style={styles.verifiedBadge}>
                 <CheckCircle2 color="#ffffff" size={15} />
@@ -992,6 +1067,22 @@ export default function ProfileScreen() {
             {profile?.badge && (
               <Text style={styles.proBadge}>{profile.badge}</Text>
             )}
+            <Pressable
+              accessibilityLabel="Changer la photo de profil"
+              accessibilityRole="button"
+              disabled={isUploadingProfilePhoto}
+              onPress={showProfilePhotoOptions}
+              style={styles.editProfileButton}
+            >
+              {isUploadingProfilePhoto ? (
+                <ActivityIndicator color="#2563eb" size="small" />
+              ) : (
+                <ImagePlus color="#2563eb" size={14} />
+              )}
+              <Text style={styles.editProfileText}>
+                {isUploadingProfilePhoto ? "Enregistrement de la photo…" : "Changer la photo"}
+              </Text>
+            </Pressable>
             <Pressable
               accessibilityRole="button"
               onPress={() => {

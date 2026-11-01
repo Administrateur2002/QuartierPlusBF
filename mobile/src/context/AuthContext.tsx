@@ -43,6 +43,8 @@ export type AuthUser = {
   country_code?: string | null;
   reputation_score?: number | null;
   is_verified?: boolean;
+  profile_photo_url?: string | null;
+  badge?: string | null;
   phone_verified_at?: string | null;
   [key: string]: unknown;
 };

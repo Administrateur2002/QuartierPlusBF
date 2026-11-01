@@ -19,6 +19,7 @@ import { Room } from "livekit-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute, type RouteProp } from "@react-navigation/native";
 import VoiceTextInput from "../components/VoiceTextInput";
+import ProfileAvatar from "../components/ProfileAvatar";
 import type { MainTabParamList } from "../navigation/types";
 import {
   ActivityIndicator,
@@ -61,6 +62,9 @@ type ChatMessage = {
   conversationId?: string;
   text: string;
   senderName: string;
+  senderPhotoUrl?: string | null;
+  senderBadge?: string | null;
+  senderIsAlly: boolean;
   createdAt: string;
   isOwnMessage: boolean;
   imageUrl?: string;
@@ -75,6 +79,9 @@ type PrivateConversation = {
   id: string;
   participantId: string;
   participantName: string;
+  participantPhotoUrl: string | null;
+  participantBadge: string | null;
+  participantIsAlly: boolean;
   participantType: "neighbor" | "seller";
   lastMessage: string;
   updatedAt: string;
@@ -143,6 +150,15 @@ const normalizeMessage = (
     senderName: String(
       sender?.name ?? value.sender_name ?? value.username ?? "Voisin",
     ),
+    senderPhotoUrl:
+      typeof value.sender_photo_url === "string"
+        ? value.sender_photo_url
+        : typeof sender?.photo_url === "string"
+          ? sender.photo_url
+          : null,
+    senderBadge:
+      typeof value.sender_badge === "string" ? value.sender_badge : null,
+    senderIsAlly: value.sender_is_ally === true,
     createdAt: String(
       value.created_at ?? value.createdAt ?? new Date().toISOString(),
     ),
@@ -208,6 +224,15 @@ const normalizeConversation = (value: unknown): PrivateConversation | null => {
     id,
     participantId,
     participantName,
+    participantPhotoUrl:
+      typeof value.participant_photo_url === "string"
+        ? value.participant_photo_url
+        : typeof participant?.photo_url === "string"
+          ? participant.photo_url
+          : null,
+    participantBadge:
+      typeof value.participant_badge === "string" ? value.participant_badge : null,
+    participantIsAlly: value.participant_is_ally === true,
     participantType: ["seller", "merchant", "vendor", "commercant"].includes(
       rawType,
     )
@@ -1152,16 +1177,15 @@ export default function MessagesScreen() {
           >
             <X color="#475569" size={20} />
           </Pressable>
-          <View style={styles.participantAvatar}>
-            <Text style={[styles.participantInitial, { color: colors.primary }]}>
-              {selectedConversation.participantName
-                .split(/\s+/)
-                .map((part) => part[0])
-                .slice(0, 2)
-                .join("")
-                .toLocaleUpperCase()}
-            </Text>
-          </View>
+          <ProfileAvatar
+            name={selectedConversation.participantName}
+            photoUrl={selectedConversation.participantPhotoUrl}
+            size={48}
+            isAlly={selectedConversation.participantIsAlly}
+            isProVerified={
+              selectedConversation.participantBadge === "Commerçant Certifié"
+            }
+          />
           <View style={styles.channelCopy}>
             <Text style={styles.channelName}>
               {selectedConversation.participantName}
@@ -1206,22 +1230,15 @@ export default function MessagesScreen() {
                   }}
                   style={[styles.conversationCard, { backgroundColor: colors.card, borderColor: colors.border }]}
                 >
-                  <View
-                    style={[
-                      styles.participantAvatar,
-                      conversation.participantType === "seller" &&
-                        styles.sellerAvatar,
-                    ]}
-                  >
-                    <Text style={styles.participantInitial}>
-                      {conversation.participantName
-                        .split(/\s+/)
-                        .map((part) => part[0])
-                        .slice(0, 2)
-                        .join("")
-                        .toLocaleUpperCase()}
-                    </Text>
-                  </View>
+                  <ProfileAvatar
+                    name={conversation.participantName}
+                    photoUrl={conversation.participantPhotoUrl}
+                    size={48}
+                    isAlly={conversation.participantIsAlly}
+                    isProVerified={
+                      conversation.participantBadge === "Commerçant Certifié"
+                    }
+                  />
                   <View style={styles.conversationCopy}>
                     <View style={styles.conversationTopLine}>
                       <Text style={[styles.conversationName, { color: colors.text }]}>
@@ -1296,6 +1313,22 @@ export default function MessagesScreen() {
                 message.isOwnMessage && styles.ownMessageBubble,
               ]}
             >
+              <ProfileAvatar
+                name={message.senderName}
+                photoUrl={
+                  message.isOwnMessage &&
+                  typeof user?.profile_photo_url === "string"
+                    ? user.profile_photo_url
+                    : message.senderPhotoUrl
+                }
+                size={28}
+                isAlly={message.senderIsAlly}
+                isProVerified={
+                  message.senderBadge === "Commerçant Certifié" ||
+                  (message.isOwnMessage &&
+                    user?.badge === "Commerçant Certifié")
+                }
+              />
               {!message.isOwnMessage && (
                 <Text style={styles.messageSender}>{message.senderName}</Text>
               )}

@@ -360,9 +360,12 @@ export const listMyTickets = async (request, response, next) => {
     const result = await pool.query(
       `SELECT t.id, t.event_id, t.qr_code_signature, t.status,
               t.purchased_at, t.scanned_at, e.title AS event_title,
-              e.location_name, e.event_date
+              e.location_name, e.event_date,
+              ticket_owner.profile_photo_url AS ticket_owner_photo_url,
+              ticket_owner.badge AS ticket_owner_badge
        FROM tickets t
        JOIN events e ON e.id = t.event_id
+       JOIN users ticket_owner ON ticket_owner.id = t.user_id
        WHERE t.user_id = $1
        ORDER BY e.event_date, t.purchased_at DESC
        LIMIT 200`,

@@ -50,7 +50,10 @@ export const listChannelMessages = async (request, response, next) => {
     }
     const result = await pool.query(
       `SELECT message.id, message.channel_id, message.sender_id,
-              profile.full_name AS sender_name, message.body,
+              profile.full_name AS sender_name,
+              profile.profile_photo_url AS sender_photo_url,
+              profile.badge AS sender_badge,
+              FALSE AS sender_is_ally, message.body,
               message.media_url, message.media_type, message.created_at,
               message.sender_id = $2 AS is_mine
        FROM messages AS message
@@ -108,12 +111,19 @@ export const createChannelMessage = async (request, response, next) => {
        RETURNING id, channel_id, sender_id, body, media_url, media_type, created_at`,
       [channel.id, request.auth.userId, body, mediaUrl || null, mediaType || null],
     );
+    const senderProfile = await pool.query(
+      "SELECT profile_photo_url, badge FROM users WHERE id = $1",
+      [request.auth.userId],
+    );
     return response.status(201).json({
       message: {
         ...result.rows[0],
         channel_id: request.params.channelId,
         channel_name: channel.name,
         sender_name: request.user?.fullName ?? "Voisin",
+        sender_photo_url: senderProfile.rows[0]?.profile_photo_url ?? null,
+        sender_badge: senderProfile.rows[0]?.badge ?? null,
+        sender_is_ally: false,
         content: body,
         is_mine: true,
       },

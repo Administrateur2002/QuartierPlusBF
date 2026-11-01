@@ -1,8 +1,18 @@
+import { randomUUID } from "node:crypto";
+import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
+import {
+  createCloudinaryUploadSignature,
+  deleteCloudinaryAsset,
+  getCloudinaryAsset,
+  hasGpsMetadata,
+  isCloudinaryPublicIdOwnedByUser,
+} from "../services/cloudinary.js";
 
 const profileQuery = `
   SELECT id, phone_number, email, google_id, full_name, neighborhood, role,
-         country_code, reputation_score, is_verified, phone_verified_at, badge
+         country_code, reputation_score, is_verified, phone_verified_at, badge,
+         profile_photo_url
   FROM users
   WHERE id = $1
 `;
@@ -20,7 +30,85 @@ const formatProfile = (user) => ({
   is_verified: user.is_verified,
   phone_verified_at: user.phone_verified_at,
   badge: user.badge,
+  profile_photo_url: user.profile_photo_url,
 });
+
+export const signProfilePhotoUpload = async (request, response, next) => {
+  try {
+    const userId = request.auth.userId;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = "quartierplus/profiles";
+    const publicId = `${userId}_${randomUUID()}`;
+    const signature = createCloudinaryUploadSignature({
+      folder,
+      public_id: publicId,
+      timestamp,
+    });
+    return response.status(200).json({
+      ...signature,
+      folder,
+      public_id: publicId,
+      resource_type: "image",
+      timestamp,
+      max_bytes: env.postMaxPhotoBytes,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const updateCurrentUserPhoto = async (request, response, next) => {
+  const publicId =
+    typeof request.body?.profile_photo_public_id === "string"
+      ? request.body.profile_photo_public_id.trim()
+      : "";
+  const userId = request.auth.userId;
+  if (
+    !publicId ||
+    publicId.length > 255 ||
+    !isCloudinaryPublicIdOwnedByUser(userId, publicId)
+  ) {
+    return response.status(400).json({ error: "La photo téléversée ne vous appartient pas." });
+  }
+  try {
+    const asset = await getCloudinaryAsset("image", publicId);
+    if (
+      !asset ||
+      asset.public_id !== publicId ||
+      typeof asset.secure_url !== "string" ||
+      !asset.secure_url.startsWith(
+        `https://res.cloudinary.com/${env.cloudinaryCloudName}/`,
+      ) ||
+      !["jpg", "jpeg", "png", "webp"].includes(String(asset.format).toLowerCase()) ||
+      !Number.isSafeInteger(asset.bytes) ||
+      asset.bytes < 1 ||
+      asset.bytes > env.postMaxPhotoBytes
+    ) {
+      return response.status(400).json({ error: "La photo téléversée est invalide." });
+    }
+    if (hasGpsMetadata(asset.image_metadata)) {
+      await deleteCloudinaryAsset("image", publicId);
+      return response.status(400).json({
+        error: "La photo contient des coordonnées GPS et a été supprimée.",
+      });
+    }
+    const result = await pool.query(
+      `UPDATE users
+       SET profile_photo_public_id = $1, profile_photo_url = $2
+       WHERE id = $3
+       RETURNING profile_photo_url`,
+      [publicId, asset.secure_url, userId],
+    );
+    if (!result.rowCount) {
+      return response.status(404).json({ error: "Utilisateur introuvable." });
+    }
+    return response.status(200).json({
+      profile_photo_url: result.rows[0].profile_photo_url,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
 
 export const getCurrentUser = async (request, response, next) => {
   try {
@@ -60,7 +148,7 @@ export const updateCurrentUser = async (request, response, next) => {
        WHERE id = $4
        RETURNING id, phone_number, email, google_id, full_name, neighborhood,
                  role, country_code, reputation_score, is_verified,
-                 phone_verified_at, badge`,
+                 phone_verified_at, badge, profile_photo_url`,
       [name, neighborhood || null, countryCode, request.auth.userId],
     );
     if (result.rowCount === 0) {

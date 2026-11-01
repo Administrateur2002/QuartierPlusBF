@@ -184,7 +184,9 @@ export const listVoyageTickets = async (request, response, next) => {
       `SELECT ticket.id, ticket.trip_id, ticket.status, ticket.expires_at, ticket.signature,
               ticket.kid, ticket.short_code, seat.seat_number, trip.departure_at,
               trip.arrival_at, trip.price, route.departure, route.arrival,
-              company.name AS company_name, traveler.full_name AS traveler_name
+              company.name AS company_name, traveler.full_name AS traveler_name,
+              traveler.profile_photo_url AS traveler_photo_url,
+              traveler.badge AS traveler_badge
        FROM voy_tickets ticket JOIN voy_seats seat ON seat.id = ticket.seat_id
        JOIN voy_trips trip ON trip.id = ticket.trip_id JOIN voy_routes route ON route.id = trip.route_id
        JOIN voy_companies company ON company.id = route.company_id

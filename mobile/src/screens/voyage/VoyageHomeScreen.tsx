@@ -7,6 +7,7 @@ import { Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View 
 import api from "../../services/api";
 import { getApiErrorMessage } from "../../services/apiError";
 import type { VoyageStackParamList } from "../../navigation/types";
+import ProfileAvatar from "../../components/ProfileAvatar";
 
 type Navigation = NativeStackNavigationProp<VoyageStackParamList, "VoyageHome">;
 type Trip = {
@@ -34,6 +35,8 @@ type VoyageTicket = {
   arrival: string;
   departure_at: string;
   price: number;
+  traveler_photo_url?: string | null;
+  traveler_badge?: string | null;
 };
 
 export default function VoyageHomeScreen() {
@@ -227,6 +230,12 @@ export default function VoyageHomeScreen() {
       {tickets.map((ticket) => (
         <View key={ticket.id} style={styles.ticket}>
           <View style={styles.tripHead}>
+            <ProfileAvatar
+              name={ticket.traveler_name}
+              photoUrl={ticket.traveler_photo_url}
+              size={38}
+              isProVerified={ticket.traveler_badge === "Commerçant Certifié"}
+            />
             <Text style={styles.route}>{ticket.departure}  →  {ticket.arrival}</Text>
             <Text style={ticket.status === "VALID" ? styles.valid : styles.invalid}>{ticket.status}</Text>
           </View>
