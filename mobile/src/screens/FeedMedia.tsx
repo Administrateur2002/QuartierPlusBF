@@ -28,6 +28,7 @@ type Props = {
   lowDataMode?: boolean;
   autoPlay?: boolean;
   creatorName?: string;
+  immersive?: boolean;
 };
 
 export default function FeedMedia({
@@ -43,6 +44,7 @@ export default function FeedMedia({
   lowDataMode = false,
   autoPlay = true,
   creatorName,
+  immersive = false,
 }: Props) {
   const [muted, setMuted] = useState(true);
   const [progress, setProgress] = useState(0);
@@ -241,7 +243,7 @@ export default function FeedMedia({
 
   if (type === "image") {
     return (
-      <View style={[styles.media, height ? { height } : null]}>
+      <View style={[styles.media, immersive && styles.immersiveMedia, height ? { height } : null]}>
         <Image
           accessibilityLabel="Photo publiée"
           cachePolicy="memory-disk"
@@ -339,9 +341,13 @@ export default function FeedMedia({
   }
 
   return (
-    <View style={[styles.media, height ? { height } : null]}>
+    <View style={[styles.media, immersive && styles.immersiveMedia, height ? { height } : null]}>
       <Pressable
-        accessibilityLabel="Vidéo de la publication"
+        accessibilityLabel={
+          immersive
+            ? "Vidéo de la publication, toucher pour lire ou mettre en pause"
+            : "Vidéo de la publication"
+        }
         onLongPress={handleLongPress}
         onPress={() => {
           handleTap(() => {
@@ -353,6 +359,16 @@ export default function FeedMedia({
       >
         {!viewerOpen ? <VideoView contentFit="cover" nativeControls={false} player={player} style={StyleSheet.absoluteFill} /> : null}
       </Pressable>
+      {immersive && !isPlaying ? (
+        <Pressable
+          accessibilityLabel="Lire la vidéo"
+          accessibilityRole="button"
+          onPress={() => player.play()}
+          style={styles.immersivePlayButton}
+        >
+          <Play color="#ffffff" size={30} />
+        </Pressable>
+      ) : null}
       <Animated.View pointerEvents="none" style={[styles.heartOverlay, heartStyle]}>
         <Heart color="#ffffff" fill="#ffffff" size={76} />
       </Animated.View>
@@ -369,25 +385,27 @@ export default function FeedMedia({
       >
         {muted ? <VolumeX color="#ffffff" size={18} /> : <Volume2 color="#ffffff" size={18} />}
       </Pressable>
-      <View style={styles.videoControls}>
-        <Pressable
-          accessibilityLabel={isPlaying ? "Mettre la vidéo en pause" : "Lire la vidéo"}
-          accessibilityRole="button"
-          onPress={() => player.playing ? player.pause() : player.play()}
-          style={styles.videoControlButton}
-        >
-          {isPlaying ? <Pause color="#ffffff" size={18} /> : <Play color="#ffffff" size={18} />}
-        </Pressable>
-        <Text style={styles.durationLabel}>{formatTime(player.currentTime)} / {formatTime(duration)}</Text>
-        <Pressable
-          accessibilityLabel="Afficher la vidéo en plein écran"
-          accessibilityRole="button"
-          onPress={() => setViewerOpen(true)}
-          style={styles.videoControlButton}
-        >
-          <Expand color="#ffffff" size={17} />
-        </Pressable>
-      </View>
+      {!immersive ? (
+        <View style={styles.videoControls}>
+          <Pressable
+            accessibilityLabel={isPlaying ? "Mettre la vidéo en pause" : "Lire la vidéo"}
+            accessibilityRole="button"
+            onPress={() => player.playing ? player.pause() : player.play()}
+            style={styles.videoControlButton}
+          >
+            {isPlaying ? <Pause color="#ffffff" size={18} /> : <Play color="#ffffff" size={18} />}
+          </Pressable>
+          <Text style={styles.durationLabel}>{formatTime(player.currentTime)} / {formatTime(duration)}</Text>
+          <Pressable
+            accessibilityLabel="Afficher la vidéo en plein écran"
+            accessibilityRole="button"
+            onPress={() => setViewerOpen(true)}
+            style={styles.videoControlButton}
+          >
+            <Expand color="#ffffff" size={17} />
+          </Pressable>
+        </View>
+      ) : null}
       {playbackError ? <Text style={styles.playbackError}>{playbackError}</Text> : null}
       <View style={styles.progressTrack} pointerEvents="none">
         <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
@@ -436,6 +454,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     width: "100%",
   },
+  immersiveMedia: { borderRadius: 0 },
   soundButton: {
     alignSelf: "flex-end",
     backgroundColor: "rgba(15,23,42,0.65)",
@@ -444,6 +463,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
     zIndex: 2,
+  },
+  immersivePlayButton: {
+    alignItems: "center",
+    alignSelf: "center",
+    backgroundColor: "rgba(15,23,42,0.65)",
+    borderRadius: 28,
+    height: 56,
+    justifyContent: "center",
+    position: "absolute",
+    top: "45%",
+    width: 56,
+    zIndex: 3,
   },
   expandButton: {
     alignItems: "center",

@@ -6,11 +6,16 @@ import { File, Paths } from "expo-file-system";
 import {
   AlertTriangle,
   Bookmark,
+  Heart,
   MapPin,
+  MessageCircle,
   Mic,
+  MoreHorizontal,
   Plus,
   RefreshCw,
+  Share2,
   Settings2,
+  Users,
 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -258,8 +263,7 @@ export default function FeedScreen() {
   const { colors } = useTheme();
   const { authStatus, isOffline, requestAuthentication, queueOfflineAction, user } = useAuth();
   const { requestAssistant } = useVoiceAssistant();
-  const { width: pageWidth } = useWindowDimensions();
-  const { height: windowHeight } = useWindowDimensions();
+  const { width: pageWidth, height: windowHeight } = useWindowDimensions();
   const pagerRef = useRef<ScrollView>(null);
   const [scope, setScope] = useState<FeedScope>("country");
   const [countryCode, setCountryCode] = useState<string | null>(null);
@@ -289,6 +293,7 @@ export default function FeedScreen() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const [feedPageHeight, setFeedPageHeight] = useState(Math.max(320, windowHeight * 0.5));
   const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
 
   useEffect(() => {
@@ -2000,7 +2005,16 @@ export default function FeedScreen() {
         style={styles.pager}
       >
         {FEED_SCOPES.map((option) => (
-          <View key={option.id} style={[styles.pagerPage, { width: pageWidth }]}>
+          <View
+            key={option.id}
+            onLayout={(event) => {
+              const nextHeight = event.nativeEvent.layout.height;
+              if (nextHeight > 0) setFeedPageHeight((current) =>
+                Math.abs(current - nextHeight) > 1 ? nextHeight : current,
+              );
+            }}
+            style={[styles.pagerPage, { width: pageWidth }]}
+          >
             {isLoading && entries.length === 0 ? (
               <View style={styles.skeletonList}>
                 <Text style={styles.loadingText}>
@@ -2027,13 +2041,13 @@ export default function FeedScreen() {
               <FlashList
                 data={visibleEntries}
                 drawDistance={Math.min(800, windowHeight * 1.5)}
-                contentContainerStyle={styles.list}
-                decelerationRate="fast"
+                contentContainerStyle={styles.immersiveList}
                 extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}`}
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
                 onEndReached={() => void loadMore()}
                 onEndReachedThreshold={0.6}
+                pagingEnabled
                 onScroll={(event) => {
                   const { contentOffset, layoutMeasurement } = event.nativeEvent;
                   const viewportTop = contentOffset.y;
@@ -2042,7 +2056,7 @@ export default function FeedScreen() {
                   let greatestVisibility = 0;
                   visibleEntries.forEach((entry, entryIndex) => {
                     const layout = cardLayoutsRef.current[entryIndex];
-                    if (!entry.imageUrl || !layout) return;
+                    if (!layout) return;
                     const visibleHeight = Math.max(
                       0,
                       Math.min(layout.top + layout.height, viewportBottom) -
@@ -2068,44 +2082,24 @@ export default function FeedScreen() {
                       };
                     }}
                     style={[
-                      styles.card,
-                      { backgroundColor: colors.card, borderColor: colors.border },
+                      styles.immersiveCard,
+                      { height: feedPageHeight },
+                      !entry.imageUrl && styles.immersiveFallback,
                     ]}
                   >
-                    <View style={styles.cardHeader}>
-                      {entry.kind === "post" ? (
-                        <ProfileAvatar
-                          name={entry.authorName}
-                          photoUrl={entry.authorPhotoUrl}
-                          size={40}
-                          isAlly={entry.authorIsAlly}
-                          isProVerified={entry.authorBadge === "Commerçant Certifié"}
-                        />
-                      ) : (
-                        <View style={[styles.icon, styles.alertIcon]}>
-                          <AlertTriangle color="#dc2626" size={19} />
-                        </View>
-                      )}
-                      <View style={styles.cardHeading}>
-                        {entry.authorName ? (
-                          <Text style={[styles.authorName, { color: colors.text }]}>{entry.authorName}</Text>
-                        ) : null}
-                        <Text style={[styles.category, { color: colors.secondaryText }]}>{entry.category}</Text>
-                        <Text style={[styles.date, { color: colors.secondaryText }]}>{formatDate(entry.createdAt)}</Text>
-                      </View>
-                      {entry.price ? <Text style={styles.price}>{entry.price}</Text> : null}
-                    </View>
                     {entry.imageUrl ? (
                       <FeedMedia
-                        height={Math.min(420, Math.max(220, windowHeight * 0.46))}
                         active={option.id === scope && index === activeMediaIndex}
                         autoPlay={!wifiOnlyVideoAutoplay || isWifiConnected}
                         creatorName={entry.authorName}
+                        height={feedPageHeight}
+                        immersive
+                        lowDataMode={lowDataMode}
                         onDoubleTap={() => {
                           if (!entry.likedByMe) void likePost(entry);
                         }}
-                        onTripleTap={() => setActionPost(entry)}
                         onLongPress={() => setActionPost(entry)}
+                        onTripleTap={() => setActionPost(entry)}
                         preloadUri={
                           option.id === scope &&
                           index === activeMediaIndex &&
@@ -2116,76 +2110,115 @@ export default function FeedScreen() {
                             ? visibleEntries[index + 1]?.imageUrl
                             : undefined
                         }
-                          preloadType={visibleEntries[index + 1]?.mediaType}
-                        lowDataMode={lowDataMode}
+                        preloadType={visibleEntries[index + 1]?.mediaType}
                         type={entry.mediaType ?? "image"}
                         uri={entry.imageUrl}
                       />
                     ) : null}
-                    {entry.body ? (
-                      <Text style={[styles.body, { color: colors.secondaryText }]}>{entry.body}</Text>
-                    ) : null}
+                    <View style={styles.immersiveHeader}>
+                      {entry.kind === "post" ? (
+                        <ProfileAvatar
+                          name={entry.authorName}
+                          photoUrl={entry.authorPhotoUrl}
+                          size={42}
+                          isAlly={entry.authorIsAlly}
+                          isProVerified={entry.authorBadge === "Commerçant Certifié"}
+                        />
+                      ) : (
+                        <View style={[styles.icon, styles.alertIcon]}>
+                          <AlertTriangle color="#dc2626" size={19} />
+                        </View>
+                      )}
+                      <View style={styles.immersiveAuthor}>
+                        {entry.authorName ? (
+                          <Text numberOfLines={1} style={styles.immersiveAuthorName}>{entry.authorName}</Text>
+                        ) : null}
+                        <Text numberOfLines={1} style={styles.immersiveMeta}>
+                          {entry.kind === "alert" ? "Alerte" : entry.category} · {formatDate(entry.createdAt)}
+                        </Text>
+                      </View>
+                      {entry.price ? <Text style={styles.immersivePrice}>{entry.price}</Text> : null}
+                    </View>
+                    <View style={styles.immersiveCopy}>
+                      {entry.kind === "alert" ? (
+                        <Text style={styles.immersiveTitle}>{entry.title}</Text>
+                      ) : null}
+                      {entry.body ? (
+                        <Text numberOfLines={4} style={styles.immersiveBody}>{entry.body}</Text>
+                      ) : null}
+                      {entry.location ? (
+                        <View style={styles.immersiveLocation}>
+                          <MapPin color="#ffffff" size={14} />
+                          <Text numberOfLines={1} style={styles.immersiveLocationText}>{entry.location}</Text>
+                        </View>
+                      ) : null}
+                    </View>
                     {entry.kind === "post" ? (
-                      <View style={styles.postActions}>
+                      <View style={styles.immersiveActions}>
                         <Pressable
                           accessibilityLabel={`Adorer, ${entry.likesCount} mentions J’adore`}
                           accessibilityRole="button"
                           accessibilityState={{ selected: entry.likedByMe }}
                           onPress={() => void likePost(entry)}
-                          style={[styles.postAction, { backgroundColor: colors.background }]}
+                          style={styles.immersiveAction}
                         >
-                          <Text style={[styles.actionText, { color: colors.text }, entry.likedByMe && styles.actionSelected]}>
-                            {entry.likedByMe ? "♥ Adoré" : "♡ Adorer"} · {entry.likesCount}
-                          </Text>
+                          <Heart color={entry.likedByMe ? "#fb7185" : "#ffffff"} fill={entry.likedByMe ? "#fb7185" : "transparent"} size={25} />
+                          <Text style={styles.immersiveActionCount}>{entry.likesCount}</Text>
                         </Pressable>
                         <Pressable
                           accessibilityLabel={`Commenter, ${entry.commentsCount} commentaires`}
                           accessibilityRole="button"
                           onPress={() => void openComments(entry)}
-                          style={[styles.postAction, { backgroundColor: colors.background }]}
+                          style={styles.immersiveAction}
                         >
-                          <Text style={[styles.actionText, { color: colors.text }]}>Commenter · {entry.commentsCount}</Text>
+                          <MessageCircle color="#ffffff" size={25} />
+                          <Text style={styles.immersiveActionCount}>{entry.commentsCount}</Text>
                         </Pressable>
-                        <Pressable accessibilityLabel="Propager cette publication" accessibilityRole="button" onPress={() => setActionPost(entry)} style={[styles.postAction, { backgroundColor: colors.background }]}>
-                          <Text style={[styles.actionText, { color: colors.text }]}>Propager</Text>
+                        <Pressable
+                          accessibilityLabel="Partager cette publication"
+                          accessibilityRole="button"
+                          onPress={() => void sharePost(entry)}
+                          style={styles.immersiveAction}
+                        >
+                          <Share2 color="#ffffff" size={24} />
                         </Pressable>
-                        {entry.imageUrl ? (
-                          <Pressable accessibilityRole="button" onPress={() => void downloadMedia(entry)} style={[styles.postAction, { backgroundColor: colors.background }]}>
-                            <Text style={[styles.actionText, { color: colors.text }]}>Télécharger</Text>
-                          </Pressable>
-                        ) : null}
+                        <Pressable
+                          accessibilityLabel={savedPostIds.includes(entry.id) ? "Retirer des favoris" : "Enregistrer dans les favoris"}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: savedPostIds.includes(entry.id) }}
+                          onPress={() => void savePostFavorite(entry)}
+                          style={styles.immersiveAction}
+                        >
+                          <Bookmark color="#ffffff" fill={savedPostIds.includes(entry.id) ? "#ffffff" : "transparent"} size={24} />
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel="Autres actions de publication"
+                          accessibilityRole="button"
+                          onPress={() => setActionPost(entry)}
+                          style={styles.immersiveAction}
+                        >
+                          <MoreHorizontal color="#ffffff" size={25} />
+                        </Pressable>
                         {entry.authorId && entry.authorId !== user?.id ? (
                           <Pressable
+                            accessibilityLabel={
+                              entry.authorIsAlly
+                                ? "Vous êtes alliés"
+                                : entry.allianceStatus === "PENDING"
+                                  ? "Demande d’alliance envoyée"
+                                  : "Se rallier"
+                            }
                             accessibilityRole="button"
                             accessibilityState={{ selected: entry.authorIsAlly }}
                             onPress={() => void requestAlliance(entry)}
-                            style={[styles.postAction, { backgroundColor: colors.background }]}
+                            style={styles.immersiveRallyButton}
                           >
-                            <Text style={[styles.actionText, { color: colors.text }]}>
-                              {entry.authorIsAlly
-                                ? "Allié ✓"
-                                : entry.allianceStatus === "PENDING"
-                                  ? "Demande envoyée"
-                                  : "Se rallier"}
+                            <Users color="#ffffff" size={20} />
+                            <Text style={styles.immersiveRallyText}>
+                              {entry.authorIsAlly ? "Allié" : entry.allianceStatus === "PENDING" ? "Envoyé" : "Se rallier"}
                             </Text>
                           </Pressable>
                         ) : null}
-                        <Pressable
-                          accessibilityLabel="Signaler cette publication"
-                          accessibilityRole="button"
-                          onPress={() => openReportReasons("post", entry.id, "Cette publication")}
-                          style={[styles.postAction, { backgroundColor: colors.background }]}
-                        >
-                          <Text style={[styles.actionText, { color: colors.text }]}>Signaler</Text>
-                        </Pressable>
-                      </View>
-                    ) : (
-                      <Text style={styles.cardTitle}>{entry.title}</Text>
-                    )}
-                    {entry.location ? (
-                      <View style={styles.location}>
-                        <MapPin color="#64748b" size={14} />
-                        <Text style={styles.locationText}>{entry.location}</Text>
                       </View>
                     ) : null}
                   </View>
@@ -2981,58 +3014,95 @@ const styles = StyleSheet.create({
   retryText: { color: "#1d4ed8", fontSize: 13, fontWeight: "700" },
   detailsToggle: { color: "#475569", fontSize: 12, textDecorationLine: "underline" },
   technicalDetails: { color: "#64748b", fontSize: 11, lineHeight: 16 },
-  list: { gap: 12, padding: 14, paddingBottom: 112 },
-  card: {
-    backgroundColor: "#ffffff",
-    borderColor: "#e2e8f0",
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 15,
-  },
-  immersiveCard: { justifyContent: "space-between" },
-  cardHeader: { alignItems: "center", flexDirection: "row" },
-  icon: { alignItems: "center", backgroundColor: "#eff6ff", borderRadius: 12, height: 40, justifyContent: "center", width: 40 },
-  alertIcon: { backgroundColor: "#fef2f2" },
-  cardHeading: { flex: 1, marginLeft: 10 },
-  authorName: { color: "#0f172a", fontSize: 13, fontWeight: "800" },
-  category: { color: "#475569", fontSize: 12, fontWeight: "700" },
-  date: { color: "#94a3b8", fontSize: 11, marginTop: 3 },
-  price: { color: "#15803d", fontSize: 12, fontWeight: "700", marginLeft: 8 },
-  cardImage: {
-    backgroundColor: "#f1f5f9",
-    borderRadius: 12,
-    height: 220,
-    marginTop: 12,
+  immersiveList: { flexGrow: 1, paddingBottom: 0 },
+  immersiveCard: {
+    backgroundColor: "#0f172a",
+    justifyContent: "space-between",
+    overflow: "hidden",
+    position: "relative",
     width: "100%",
   },
-  videoAction: {
+  immersiveFallback: { backgroundColor: "#111827" },
+  immersiveHeader: {
     alignItems: "center",
     flexDirection: "row",
     gap: 10,
-    justifyContent: "center",
+    left: 14,
+    position: "absolute",
+    right: 68,
+    top: 16,
+    zIndex: 3,
   },
-  videoActionText: { color: "#1d4ed8", fontSize: 14, fontWeight: "700" },
-  cardTitle: { color: "#0f172a", fontSize: 17, fontWeight: "700", marginTop: 13 },
-  body: { color: "#475569", fontSize: 14, lineHeight: 21, marginTop: 6 },
-  postActions: {
-    alignItems: "center",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 7,
-    marginTop: 8,
-  },
-  postAction: {
-    backgroundColor: "#f1f5f9",
-    borderRadius: 16,
-    minHeight: 32,
-    justifyContent: "center",
+  immersiveAuthor: {
+    backgroundColor: "rgba(15,23,42,0.65)",
+    borderRadius: 12,
+    flex: 1,
+    gap: 3,
     paddingHorizontal: 10,
+    paddingVertical: 7,
   },
+  immersiveAuthorName: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
+  immersiveMeta: { color: "#e2e8f0", fontSize: 10, fontWeight: "600" },
+  immersivePrice: {
+    backgroundColor: "rgba(15,23,42,0.75)",
+    borderRadius: 14,
+    color: "#bbf7d0",
+    fontSize: 11,
+    fontWeight: "800",
+    overflow: "hidden",
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  immersiveCopy: {
+    bottom: 92,
+    gap: 7,
+    left: 16,
+    position: "absolute",
+    right: 100,
+    zIndex: 2,
+  },
+  immersiveTitle: { color: "#ffffff", fontSize: 19, fontWeight: "800" },
+  immersiveBody: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
+    textShadowColor: "rgba(0,0,0,0.7)",
+    textShadowRadius: 5,
+  },
+  immersiveLocation: { alignItems: "center", flexDirection: "row", gap: 5 },
+  immersiveLocationText: { color: "#ffffff", fontSize: 12, fontWeight: "600" },
+  immersiveActions: {
+    alignItems: "center",
+    bottom: 86,
+    gap: 9,
+    position: "absolute",
+    right: 10,
+    zIndex: 4,
+  },
+  immersiveAction: {
+    alignItems: "center",
+    backgroundColor: "rgba(15,23,42,0.55)",
+    borderRadius: 23,
+    height: 46,
+    justifyContent: "center",
+    width: 46,
+  },
+  immersiveActionCount: { color: "#ffffff", fontSize: 10, fontWeight: "800", marginTop: 1 },
+  immersiveRallyButton: {
+    alignItems: "center",
+    backgroundColor: "#15803d",
+    borderRadius: 15,
+    gap: 3,
+    justifyContent: "center",
+    minHeight: 52,
+    paddingHorizontal: 6,
+    width: 74,
+  },
+  immersiveRallyText: { color: "#ffffff", fontSize: 9, fontWeight: "800", textAlign: "center" },
+  icon: { alignItems: "center", backgroundColor: "#eff6ff", borderRadius: 12, height: 40, justifyContent: "center", width: 40 },
+  alertIcon: { backgroundColor: "#fef2f2" },
   actionText: { color: "#334155", fontSize: 11, fontWeight: "700" },
-  actionSelected: { color: "#dc2626" },
-  location: { alignItems: "center", flexDirection: "row", gap: 5, marginTop: 11 },
-  locationText: { color: "#64748b", fontSize: 12 },
-  loading: { alignItems: "center", flex: 1, justifyContent: "center" },
   loadingText: { color: "#64748b", fontSize: 14, marginTop: 12 },
   skeletonList: { gap: 12, padding: 14 },
   loadMoreIndicator: { paddingVertical: 18 },
