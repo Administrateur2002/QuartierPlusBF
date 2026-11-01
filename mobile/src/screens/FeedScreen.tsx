@@ -5,6 +5,7 @@ import * as Clipboard from "expo-clipboard";
 import { File, Paths } from "expo-file-system";
 import {
   AlertTriangle,
+  Bookmark,
   MapPin,
   Mic,
   Plus,
@@ -47,6 +48,11 @@ import {
 } from "../services/db";
 import { openProfileStore } from "../storage/profileStore";
 import { API_BASE_URL, apiFetch } from "../services/api";
+import {
+  FEED_FILTERS,
+  matchesFeedFilter,
+  type FeedFilter,
+} from "../services/feedFilters";
 import {
   uploadCloudinaryMedia,
   type CloudinaryUploadSignature,
@@ -252,6 +258,13 @@ export default function FeedScreen() {
   const [scopeReady, setScopeReady] = useState(false);
   const [locationInvitation, setLocationInvitation] = useState(false);
   const [entries, setEntries] = useState<FeedEntry[]>([]);
+  const [savedPostIds, setSavedPostIds] = useState<string[]>([]);
+  const [showSavedOnly, setShowSavedOnly] = useState(false);
+  const [feedFilter, setFeedFilter] = useState<FeedFilter>("Tout");
+  const visibleEntries = entries.filter((entry) =>
+    (!showSavedOnly || savedPostIds.includes(entry.id)) &&
+    matchesFeedFilter(entry, feedFilter),
+  );
   const [dataSaverEnabled, setDataSaverEnabled] = useState(false);
   const [autoDataSaver, setAutoDataSaver] = useState(false);
   const [wifiOnlyVideoAutoplay, setWifiOnlyVideoAutoplay] = useState(false);
@@ -268,6 +281,11 @@ export default function FeedScreen() {
   const loadingMoreRef = useRef(false);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
+
+  useEffect(() => {
+    cardLayoutsRef.current = [];
+    setActiveMediaIndex(0);
+  }, [feedFilter, showSavedOnly]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<FeedError | null>(null);
@@ -304,6 +322,24 @@ export default function FeedScreen() {
   const [replyingToComment, setReplyingToComment] = useState<FeedComment | null>(null);
   const [editingComment, setEditingComment] = useState<FeedComment | null>(null);
   const uploadControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void SecureStore.getItemAsync("quartierplus.feed.saved-posts")
+      .then((saved) => {
+        const parsed: unknown = saved ? JSON.parse(saved) : [];
+        if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== "string")) {
+          throw new Error("La liste des publications enregistrées est invalide.");
+        }
+        if (active) setSavedPostIds(parsed);
+      })
+      .catch((favoriteError: unknown) => {
+        console.warn("Unable to load saved feed posts:", favoriteError);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1168,15 +1204,22 @@ export default function FeedScreen() {
     try {
       const saved = await SecureStore.getItemAsync("quartierplus.feed.saved-posts");
       const savedIds: unknown = saved ? JSON.parse(saved) : [];
-      if (!Array.isArray(savedIds)) throw new Error("La liste des favoris est invalide.");
-      if (!savedIds.includes(entry.id)) {
-        await SecureStore.setItemAsync(
-          "quartierplus.feed.saved-posts",
-          JSON.stringify([...savedIds, entry.id]),
-        );
+      if (!Array.isArray(savedIds) || savedIds.some((id) => typeof id !== "string")) {
+        throw new Error("La liste des favoris est invalide.");
       }
+      const alreadySaved = savedIds.includes(entry.id);
+      const nextSavedIds = alreadySaved
+        ? savedIds.filter((id) => id !== entry.id)
+        : [...savedIds, entry.id];
+      await SecureStore.setItemAsync("quartierplus.feed.saved-posts", JSON.stringify(nextSavedIds));
+      setSavedPostIds(nextSavedIds);
       setActionPost(null);
-      Alert.alert("Ajouté aux favoris", "Cette publication est enregistrée sur cet appareil.");
+      Alert.alert(
+        alreadySaved ? "Retirée des favoris" : "Ajoutée aux favoris",
+        alreadySaved
+          ? "Cette publication n’est plus enregistrée sur cet appareil."
+          : "Cette publication est enregistrée sur cet appareil.",
+      );
     } catch (favoriteError) {
       Alert.alert(
         "Favori non enregistré",
@@ -1858,6 +1901,30 @@ export default function FeedScreen() {
           </Pressable>
         ))}
       </View>
+      <View style={styles.feedFiltersRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: showSavedOnly }}
+          onPress={() => setShowSavedOnly((current) => !current)}
+          style={[styles.savedFilter, showSavedOnly && styles.savedFilterSelected]}
+        >
+          <Bookmark color={showSavedOnly ? "#ffffff" : "#166534"} fill={showSavedOnly ? "#166534" : "transparent"} size={16} />
+          <Text style={[styles.savedFilterText, showSavedOnly && styles.savedFilterTextSelected]}>Enregistrées</Text>
+        </Pressable>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryFilters}>
+          {FEED_FILTERS.map((filter) => (
+            <Pressable
+              key={filter}
+              accessibilityRole="button"
+              accessibilityState={{ selected: feedFilter === filter }}
+              onPress={() => setFeedFilter(filter)}
+              style={[styles.categoryFilter, feedFilter === filter && styles.categoryFilterSelected]}
+            >
+              <Text style={[styles.categoryFilterText, feedFilter === filter && styles.categoryFilterTextSelected]}>{filter}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      </View>
       {locationInvitation && (
         <View style={styles.locationInvitation}>
           <MapPin color="#2563eb" size={18} />
@@ -1945,11 +2012,11 @@ export default function FeedScreen() {
               </View>
             ) : (
               <FlashList
-                data={entries}
+                data={visibleEntries}
                 drawDistance={Math.min(800, windowHeight * 1.5)}
                 contentContainerStyle={styles.list}
                 decelerationRate="fast"
-                extraData={activeMediaIndex}
+                extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}`}
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
                 onEndReached={() => void loadMore()}
@@ -1960,7 +2027,7 @@ export default function FeedScreen() {
                   const viewportBottom = viewportTop + layoutMeasurement.height;
                   let nextActiveMedia = -1;
                   let greatestVisibility = 0;
-                  entries.forEach((entry, entryIndex) => {
+                  visibleEntries.forEach((entry, entryIndex) => {
                     const layout = cardLayoutsRef.current[entryIndex];
                     if (!entry.imageUrl || !layout) return;
                     const visibleHeight = Math.max(
@@ -2023,14 +2090,14 @@ export default function FeedScreen() {
                         preloadUri={
                           option.id === scope &&
                           index === activeMediaIndex &&
-                          (entries[index + 1]?.mediaType === "image" ||
-                            (entries[index + 1]?.mediaType === "video" &&
+                          (visibleEntries[index + 1]?.mediaType === "image" ||
+                            (visibleEntries[index + 1]?.mediaType === "video" &&
                               isWifiConnected &&
                               !lowDataMode))
-                            ? entries[index + 1]?.imageUrl
+                            ? visibleEntries[index + 1]?.imageUrl
                             : undefined
                         }
-                        preloadType={entries[index + 1]?.mediaType}
+                          preloadType={visibleEntries[index + 1]?.mediaType}
                         lowDataMode={lowDataMode}
                         type={entry.mediaType ?? "image"}
                         uri={entry.imageUrl}
@@ -2105,12 +2172,14 @@ export default function FeedScreen() {
                   </View>
                 )}
                 ListEmptyComponent={
-                  !entries.length && !isLoading ? (
+                  !visibleEntries.length && !isLoading ? (
                     <View style={styles.empty}>
                       <MapPin color="#94a3b8" size={30} />
-                      <Text style={styles.emptyTitle}>Rien à signaler pour le moment</Text>
+                      <Text style={styles.emptyTitle}>{showSavedOnly ? "Aucune publication enregistrée visible" : "Aucun résultat dans cette catégorie"}</Text>
                       <Text style={styles.emptyText}>
-                        Les publications correspondant à la portée sélectionnée apparaîtront ici.
+                        {showSavedOnly
+                          ? "Les favoris sont conservés sur cet appareil et apparaissent lorsqu’ils sont présents dans le fil chargé."
+                          : "Essayez une autre catégorie ou une autre portée du fil."}
                       </Text>
                     </View>
                   ) : null
@@ -2497,7 +2566,11 @@ export default function FeedScreen() {
                 onPress={() => actionPost && void savePostFavorite(actionPost)}
                 style={styles.actionOption}
               >
-                <Text style={[styles.actionOptionText, { color: colors.text }]}>Enregistrer dans les favoris</Text>
+                <Text style={[styles.actionOptionText, { color: colors.text }]}>
+                  {actionPost && savedPostIds.includes(actionPost.id)
+                    ? "Retirer des favoris"
+                    : "Enregistrer dans les favoris"}
+                </Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
@@ -2801,6 +2874,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingBottom: 10,
   },
+  feedFiltersRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingBottom: 8,
+    paddingHorizontal: 10,
+  },
+  savedFilter: {
+    alignItems: "center",
+    backgroundColor: "#f0fdf4",
+    borderRadius: 16,
+    flexDirection: "row",
+    gap: 5,
+    minHeight: 34,
+    paddingHorizontal: 10,
+  },
+  savedFilterSelected: { backgroundColor: "#166534" },
+  savedFilterText: { color: "#166534", fontSize: 11, fontWeight: "700" },
+  savedFilterTextSelected: { color: "#ffffff" },
+  categoryFilters: { alignItems: "center", flexDirection: "row", gap: 5, paddingRight: 10 },
+  categoryFilter: {
+    alignItems: "center",
+    backgroundColor: "#f1f5f9",
+    borderRadius: 16,
+    justifyContent: "center",
+    minHeight: 34,
+    paddingHorizontal: 10,
+  },
+  categoryFilterSelected: { backgroundColor: "#dbeafe" },
+  categoryFilterText: { color: "#64748b", fontSize: 11, fontWeight: "600" },
+  categoryFilterTextSelected: { color: "#1d4ed8" },
   scopeChip: {
     alignItems: "center",
     borderRadius: 16,

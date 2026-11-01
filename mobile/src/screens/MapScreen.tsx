@@ -18,6 +18,7 @@ import {
   Mic,
   Plus,
   Radio,
+  Search,
   ShoppingBag,
   ShieldAlert,
   X,
@@ -45,6 +46,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import MapView, {
@@ -413,6 +415,7 @@ export default function MapScreen() {
   const [mapMarkers, setMapMarkers] = useState<MapMarker[]>([]);
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
   const [markerLoadError, setMarkerLoadError] = useState<string | null>(null);
+  const [radarSearch, setRadarSearch] = useState("");
   const [visibleLayers, setVisibleLayers] = useState<Record<MarkerLayer, boolean>>({
     network: true,
     services: true,
@@ -501,11 +504,15 @@ export default function MapScreen() {
     }, [authStatus, selectedScope, userLocation]),
   );
 
+  const normalizedSearch = radarSearch.trim().toLocaleLowerCase("fr-FR");
+  const matchesRadarSearch = (...values: Array<string | undefined>) =>
+    !normalizedSearch || values.some((value) => value?.toLocaleLowerCase("fr-FR").includes(normalizedSearch));
   const activeAlerts = sosAlerts.filter((alert) => alert.status === "ACTIVE");
   const visibleAlerts = authStatus === "connected" && userLocation
     ? activeAlerts.filter(
         (alert) =>
-          distanceMeters(userLocation, alert.coordinates) <= selectedScope,
+          distanceMeters(userLocation, alert.coordinates) <= selectedScope &&
+          matchesRadarSearch(alert.title),
       )
     : [];
   const visibleMarkers =
@@ -523,7 +530,8 @@ export default function MapScreen() {
           );
           return (
             Boolean(layer && visibleLayers[layer.id]) &&
-            distanceMeters(userLocation, marker.coordinates) <= selectedScope
+            distanceMeters(userLocation, marker.coordinates) <= selectedScope &&
+            matchesRadarSearch(marker.title, marker.description, MARKER_LABELS[marker.category])
           );
         })
       : [];
@@ -1723,6 +1731,23 @@ export default function MapScreen() {
         </Pressable>
         {isRadarExpanded ? (
           <>
+            <View style={styles.radarSearchBox}>
+              <Search color="#64748b" size={17} />
+              <TextInput
+                accessibilityLabel="Rechercher sur le radar"
+                onChangeText={setRadarSearch}
+                placeholder="Commerce, service, événement…"
+                placeholderTextColor="#94a3b8"
+                returnKeyType="search"
+                style={styles.radarSearchInput}
+                value={radarSearch}
+              />
+              {radarSearch.length > 0 && (
+                <Pressable accessibilityLabel="Effacer la recherche" accessibilityRole="button" onPress={() => setRadarSearch("")}>
+                  <X color="#64748b" size={17} />
+                </Pressable>
+              )}
+            </View>
             <ScrollView
               contentContainerStyle={styles.scopeOptions}
               horizontal
@@ -2466,6 +2491,18 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     top: 54,
   },
+  radarSearchBox: {
+    alignItems: "center",
+    backgroundColor: "#f1f5f9",
+    borderColor: "#e2e8f0",
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 6,
+    paddingHorizontal: 10,
+  },
+  radarSearchInput: { color: "#0f172a", flex: 1, fontSize: 13, minHeight: 40, paddingVertical: 8 },
   scopeHeading: {
     color: "#64748b",
     fontSize: 10,

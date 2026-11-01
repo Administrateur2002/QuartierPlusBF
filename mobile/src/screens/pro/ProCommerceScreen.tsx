@@ -7,6 +7,7 @@ import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { io, type Socket } from "socket.io-client";
 import api, { API_BASE_URL, getStoredAuthToken, subscribeToNetwork } from "../../services/api";
+import { getApiErrorMessage } from "../../services/apiError";
 import { getQueuedProOrders, submitProOrder, syncQueuedProOrders } from "../../services/proCommerceOffline";
 import { requestProDeliveryPermissions, startProDeliveryTracking, stopProDeliveryTracking } from "../../services/proCommerceTracking";
 import { useAuth } from "../../context/AuthContext";
@@ -146,7 +147,7 @@ export default function ProCommerceScreen() {
         setManagedProducts([]);
       }
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Impossible de charger le catalogue Pro.");
+      setError(getApiErrorMessage(requestError, "Impossible de charger le catalogue Pro."));
     }
   };
 
@@ -155,7 +156,7 @@ export default function ProCommerceScreen() {
     const unsubscribe = subscribeToNetwork((online) => {
       if (!online || !user) return;
       void syncQueuedProOrders().then(refresh).catch((syncError: unknown) => {
-        setError(syncError instanceof Error ? syncError.message : "La synchronisation des commandes a échoué.");
+        setError(getApiErrorMessage(syncError, "La synchronisation des commandes a échoué."));
       });
     });
     return unsubscribe;
@@ -206,7 +207,7 @@ export default function ProCommerceScreen() {
       setSelectedOrder(response.data);
       setDeliveryPoint(response.data.location);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Impossible de charger la commande.");
+      setError(getApiErrorMessage(requestError, "Impossible de charger la commande."));
     }
   };
 
@@ -264,7 +265,7 @@ export default function ProCommerceScreen() {
       }
       await refresh();
     } catch (requestError) {
-      Alert.alert("Commande impossible", requestError instanceof Error ? requestError.message : "Vérifiez votre connexion et les informations de commande.");
+      Alert.alert("Commande impossible", getApiErrorMessage(requestError, "Vérifiez votre connexion et les informations de commande."));
     } finally {
       setBusy(false);
     }
@@ -276,7 +277,7 @@ export default function ProCommerceScreen() {
       await refresh();
       Alert.alert("Nouvelle commande créée", "Les quantités et prix actuels ont été recalculés.");
     } catch (requestError) {
-      Alert.alert("Recommande indisponible", requestError instanceof Error ? requestError.message : "Les produits ne sont plus disponibles.");
+      Alert.alert("Recommande indisponible", getApiErrorMessage(requestError, "Les produits ne sont plus disponibles."));
     }
   };
 
@@ -285,7 +286,7 @@ export default function ProCommerceScreen() {
       await api.post(`/v1/pro-commerce/orders/${orderId}/cancel`);
       await refresh();
     } catch (requestError) {
-      Alert.alert("Annulation impossible", requestError instanceof Error ? requestError.message : "La commande a peut-être déjà été préparée.");
+      Alert.alert("Annulation impossible", getApiErrorMessage(requestError, "La commande a peut-être déjà été préparée."));
     }
   };
 
@@ -294,7 +295,7 @@ export default function ProCommerceScreen() {
       await api.patch(`/v1/pro-commerce/orders/${order.id}/status`, { status });
       await refresh();
     } catch (requestError) {
-      Alert.alert("Statut non modifié", requestError instanceof Error ? requestError.message : "Vérifiez votre rôle sur cette commande.");
+      Alert.alert("Statut non modifié", getApiErrorMessage(requestError, "Vérifiez votre rôle sur cette commande."));
     }
   };
 
@@ -303,7 +304,7 @@ export default function ProCommerceScreen() {
       await api.patch(`/v1/pro-commerce/orders/${order.id}/payment-status`, { payment_status: "DEPOSIT_PAID" });
       await refresh();
     } catch (requestError) {
-      Alert.alert("Acompte non confirmé", requestError instanceof Error ? requestError.message : "Vérifiez votre rôle sur cette commande.");
+      Alert.alert("Acompte non confirmé", getApiErrorMessage(requestError, "Vérifiez votre rôle sur cette commande."));
     }
   };
 
@@ -361,7 +362,7 @@ export default function ProCommerceScreen() {
       await refresh();
       await loadOrder(order.id);
     } catch (requestError) {
-      Alert.alert("Remise non validée", requestError instanceof Error ? requestError.message : "Le code de remise est incorrect.");
+      Alert.alert("Remise non validée", getApiErrorMessage(requestError, "Le code de remise est incorrect."));
     }
   };
 
@@ -378,7 +379,7 @@ export default function ProCommerceScreen() {
       Alert.alert("Profil créé", "Le catalogue sera public après la vérification RCCM et IFU.");
       setBusinessName(response.data.wholesaler.business_name);
     } catch (requestError) {
-      Alert.alert("Profil non créé", requestError instanceof Error ? requestError.message : "Vérifiez le nom, la zone et le lien du catalogue.");
+      Alert.alert("Profil non créé", getApiErrorMessage(requestError, "Vérifiez le nom, la zone et le lien du catalogue."));
     }
   };
 
@@ -405,7 +406,7 @@ export default function ProCommerceScreen() {
       setTierPriceValue("");
       await refresh();
     } catch (requestError) {
-      Alert.alert("Produit non ajouté", requestError instanceof Error ? requestError.message : "Vérifiez le prix et le stock.");
+      Alert.alert("Produit non ajouté", getApiErrorMessage(requestError, "Vérifiez le prix et le stock."));
     }
   };
 
@@ -438,7 +439,7 @@ export default function ProCommerceScreen() {
       setDelivererPhone("");
       Alert.alert("Livreur invité", "Le compte QuartierPlus associé à ce numéro peut maintenant prendre les commandes prêtes.");
     } catch (inviteError) {
-      Alert.alert("Invitation impossible", inviteError instanceof Error ? inviteError.message : "Vérifiez le numéro E.164 et le compte du livreur.");
+      Alert.alert("Invitation impossible", getApiErrorMessage(inviteError, "Vérifiez le numéro E.164 et le compte du livreur."));
     }
   };
 
@@ -447,7 +448,7 @@ export default function ProCommerceScreen() {
     try {
       await api.post(`/v1/pro-commerce/favorites/${wholesalerId}`);
     } catch (requestError) {
-      Alert.alert("Favori non enregistré", requestError instanceof Error ? requestError.message : "Réessayez lorsque le réseau sera disponible.");
+      Alert.alert("Favori non enregistré", getApiErrorMessage(requestError, "Réessayez lorsque le réseau sera disponible."));
     }
   };
 

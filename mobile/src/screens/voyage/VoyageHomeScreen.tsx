@@ -5,6 +5,7 @@ import * as Notifications from "expo-notifications";
 import { useCallback, useEffect, useState } from "react";
 import { Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import api from "../../services/api";
+import { getApiErrorMessage } from "../../services/apiError";
 import type { VoyageStackParamList } from "../../navigation/types";
 
 type Navigation = NativeStackNavigationProp<VoyageStackParamList, "VoyageHome">;
@@ -78,7 +79,7 @@ export default function VoyageHomeScreen() {
       setTickets(ticketResponse.data.tickets);
       setMessage("");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Chargement Voyage impossible.");
+      setMessage(getApiErrorMessage(error, "Chargement Voyage impossible."));
     }
   }, [arrival, date, departure]);
 
@@ -91,7 +92,7 @@ export default function VoyageHomeScreen() {
       setTrips(response.data.trips);
       setMessage("");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Recherche impossible.");
+      setMessage(getApiErrorMessage(error, "Recherche impossible."));
     }
   };
 
@@ -151,7 +152,7 @@ export default function VoyageHomeScreen() {
         );
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Réservation impossible.");
+      setMessage(getApiErrorMessage(error, "Réservation impossible."));
     }
   };
 
