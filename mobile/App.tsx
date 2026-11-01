@@ -293,8 +293,10 @@ function RootNavigator() {
         <Stack.Screen name="Checkout" component={CheckoutScreen} />
       )}
       {user && hasCompletedProfile && (
-        <Stack.Screen name="AlliancePlus" component={AlliancePlusScreen} />
-        <Stack.Screen name="AlliancePeople" component={AlliancePeopleScreen} />
+        <>
+          <Stack.Screen name="AlliancePlus" component={AlliancePlusScreen} />
+          <Stack.Screen name="AlliancePeople" component={AlliancePeopleScreen} />
+        </>
       )}
     </Stack.Navigator>
   );

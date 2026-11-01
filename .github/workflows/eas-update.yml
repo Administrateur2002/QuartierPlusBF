@@ -116,6 +116,42 @@ jobs:
       - name: Installer EAS CLI
         run: npm install --global eas-cli
 
+      - name: Installer les dépendances mobile
+        working-directory: mobile
+        run: npm ci
+
+      - name: Valider l’export JavaScript Android
+        timeout-minutes: 1
+        working-directory: mobile
+        env:
+          EXPO_PUBLIC_FIREBASE_API_KEY: ${{ vars.EXPO_PUBLIC_FIREBASE_API_KEY || secrets.EXPO_PUBLIC_FIREBASE_API_KEY }}
+          EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || secrets.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          EXPO_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_PROJECT_ID || secrets.EXPO_PUBLIC_FIREBASE_PROJECT_ID }}
+          EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || secrets.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID || secrets.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID }}
+          EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ vars.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || secrets.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY }}
+          EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL || secrets.EXPO_PUBLIC_API_URL || 'https://quartierplus-api.onrender.com' }}
+          EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || secrets.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID }}
+          GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || secrets.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID }}
+          EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || secrets.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID }}
+          GITHUB_EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID || secrets.EXPO_PUBLIC_EAS_PROJECT_ID }}
+          EXPO_PUBLIC_LIVEKIT_URL: ${{ vars.EXPO_PUBLIC_LIVEKIT_URL || secrets.EXPO_PUBLIC_LIVEKIT_URL || 'wss://quartierplus-98gp8fx8.livekit.cloud' }}
+          EXPO_PUBLIC_GIT_SHA: ${{ github.sha }}
+        run: |
+          if [ -n "$GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" ] &&
+            [[ "$GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" =~ ^[0-9]+-[a-zA-Z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
+            export EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID="$GITHUB_EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID"
+          else
+            unset EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
+          fi
+          APP_EAS_PROJECT_ID="$(node -p "require('./app.json').expo?.extra?.eas?.projectId?.trim() ?? ''")"
+          if [ -n "$APP_EAS_PROJECT_ID" ]; then
+            export EXPO_PUBLIC_EAS_PROJECT_ID="$APP_EAS_PROJECT_ID"
+          else
+            export EXPO_PUBLIC_EAS_PROJECT_ID="$GITHUB_EXPO_PUBLIC_EAS_PROJECT_ID"
+          fi
+          timeout --kill-after=3s 50s npx expo export --platform android --output-dir "$RUNNER_TEMP/qp-update-export"
+
       - name: Publier sur la branche preview
         working-directory: mobile
         env:
@@ -137,7 +173,6 @@ jobs:
           EXPO_PUBLIC_GIT_SHA: ${{ github.sha }}
           UPDATE_MESSAGE: ${{ inputs.message || format('Manual EAS update from {0}', github.sha) }}
         run: |
-          npm ci
           GOOGLE_SERVICES_FILE="./google-services.json"
           trap 'rm -f "$GOOGLE_SERVICES_FILE"' EXIT
           node <<'NODE'
