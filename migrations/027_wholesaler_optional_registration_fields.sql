@@ -1,0 +1,3 @@
+ALTER TABLE pro_wholesalers
+    ADD COLUMN IF NOT EXISTS rccm_number VARCHAR(80),
+    ADD COLUMN IF NOT EXISTS ifu_number VARCHAR(80);

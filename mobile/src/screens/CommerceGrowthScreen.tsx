@@ -1,23 +1,27 @@
 import { ArrowRight, BadgeCheck, MapPin, Store, Truck } from "lucide-react-native";
 import { useNavigation, type NavigationProp } from "@react-navigation/native";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
+import api from "../services/api";
+import { getApiErrorMessage } from "../services/apiError";
 import type { RootStackParamList } from "../navigation/types";
+import { PROMO_FREE_ACCESS_BANNER } from "../config/monetization";
 
 const OFFERS = [
   {
     id: "ALLIANCE_PRO",
     title: "Alliance Pro",
     description: "Valorisez votre commerce et accédez aux outils professionnels.",
-    price: "5 000 FCFA / mois",
+    price: "15 000 FCFA / mois",
     icon: BadgeCheck,
   },
   {
     id: "SPONSORED_PIN",
     title: "Épingle sponsorisée",
     description: "Mettez en avant un commerce sur la carte radar.",
-    price: "2 000 FCFA / 7 jours",
+    price: "2 000 FCFA / semaine",
     icon: MapPin,
   },
   {
@@ -40,6 +44,27 @@ export default function CommerceGrowthScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const { user, requestAuthentication } = useAuth();
   const { colors } = useTheme();
+  const [promoFreeAccess, setPromoFreeAccess] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void api
+      .get<{ promoFreeAccess?: boolean }>("/v1/public/config")
+      .then((response) => {
+        if (active) setPromoFreeAccess(response.data.promoFreeAccess === true);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setConfigError(
+            getApiErrorMessage(error, "Impossible de vérifier la période découverte."),
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const chooseOffer = (offer: (typeof OFFERS)[number]["id"]) => {
     if (!user) {
@@ -61,11 +86,15 @@ export default function CommerceGrowthScreen() {
         Choisissez les outils adaptés à votre activité. Les voyageurs et les acheteurs
         peuvent utiliser leurs espaces sans abonnement.
       </Text>
+      {promoFreeAccess ? (
+        <Text style={styles.promoBanner}>{PROMO_FREE_ACCESS_BANNER}</Text>
+      ) : null}
+      {configError ? (
+        <Text accessibilityRole="alert" style={styles.configError}>{configError}</Text>
+      ) : null}
       {OFFERS.map(({ id, title, description, price, icon: Icon }) => (
-        <Pressable
-          accessibilityRole="button"
+        <View
           key={id}
-          onPress={() => chooseOffer(id)}
           style={[
             styles.offer,
             { backgroundColor: colors.card, borderColor: colors.border },
@@ -78,9 +107,16 @@ export default function CommerceGrowthScreen() {
               {description}
             </Text>
             <Text style={[styles.price, { color: colors.primary }]}>{price}</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => chooseOffer(id)}
+              style={[styles.activateButton, { backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.activateText}>Activer</Text>
+            </Pressable>
           </View>
           <ArrowRight color={colors.secondaryText} size={19} />
-        </Pressable>
+        </View>
       ))}
     </ScrollView>
   );
@@ -104,4 +140,8 @@ const styles = StyleSheet.create({
   offerTitle: { fontSize: 15, fontWeight: "800" },
   description: { fontSize: 12, lineHeight: 18, marginTop: 4 },
   price: { fontSize: 13, fontWeight: "800", marginTop: 8 },
+  activateButton: { alignSelf: "flex-start", borderRadius: 8, marginTop: 10, paddingHorizontal: 15, paddingVertical: 9 },
+  activateText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
+  promoBanner: { backgroundColor: "#ecfdf5", borderRadius: 9, color: "#166534", fontSize: 13, fontWeight: "700", marginBottom: 8, padding: 11 },
+  configError: { color: "#b91c1c", fontSize: 12, marginBottom: 8 },
 });

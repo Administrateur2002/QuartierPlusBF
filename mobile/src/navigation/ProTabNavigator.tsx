@@ -8,7 +8,6 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
   ActivityIndicator,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -38,6 +37,7 @@ type Subscription = {
   starts_at: string;
   expires_at: string;
 };
+type ActiveSpace = PlanType | "SPONSORED_PIN";
 
 const isPlanType = (value: unknown): value is PlanType =>
   value === "ALLIANCE_PRO" ||
@@ -49,6 +49,10 @@ const isPlanType = (value: unknown): value is PlanType =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+const isActiveSpace = (value: unknown): value is ActiveSpace =>
+  value === "SPONSORED_PIN" || isPlanType(value);
+const isActiveSpaceList = (value: unknown): value is ActiveSpace[] =>
+  Array.isArray(value) && value.every(isActiveSpace);
 
 export default function ProTabNavigator() {
   const navigation = useNavigation<ProNavigation>();
@@ -57,7 +61,7 @@ export default function ProTabNavigator() {
   const [error, setError] = useState<string | null>(null);
   const [promoFreeAccess, setPromoFreeAccess] = useState(false);
   const [billingDisabled, setBillingDisabled] = useState(false);
-  const [promoPlan, setPromoPlan] = useState<PlanType>("ALLIANCE_PRO");
+  const [activeSpaces, setActiveSpaces] = useState<ActiveSpace[]>([]);
 
   useFocusEffect(
     useCallback(() => {
@@ -70,18 +74,25 @@ export default function ProTabNavigator() {
             "/v1/pro/me/subscription",
             { headers: { "Cache-Control": "no-cache" } },
           );
-          if (!isRecord(response.data) || !("subscription" in response.data)) {
+          if (
+            !isRecord(response.data) ||
+            !("subscription" in response.data) ||
+            !isActiveSpaceList(response.data.active_spaces)
+          ) {
             throw new Error("La réponse de l'abonnement Pro est invalide.");
           }
           const activeSubscription = response.data.subscription;
           if (!isActive) return;
+          setActiveSpaces(response.data.active_spaces);
           setPromoFreeAccess(response.data.promo_free_access === true);
           setBillingDisabled(response.data.billing_enabled === false);
           if (activeSubscription === null) {
             if (!isActive) return;
             setSubscription(null);
             setIsLoading(false);
-            navigation.navigate("Checkout");
+            if (!response.data.active_spaces.includes("SPONSORED_PIN")) {
+              navigation.navigate("Checkout");
+            }
             return;
           }
           if (
@@ -103,10 +114,7 @@ export default function ProTabNavigator() {
           }
           if (isActive) {
             setSubscription({
-              plan_type:
-                response.data.promo_free_access === true
-                  ? promoPlan
-                  : activeSubscription.plan_type,
+              plan_type: activeSubscription.plan_type,
               status: "ACTIVE",
               starts_at: activeSubscription.starts_at,
               expires_at: activeSubscription.expires_at,
@@ -126,7 +134,7 @@ export default function ProTabNavigator() {
       return () => {
         isActive = false;
       };
-    }, [navigation, promoPlan]),
+    }, [navigation]),
   );
 
   if (isLoading) {
@@ -146,12 +154,26 @@ export default function ProTabNavigator() {
       </View>
     );
   }
+  if (!subscription && activeSpaces.includes("SPONSORED_PIN")) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.growthTitle}>Épingle sponsorisée active</Text>
+        <Text style={styles.message}>
+          Votre épingle est active jusqu’à son expiration. Vous pouvez la renouveler depuis les offres Pro.
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => navigation.navigate("Checkout", { offer: "SPONSORED_PIN" })}
+          style={styles.growthButton}
+        >
+          <Text style={styles.growthButtonText}>Renouveler l’épingle</Text>
+        </Pressable>
+      </View>
+    );
+  }
   if (!subscription) return <View style={styles.centered} />;
 
-  const displayedSubscription =
-    promoFreeAccess && subscription.plan_type !== promoPlan
-      ? { ...subscription, plan_type: promoPlan }
-      : subscription;
+  const displayedSubscription = subscription;
 
   return (
     <View style={styles.dashboard}>
@@ -164,38 +186,6 @@ export default function ProTabNavigator() {
                 : PROMO_FREE_ACCESS_BANNER}
             </Text>
           </View>
-          {promoFreeAccess && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.planPicker}
-          >
-            {PLAN_OPTIONS.map((plan) => (
-              <Pressable
-                key={plan.id}
-                accessibilityRole="button"
-                accessibilityState={{ selected: displayedSubscription.plan_type === plan.id }}
-                onPress={() => {
-                  setPromoPlan(plan.id);
-                  setSubscription({ ...displayedSubscription, plan_type: plan.id });
-                }}
-                style={[
-                  styles.planChip,
-                  displayedSubscription.plan_type === plan.id && styles.activePlanChip,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.planText,
-                    displayedSubscription.plan_type === plan.id && styles.activePlanText,
-                  ]}
-                >
-                  {plan.title}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          )}
         </>
       )}
       {displayedSubscription.plan_type === "WHOLESALER" ||
@@ -227,15 +217,6 @@ export default function ProTabNavigator() {
   );
 }
 
-const PLAN_OPTIONS: { id: PlanType; title: string }[] = [
-  { id: "ALLIANCE_PRO", title: "Alliance Pro" },
-  { id: "SYNDIC", title: "Syndic" },
-  { id: "TOWN_HALL", title: "Mairie" },
-  { id: "SECURITY_AGENT", title: "Secours" },
-  { id: "WHOLESALER", title: "Grossiste" },
-  { id: "TRANSPORT_COMPANY", title: "Transport" },
-];
-
 const styles = StyleSheet.create({
   dashboard: { backgroundColor: "#f8fafc", flex: 1 },
   centered: {
@@ -257,11 +238,6 @@ const styles = StyleSheet.create({
     padding: 9,
   },
   promoText: { color: "#166534", fontSize: 12, fontWeight: "700", textAlign: "center" },
-  planPicker: { alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 8 },
-  planChip: { backgroundColor: "#e2e8f0", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 },
-  activePlanChip: { backgroundColor: "#2563eb" },
-  planText: { color: "#334155", fontSize: 11, fontWeight: "600" },
-  activePlanText: { color: "#ffffff" },
   growthPanel: {
     backgroundColor: "#ffffff",
     borderColor: "#e2e8f0",

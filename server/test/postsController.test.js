@@ -160,6 +160,38 @@ test("video signatures include timestamp, folder and public ID without exposing 
   assert.equal(JSON.stringify(response.payload).includes("test-api-secret"), false);
 });
 
+test("video trim signatures bind the selected segment to the upload", async (context) => {
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  const response = createResponse();
+
+  await signMediaUpload(
+    {
+      auth: { userId: USER_ID },
+      body: { media_type: "video", trim_video: true },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.trim_video, true);
+  assert.equal(response.payload.max_duration_seconds, null);
+  assert.equal(response.payload.context, "trim_video=true");
+  assert.equal(
+    response.payload.signature,
+    createHash("sha1")
+      .update(
+        `context=trim_video=true&folder=${response.payload.folder}&public_id=${response.payload.public_id}&timestamp=${response.payload.timestamp}test-api-secret`,
+      )
+      .digest("hex"),
+  );
+});
+
 test("client Cloudinary failures are logged with status and bounded message", (context) => {
   const loggedErrors = [];
   context.mock.method(console, "error", (...args) => loggedErrors.push(args));
@@ -385,6 +417,73 @@ test("server rejects oversized photos and videos that exceed the configured dura
   );
   assert.equal(videoResponse.statusCode, 400);
   assert.match(videoResponse.payload.error, /180 secondes/);
+});
+
+test("server publishes only the first 180 seconds when an overlong video has a signed trim request", async (context) => {
+  const asset = {
+    public_id: `${USER_ID}_video`,
+    secure_url:
+      "https://res.cloudinary.com/quartierplus-test/video/upload/video.mp4",
+    format: "mp4",
+    bytes: 1000,
+    resource_type: "video",
+    duration: 181,
+    context: { custom: { trim_video: "true" } },
+  };
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return asset;
+    },
+  }));
+  const client = createTransactionClient({
+    query(statement, values) {
+      if (statement.includes("INSERT INTO posts")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: POST_ID,
+              caption: "Vidéo découpée",
+              scope: "country",
+              media_url: values[7],
+            },
+          ],
+        };
+      }
+      return undefined;
+    },
+  });
+  context.mock.method(pool, "connect", async () => client);
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "video",
+        media_public_id: `${USER_ID}_video`,
+        trim_video: true,
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  const insert = client.queries.find(({ statement }) =>
+    statement.includes("INSERT INTO posts"),
+  );
+  assert.equal(response.statusCode, 201);
+  assert.match(insert.values[7], /\/video\/upload\/so_0,du_180\//);
+  assert.equal(insert.values[11], 180);
 });
 
 test("photo uploads with GPS metadata are deleted from Cloudinary and rejected", async (context) => {

@@ -13,6 +13,7 @@ export type CloudinaryUploadSignature = {
   resource_type: CloudinaryMediaType;
   signature: string;
   timestamp: number;
+  context?: string;
 };
 
 type UploadFile = {
@@ -56,6 +57,7 @@ const createFormData = (
   formData.append("folder", signature.folder);
   formData.append("public_id", signature.public_id);
   formData.append("signature", signature.signature);
+  if (signature.context) formData.append("context", signature.context);
   return formData;
 };
 

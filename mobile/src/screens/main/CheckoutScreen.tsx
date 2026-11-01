@@ -46,7 +46,7 @@ const OFFERS: {
     id: "ALLIANCE_PRO",
     title: "Alliance Pro",
     description: "Badge Commerçant Certifié et outils professionnels",
-    price: "5 000 FCFA / mois",
+    price: "15 000 FCFA / mois",
   },
   {
     id: "SPONSORED_PIN",

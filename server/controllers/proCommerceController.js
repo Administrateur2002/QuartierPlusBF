@@ -66,6 +66,37 @@ const handoffHash = (orderId, code) =>
 const validId = (value) => UUID_PATTERN.test(String(value ?? ""));
 const record = (value) =>
   value && typeof value === "object" && !Array.isArray(value) ? value : {};
+const DELIVERY_CITIES = [
+  "Banfora",
+  "Bobo-Dioulasso",
+  "Dédougou",
+  "Fada N’Gourma",
+  "Gaoua",
+  "Kaya",
+  "Koudougou",
+  "Ouagadougou",
+  "Ouahigouya",
+  "Tenkodogo",
+];
+const normalizeCity = (value) =>
+  value.normalize("NFKD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("fr");
+const catalogSlugFor = (businessName, userId) => {
+  const slug = businessName
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+  return `${slug || "grossiste"}-${userId.replaceAll("-", "").slice(-8)}`;
+};
+const optionalIdentifier = (value, label) => {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.trim().length > 80) {
+    throw httpError(400, "INVALID_BUSINESS_IDENTIFIER", `${label} doit contenir 80 caractères maximum.`);
+  }
+  return value.trim() || null;
+};
 const stringField = (value, max, label) => {
   if (typeof value !== "string" || !value.trim() || value.trim().length > max) {
     throw httpError(400, "INVALID_FIELD", `${label} est obligatoire (maximum ${max} caractères).`);
@@ -344,19 +375,33 @@ export const createWholesaler = withError(async (request, response) => {
   const body = record(request.body);
   const businessName = stringField(body.business_name, 120, "Le nom du grossiste");
   const deliveryZone = stringField(body.delivery_zone, 500, "La zone de livraison");
-  const slug = stringField(body.catalog_slug, 80, "Le lien catalogue")
-    .toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
-    throw httpError(400, "INVALID_CATALOG_SLUG", "Le lien catalogue doit contenir uniquement des lettres, chiffres et tirets simples.");
+  if (!DELIVERY_CITIES.some((city) => normalizeCity(city) === normalizeCity(deliveryZone))) {
+    throw httpError(400, "INVALID_DELIVERY_CITY", "Choisissez une ville de livraison dans la liste proposée.");
   }
+  const slug = catalogSlugFor(businessName, request.auth.userId);
+  const rccmNumber = optionalIdentifier(body.rccm_number, "Le numéro RCCM");
+  const ifuNumber = optionalIdentifier(body.ifu_number, "Le numéro IFU");
   const result = await pool.query(
-    `INSERT INTO pro_wholesalers (user_id, business_name, description, delivery_zone, catalog_slug)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO pro_wholesalers
+       (user_id, business_name, description, delivery_zone, catalog_slug,
+        rccm_number, ifu_number)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (user_id) DO UPDATE SET business_name = EXCLUDED.business_name,
        description = EXCLUDED.description, delivery_zone = EXCLUDED.delivery_zone,
-       catalog_slug = EXCLUDED.catalog_slug, updated_at = NOW()
+       catalog_slug = EXCLUDED.catalog_slug,
+       rccm_number = COALESCE(EXCLUDED.rccm_number, pro_wholesalers.rccm_number),
+       ifu_number = COALESCE(EXCLUDED.ifu_number, pro_wholesalers.ifu_number),
+       updated_at = NOW()
      RETURNING *`,
-    [request.auth.userId, businessName, String(body.description ?? "").slice(0, 2000), deliveryZone, slug],
+    [
+      request.auth.userId,
+      businessName,
+      String(body.description ?? "").slice(0, 2000),
+      deliveryZone,
+      slug,
+      rccmNumber,
+      ifuNumber,
+    ],
   );
   return response.status(201).json({ wholesaler: result.rows[0] });
 });

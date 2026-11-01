@@ -28,6 +28,7 @@ import {
   updateProduct,
 } from "../controllers/proCommerceController.js";
 import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { proRoleGuard } from "../middlewares/proRoleGuard.js";
 import { env } from "../config/env.js";
 import { timingSafeEqual } from "node:crypto";
 import { updateWholesalerVerification } from "../controllers/proCommerceController.js";
@@ -68,14 +69,14 @@ router.patch("/admin/wholesalers/:wholesalerId/verification", proAdminGuard, upd
 router.get("/wholesalers", getWholesalers);
 router.get("/wholesalers/me", authMiddleware, getOwnWholesaler);
 router.get("/wholesalers/:wholesalerId", getWholesaler);
-router.get("/wholesalers/:wholesalerId/manage-products", authMiddleware, getManageableProducts);
+router.get("/wholesalers/:wholesalerId/manage-products", authMiddleware, proRoleGuard("WHOLESALER"), getManageableProducts);
 router.get("/products", getProducts);
 router.get("/products/:productId", getProduct);
-router.post("/wholesalers", authMiddleware, createWholesaler);
-router.post("/wholesalers/:wholesalerId/products", authMiddleware, createProduct);
-router.post("/products/photo-signature", authMiddleware, signProductPhotoUpload);
-router.patch("/products/:productId", authMiddleware, updateProduct);
-router.post("/wholesalers/:wholesalerId/members", authMiddleware, addWholesalerMember);
+router.post("/wholesalers", authMiddleware, proRoleGuard("WHOLESALER"), createWholesaler);
+router.post("/wholesalers/:wholesalerId/products", authMiddleware, proRoleGuard("WHOLESALER"), createProduct);
+router.post("/products/photo-signature", authMiddleware, proRoleGuard("WHOLESALER"), signProductPhotoUpload);
+router.patch("/products/:productId", authMiddleware, proRoleGuard("WHOLESALER"), updateProduct);
+router.post("/wholesalers/:wholesalerId/members", authMiddleware, proRoleGuard("WHOLESALER"), addWholesalerMember);
 router.get("/favorites", authMiddleware, getFavorites);
 router.post("/favorites/:wholesalerId", authMiddleware, addFavorite);
 router.delete("/favorites/:wholesalerId", authMiddleware, removeFavorite);

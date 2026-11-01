@@ -10,12 +10,14 @@ import {
   Search,
   ShieldCheck,
   ShoppingBag,
+  Store,
   Tag,
   Wrench,
   X,
 } from "lucide-react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRoute, type RouteProp } from "@react-navigation/native";
+import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
+import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import {
   ActivityIndicator,
   Alert,
@@ -227,6 +229,8 @@ const normalizeSearchText = (text: string) =>
     .toLocaleLowerCase();
 
 export default function MarketplaceScreen() {
+  const navigation =
+    useNavigation<BottomTabNavigationProp<MainTabParamList>>();
   const route = useRoute<RouteProp<MainTabParamList, "Marche">>();
   const { colors, t } = useTheme();
   const {
@@ -970,6 +974,19 @@ export default function MarketplaceScreen() {
           <Text style={[styles.title, { color: colors.text }]}>{t("marketTitle")}</Text>
         </View>
 
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => navigation.navigate("Grossistes")}
+          style={[styles.wholesalerEntry, { backgroundColor: colors.card, borderColor: colors.border }]}
+        >
+          <Store color={colors.primary} size={20} />
+          <View style={styles.wholesalerEntryCopy}>
+            <Text style={[styles.wholesalerEntryTitle, { color: colors.text }]}>Commander chez un grossiste</Text>
+            <Text style={[styles.wholesalerEntrySubtitle, { color: colors.secondaryText }]}>Acheteur · sans abonnement</Text>
+          </View>
+          <ChevronRight color={colors.secondaryText} size={19} />
+        </Pressable>
+
         <ScrollView
           contentContainerStyle={styles.tabs}
           horizontal
@@ -1553,6 +1570,19 @@ const styles = StyleSheet.create({
     gap: 11,
     marginBottom: 21,
   },
+  wholesalerEntry: {
+    alignItems: "center",
+    borderRadius: 11,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  wholesalerEntryCopy: { flex: 1 },
+  wholesalerEntryTitle: { fontSize: 13, fontWeight: "800" },
+  wholesalerEntrySubtitle: { fontSize: 11, marginTop: 2 },
   headerIcon: {
     alignItems: "center",
     backgroundColor: "#dbeafe",

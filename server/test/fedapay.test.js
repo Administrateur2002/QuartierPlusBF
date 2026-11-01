@@ -138,7 +138,7 @@ test("FedaPay checkout accepts every Pro plan at its server-defined price", asyn
   };
 
   const plans = [
-    ["ALLIANCE_PRO", 5000],
+    ["ALLIANCE_PRO", 15000],
     ["SYNDIC", 2500],
     ["TOWN_HALL", 75000],
     ["SECURITY_AGENT", 50000],

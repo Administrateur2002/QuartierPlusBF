@@ -1,10 +1,11 @@
 import {
   createNavigationContainerRef,
   NavigationContainer,
+  useFocusEffect,
 } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Home,
@@ -13,7 +14,6 @@ import {
   MessageSquare,
   ShoppingBag,
   Store,
-  BusFront,
   User,
 } from "lucide-react-native";
 import { StatusBar } from "expo-status-bar";
@@ -25,7 +25,6 @@ import {
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import VoiceAssistantModal from "./src/components/VoiceAssistantModal";
@@ -58,6 +57,7 @@ import MarketplaceScreen from "./src/screens/MarketplaceScreen";
 import MessagesScreen from "./src/screens/MessagesScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
 import CheckoutScreen from "./src/screens/main/CheckoutScreen";
+import CommerceGrowthScreen from "./src/screens/CommerceGrowthScreen";
 import MyActivityScreen from "./src/screens/MyActivityScreen";
 import ProTabNavigator from "./src/navigation/ProTabNavigator";
 import EventsNavigator from "./src/navigation/EventsNavigator";
@@ -65,7 +65,6 @@ import VoyageNavigator from "./src/navigation/VoyageNavigator";
 import AlliancePlusScreen from "./src/screens/AlliancePlusScreen";
 import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
 import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
-import CommerceGrowthScreen from "./src/screens/CommerceGrowthScreen";
 import { LockKeyhole, X } from "lucide-react-native";
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -88,68 +87,45 @@ const renderTabLabel =
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
   const { colors, t } = useTheme();
-  const [proCommerceEnabled, setProCommerceEnabled] = useState(false);
-  const [voyageEnabled, setVoyageEnabled] = useState(false);
-  const [proActivated, setProActivated] = useState(false);
-  const compactTabs = width < 430 && proCommerceEnabled && voyageEnabled;
-  const compactMessageLabel = t("tabHome") === "Accueil" ? "Messa" : "Msg";
-  useEffect(() => {
-    let active = true;
-    void api
-      .get<{ enabled?: boolean }>("/v1/pro-commerce/config")
-      .then((response) => {
-        if (active) setProCommerceEnabled(response.data.enabled === true);
-      })
-      .catch(() => {
-        if (active) setProCommerceEnabled(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-  useEffect(() => {
-    let active = true;
-    const refreshProAccess = async () => {
-      try {
-        const response = await api.get<{ subscription?: unknown }>(
-          "/v1/pro/me/subscription",
-          { headers: { "Cache-Control": "no-cache" } },
-        );
-        if (active) {
-          setProActivated(
-            response.data.subscription !== null &&
-              response.data.subscription !== undefined,
-          );
-        }
-      } catch {
-        if (active) setProActivated(false);
+  const { user } = useAuth();
+  const [activeSpaces, setActiveSpaces] = useState<string[]>([]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      if (!user) {
+        setActiveSpaces([]);
+        return () => {
+          active = false;
+        };
       }
-    };
-    void refreshProAccess();
-    const unsubscribe = navigationRef.addListener("state", () => {
-      void refreshProAccess();
-    });
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
-  useEffect(() => {
-    let active = true;
-    void api
-      .get<{ enabled?: boolean }>("/v1/voyage/config")
-      .then((response) => {
-        if (active) setVoyageEnabled(response.data.enabled === true);
-      })
-      .catch(() => {
-        if (active) setVoyageEnabled(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+      void api
+        .get<unknown>("/v1/pro/me/subscription", {
+          headers: { "Cache-Control": "no-cache" },
+        })
+        .then((response) => {
+          const spaces =
+            response.data &&
+            typeof response.data === "object" &&
+            "active_spaces" in response.data &&
+            Array.isArray(response.data.active_spaces)
+              ? response.data.active_spaces.filter(
+                  (space): space is string => typeof space === "string",
+                )
+              : [];
+          if (active) setActiveSpaces(spaces);
+        })
+        .catch((error: unknown) => {
+          if (active) {
+            setActiveSpaces([]);
+            console.warn("Unable to load active Pro spaces:", error);
+          }
+        });
+      return () => {
+        active = false;
+      };
+    }, [user?.id]),
+  );
   return (
     <Tab.Navigator
       screenOptions={{
@@ -197,12 +173,9 @@ function MainTabs() {
         name="Messages"
         component={MessagesScreen}
         options={{
-          tabBarLabel: renderTabLabel(
-            compactTabs ? compactMessageLabel : t("tabMessages"),
-            compactTabs,
-          ),
+          tabBarLabel: renderTabLabel(t("tabMessages")),
           tabBarAccessibilityLabel: t("tabMessages"),
-          tabBarIcon: ({ color, size }) => <MessageSquare color={color} size={compactTabs ? 19 : size} />,
+          tabBarIcon: ({ color, size }) => <MessageSquare color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -213,27 +186,22 @@ function MainTabs() {
           tabBarIcon: ({ color, size }) => <User color={color} size={size} />,
         }}
       />
-      {proCommerceEnabled && (
-        <Tab.Screen
-          name="Grossistes"
-          component={ProCommerceScreen}
-          options={{
-            tabBarLabel: renderTabLabel(compactTabs ? "Grossis" : "Grossistes", compactTabs),
-            tabBarAccessibilityLabel: "Grossistes",
-            tabBarIcon: ({ color, size }) => <Store color={color} size={compactTabs ? 19 : size} />,
-          }}
-        />
-      )}
-      {voyageEnabled && (
-        <Tab.Screen
-          name="Voyage"
-          component={VoyageNavigator}
-          options={{
-            tabBarLabel: renderTabLabel("Voyage"),
-            tabBarIcon: ({ color, size }) => <BusFront color={color} size={size} />,
-          }}
-        />
-      )}
+      <Tab.Screen
+        name="Grossistes"
+        component={ProCommerceScreen}
+        options={{
+          tabBarButton: () => null,
+          tabBarItemStyle: { display: "none" },
+        }}
+      />
+      <Tab.Screen
+        name="Voyage"
+        component={VoyageNavigator}
+        options={{
+          tabBarButton: () => null,
+          tabBarItemStyle: { display: "none" },
+        }}
+      />
       <Tab.Screen
         name="Talkie"
         component={WalkieTalkieScreen}
@@ -250,16 +218,18 @@ function MainTabs() {
           tabBarItemStyle: { display: "none" },
         }}
       />
-      <Tab.Screen
-        name="EspacePro"
-        component={ProTabNavigator}
-        options={{
-          tabBarButton: proActivated ? undefined : () => null,
-          tabBarItemStyle: proActivated ? undefined : { display: "none" },
-          tabBarLabel: renderTabLabel("Pro"),
-          tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
-        }}
-      />
+      {activeSpaces.some((space) =>
+        ["ALLIANCE_PRO", "SPONSORED_PIN", "WHOLESALER", "TRANSPORT_COMPANY"].includes(space),
+      ) && (
+        <Tab.Screen
+          name="EspacePro"
+          component={ProTabNavigator}
+          options={{
+            tabBarLabel: renderTabLabel("Pro"),
+            tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
+          }}
+        />
+      )}
       <Tab.Screen
         name="Événements"
         component={EventsNavigator}

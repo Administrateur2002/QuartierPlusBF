@@ -71,6 +71,12 @@ import {
 type Country = EmergencyCountry;
 
 const COUNTRIES = EMERGENCY_COUNTRIES;
+const PHONE_COUNTRY_PREFIXES = [
+  { prefix: "226", code: "BF" },
+  { prefix: "225", code: "CI" },
+  { prefix: "223", code: "ML" },
+  { prefix: "221", code: "SN" },
+] as const;
 const storageFallbackMessage = () =>
   `Stockage local temporaire en mémoire.\n${getProfileStorageDiagnostic()}`;
 
@@ -84,6 +90,7 @@ type UserProfile = {
   name: string;
   neighborhood: string;
   phoneNumber: string;
+  countryCode: string | null;
   role: "resident" | "relay";
   reputationScore: number | null;
   isVerified: boolean;
@@ -101,6 +108,10 @@ const normalizeProfile = (value: unknown): UserProfile | null => {
   const rawScore =
     user.reputation_score ?? user.reputationScore ?? user.score ?? null;
   const score = rawScore === null ? null : Number(rawScore);
+  const reputationScore =
+    score === null || !Number.isFinite(score)
+      ? null
+      : Math.max(0, Math.min(5, score > 5 ? score / 20 : score));
 
   return {
     name: String(user.name ?? user.full_name ?? user.username ?? ""),
@@ -108,12 +119,13 @@ const normalizeProfile = (value: unknown): UserProfile | null => {
       user.neighborhood ?? user.neighborhood_name ?? user.location ?? "",
     ),
     phoneNumber: String(user.phone_number ?? user.phone ?? ""),
+    countryCode:
+      typeof user.country_code === "string" ? user.country_code.toUpperCase() : null,
     role:
       rawRole.includes("relay") || rawRole.includes("relais")
         ? "relay"
         : "resident",
-    reputationScore:
-      score !== null && Number.isFinite(score) ? score : null,
+    reputationScore,
     isVerified: user.is_verified === true || user.isVerified === true,
     badge:
       typeof user.badge === "string" && user.badge.length > 0
@@ -384,6 +396,19 @@ export default function ProfileScreen() {
     };
   }, [user?.badge, user?.id]);
 
+  useEffect(() => {
+    if (!profile) return;
+    const digits = profile.phoneNumber.replace(/\D/g, "");
+    const phoneCountry = PHONE_COUNTRY_PREFIXES.find(({ prefix }) =>
+      digits.startsWith(prefix),
+    );
+    const inferredCode = phoneCountry?.code ?? profile.countryCode;
+    const country = inferredCode
+      ? COUNTRIES.find((entry) => entry.code === inferredCode)
+      : undefined;
+    if (country) setSelectedCountry(country);
+  }, [databaseReady, profile?.countryCode, profile?.phoneNumber]);
+
   const selectCountry = async (country: Country) => {
     const database = databaseRef.current;
     if (!database) {
@@ -458,6 +483,7 @@ export default function ProfileScreen() {
           reputationScore: null,
           isVerified: false,
           phoneNumber: "",
+          countryCode: profile?.countryCode ?? selectedCountry.code,
           badge: null,
           photoUrl: null,
         }),
@@ -1148,7 +1174,7 @@ export default function ProfileScreen() {
 
         <Pressable
           accessibilityRole="button"
-          onPress={() => navigation.navigate("Checkout")}
+          onPress={() => navigation.navigate("CommerceGrowth")}
           style={styles.paymentCard}
         >
           <CreditCard color="#ffffff" size={20} />

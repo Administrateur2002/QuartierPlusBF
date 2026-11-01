@@ -13,28 +13,33 @@ const FEATURE_SECTIONS = {
 
 export const getMySubscription = async (request, response, next) => {
   try {
-    const result = await pool.query(
-      `SELECT plan_type, status, starts_at, expires_at
-       FROM subscriptions
-       WHERE user_id = $1
-         AND status = 'ACTIVE'
-         AND starts_at <= NOW()
-         AND expires_at > NOW()
-       ORDER BY expires_at DESC
-       LIMIT 1`,
-      [request.auth.userId],
-    );
+    const [subscriptions, pins] = await Promise.all([
+      pool.query(
+        `SELECT plan_type, status, starts_at, expires_at
+         FROM subscriptions
+         WHERE user_id = $1
+           AND status = 'ACTIVE'
+           AND starts_at <= NOW()
+           AND expires_at > NOW()
+         ORDER BY expires_at DESC`,
+        [request.auth.userId],
+      ),
+      pool.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM sponsored_pins
+           WHERE user_id = $1 AND is_active = TRUE
+             AND starts_at <= NOW() AND expires_at > NOW()
+         ) AS active`,
+        [request.auth.userId],
+      ),
+    ]);
+    const activeSubscriptions = subscriptions.rows;
+    const activeSpaces = activeSubscriptions.map((item) => item.plan_type);
+    if (pins.rows[0]?.active === true) activeSpaces.push("SPONSORED_PIN");
     return response.status(200).json({
-      subscription:
-        result.rows[0] ??
-        (IS_PROMO_FREE_ACCESS
-          ? {
-              plan_type: "ALLIANCE_PRO",
-              status: "ACTIVE",
-              starts_at: new Date().toISOString(),
-              expires_at: "2099-12-31T23:59:59.999Z",
-            }
-          : null),
+      subscription: activeSubscriptions[0] ?? null,
+      active_subscriptions: activeSubscriptions,
+      active_spaces: [...new Set(activeSpaces)],
       promo_free_access: IS_PROMO_FREE_ACCESS,
       billing_enabled: env.billingEnabled,
     });

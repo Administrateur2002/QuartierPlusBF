@@ -1,17 +1,6 @@
 import { pool } from "../db/pool.js";
-import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
 
 export const proRoleGuard = (requiredPlan) => async (request, response, next) => {
-  if (IS_PROMO_FREE_ACCESS) {
-    request.proSubscription = {
-      plan_type: requiredPlan,
-      status: "ACTIVE",
-      starts_at: new Date(),
-      expires_at: new Date("2099-12-31T23:59:59.999Z"),
-      is_promo_free_access: true,
-    };
-    return next();
-  }
   try {
     const result = await pool.query(
       `SELECT plan_type, status, starts_at, expires_at

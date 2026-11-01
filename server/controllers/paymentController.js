@@ -11,7 +11,7 @@ import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
 
 const OFFERS = {
   ALLIANCE_PRO: {
-    amount: 5000,
+    amount: 15000,
     description: "Alliance Pro - 30 jours",
     durationDays: 30,
   },

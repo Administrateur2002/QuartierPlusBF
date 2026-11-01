@@ -71,3 +71,24 @@ test("Pro role guards reject missing or mismatched subscriptions", async () => {
   assert.equal(mismatched.nextCalled, false);
   assert.equal(mismatched.response.statusCode, 403);
 });
+
+test("Pro role guards reject subscriptions before start or after expiry", async () => {
+  for (const subscription of [
+    {
+      plan_type: "WHOLESALER",
+      status: "ACTIVE",
+      starts_at: new Date(Date.now() + 60_000),
+      expires_at: new Date(Date.now() + 120_000),
+    },
+    {
+      plan_type: "WHOLESALER",
+      status: "ACTIVE",
+      starts_at: new Date(Date.now() - 120_000),
+      expires_at: new Date(Date.now() - 60_000),
+    },
+  ]) {
+    const result = await invokeGuard("WHOLESALER", subscription);
+    assert.equal(result.nextCalled, false);
+    assert.equal(result.response.statusCode, 403);
+  }
+});

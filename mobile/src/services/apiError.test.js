@@ -9,6 +9,32 @@ test("surfaces the actual API validation error", () => {
   expect(getApiErrorMessage(error, "Réservation impossible.")).toBe("Place déjà réservée.");
 });
 
+test("prefers the detailed API reason over a generic error", () => {
+  const error = {
+    isAxiosError: true,
+    response: {
+      status: 400,
+      data: { error: "Requête invalide.", reason: "La date est antérieure à aujourd'hui." },
+    },
+  };
+  expect(getApiErrorMessage(error, "Recherche impossible.")).toBe(
+    "La date est antérieure à aujourd'hui.",
+  );
+});
+
+test("surfaces field validation messages returned as an errors array", () => {
+  const error = {
+    isAxiosError: true,
+    response: {
+      status: 400,
+      data: { errors: [{ field: "date", message: "Format de date invalide." }] },
+    },
+  };
+  expect(getApiErrorMessage(error, "Recherche impossible.")).toBe(
+    "Format de date invalide.",
+  );
+});
+
 test("uses a useful status when the server response has no message", () => {
   const error = { isAxiosError: true, message: "Request failed", response: { status: 503, data: {} } };
   expect(getApiErrorMessage(error, "Voyage indisponible")).toBe("Voyage indisponible (HTTP 503).");

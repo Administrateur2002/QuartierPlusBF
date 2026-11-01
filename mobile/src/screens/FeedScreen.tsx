@@ -6,6 +6,8 @@ import { File, Paths } from "expo-file-system";
 import {
   AlertTriangle,
   Bookmark,
+  BusFront,
+  ChevronRight,
   Heart,
   MapPin,
   MessageCircle,
@@ -17,6 +19,8 @@ import {
   Settings2,
   Users,
 } from "lucide-react-native";
+import { useNavigation } from "@react-navigation/native";
+import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -44,6 +48,7 @@ import { FlashList } from "@shopify/flash-list";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
+import type { MainTabParamList } from "../navigation/types";
 import {
   cacheAlerts,
   cachePosts,
@@ -123,11 +128,13 @@ type DraftMedia = {
   resourceType: CloudinaryMediaType;
   size: number;
   duration?: number;
+  trimVideo: boolean;
 };
 
 type MediaSignature = CloudinaryUploadSignature & {
   max_bytes: number;
   max_duration_seconds: number | null;
+  trim_video: boolean;
 };
 
 class PublicationApiError extends Error {}
@@ -260,6 +267,8 @@ const formatDate = (date: string) => {
 };
 
 export default function FeedScreen() {
+  const navigation =
+    useNavigation<BottomTabNavigationProp<MainTabParamList>>();
   const { colors } = useTheme();
   const { authStatus, isOffline, requestAuthentication, queueOfflineAction, user } = useAuth();
   const { requestAssistant } = useVoiceAssistant();
@@ -1495,6 +1504,29 @@ export default function FeedScreen() {
       if (!asset?.uri) {
         throw new Error("Le média sélectionné est indisponible.");
       }
+      const duration =
+        typeof asset.duration === "number" ? asset.duration / 1000 : undefined;
+      let trimVideo = false;
+      if (resourceType === "video" && duration !== undefined && duration > 180) {
+        trimVideo = await new Promise<boolean>((resolve) => {
+          let settled = false;
+          const settle = (shouldTrim: boolean) => {
+            if (settled) return;
+            settled = true;
+            resolve(shouldTrim);
+          };
+          Alert.alert(
+            "Vidéo trop longue",
+            "La publication est limitée à 180 secondes. Voulez-vous utiliser les 180 premières secondes ?",
+            [
+              { text: "Choisir une autre vidéo", style: "cancel", onPress: () => settle(false) },
+              { text: "Utiliser ce segment", onPress: () => settle(true) },
+            ],
+            { cancelable: true, onDismiss: () => settle(false) },
+          );
+        });
+        if (!trimVideo) return;
+      }
       let mediaUri = asset.uri;
       let mimeType = asset.mimeType ?? "video/mp4";
       let filename =
@@ -1538,8 +1570,8 @@ export default function FeedScreen() {
         mimeType,
         resourceType,
         size,
-        duration:
-          typeof asset.duration === "number" ? asset.duration / 1000 : undefined,
+        duration,
+        trimVideo,
       });
       setComposerStage("preview");
     } catch (selectionError) {
@@ -1658,7 +1690,10 @@ export default function FeedScreen() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ media_type: draftMedia.resourceType }),
+          body: JSON.stringify({
+            media_type: draftMedia.resourceType,
+            trim_video: draftMedia.trimVideo,
+          }),
           signal: controller.signal,
         },
       );
@@ -1683,6 +1718,9 @@ export default function FeedScreen() {
         typeof signaturePayload.timestamp !== "number" ||
         typeof signaturePayload.max_bytes !== "number" ||
         signaturePayload.resource_type !== draftMedia.resourceType ||
+        signaturePayload.trim_video !== draftMedia.trimVideo ||
+        (draftMedia.trimVideo &&
+          signaturePayload.context !== "trim_video=true") ||
         !(
           signaturePayload.max_duration_seconds === null ||
           typeof signaturePayload.max_duration_seconds === "number"
@@ -1693,9 +1731,12 @@ export default function FeedScreen() {
       const signature = signaturePayload as MediaSignature;
       if (
         draftMedia.resourceType === "video" &&
-        (typeof signature.max_duration_seconds !== "number" ||
-          (draftMedia.duration !== undefined &&
-            draftMedia.duration > signature.max_duration_seconds))
+        ((!draftMedia.trimVideo &&
+          (typeof signature.max_duration_seconds !== "number" ||
+            (draftMedia.duration !== undefined &&
+              draftMedia.duration > signature.max_duration_seconds))) ||
+          (draftMedia.trimVideo &&
+            signature.max_duration_seconds !== null))
       ) {
         throw new PublicationApiError(
           `La vidéo doit durer au maximum ${signature.max_duration_seconds ?? 180} secondes.`,
@@ -1762,6 +1803,7 @@ export default function FeedScreen() {
           scope: draftScope,
           media_type: draftMedia.resourceType,
           media_public_id: uploaded.publicId,
+          trim_video: draftMedia.trimVideo,
           ...(position
             ? {
                 latitude: position.latitude,
@@ -1899,6 +1941,18 @@ export default function FeedScreen() {
           </Pressable>
         </View>
       </View>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => navigation.navigate("Voyage")}
+        style={styles.voyageEntry}
+      >
+        <BusFront color="#2563eb" size={20} />
+        <View style={styles.voyageEntryCopy}>
+          <Text style={styles.voyageEntryTitle}>Réserver un billet de car</Text>
+          <Text style={styles.voyageEntrySubtitle}>Voyageur · sans abonnement</Text>
+        </View>
+        <ChevronRight color="#64748b" size={18} />
+      </Pressable>
       <View style={[styles.scopeBar, { backgroundColor: colors.card }]}>
         {FEED_SCOPES.map((option) => (
           <Pressable
@@ -2928,6 +2982,20 @@ const styles = StyleSheet.create({
   title: { color: "#0f172a", fontSize: 24, fontWeight: "800", marginTop: 3 },
   subtitle: { color: "#64748b", fontSize: 13, marginTop: 3 },
   headerActions: { alignItems: "center", flexDirection: "row", gap: 8 },
+  voyageEntry: {
+    alignItems: "center",
+    backgroundColor: "#eff6ff",
+    flexDirection: "row",
+    gap: 12,
+    marginHorizontal: 12,
+    marginVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  voyageEntryCopy: { flex: 1 },
+  voyageEntryTitle: { color: "#1e3a8a", fontSize: 13, fontWeight: "800" },
+  voyageEntrySubtitle: { color: "#64748b", fontSize: 11, marginTop: 2 },
   microphoneButton: {
     alignItems: "center",
     backgroundColor: "#f8fafc",

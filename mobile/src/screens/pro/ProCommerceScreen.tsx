@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import * as Location from "expo-location";
 import * as ImagePicker from "expo-image-picker";
@@ -34,6 +34,8 @@ type Wholesaler = {
   description: string;
   delivery_zone: string;
   catalog_slug: string;
+  rccm_number?: string | null;
+  ifu_number?: string | null;
   rccm_status?: string;
   ifu_status?: string;
 };
@@ -59,6 +61,27 @@ type OrderDetails = {
   handoff_code: string | null;
 };
 type Mode = "catalog" | "orders" | "wholesaler";
+
+const BURKINA_DELIVERY_CITIES = [
+  "Banfora",
+  "Bobo-Dioulasso",
+  "Dédougou",
+  "Fada N’Gourma",
+  "Gaoua",
+  "Kaya",
+  "Koudougou",
+  "Ouagadougou",
+  "Ouahigouya",
+  "Tenkodogo",
+];
+
+const catalogSlugPreview = (name: string) =>
+  name
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "grossiste";
 
 const STATUS_LABELS: Record<string, string> = {
   RECEIVED: "Reçue",
@@ -90,6 +113,7 @@ export default function ProCommerceScreen() {
   const [products, setProducts] = useState<Product[]>([]);
   const [wholesalers, setWholesalers] = useState<Wholesaler[]>([]);
   const [myWholesaler, setMyWholesaler] = useState<Wholesaler | null>(null);
+  const [hasWholesalerEntitlement, setHasWholesalerEntitlement] = useState(false);
   const [managedProducts, setManagedProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<ProOrder[]>([]);
   const [queuedCount, setQueuedCount] = useState(0);
@@ -104,7 +128,9 @@ export default function ProCommerceScreen() {
   const [busy, setBusy] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [deliveryZone, setDeliveryZone] = useState("");
-  const [catalogSlug, setCatalogSlug] = useState("");
+  const [rccmNumber, setRccmNumber] = useState("");
+  const [ifuNumber, setIfuNumber] = useState("");
+  const [zonePickerOpen, setZonePickerOpen] = useState(false);
   const [productName, setProductName] = useState("");
   const [productUnit, setProductUnit] = useState("sac");
   const [productPrice, setProductPrice] = useState("");
@@ -126,24 +152,40 @@ export default function ProCommerceScreen() {
       setWholesalers(catalogResponse.data.wholesalers);
       setProducts(productsResponse.data.products);
       if (user) {
-        const [ordersResponse, queued, ownProfile] = await Promise.all([
+        const [ordersResponse, queued, ownProfile, subscriptionResponse] = await Promise.all([
           api.get<{ orders: ProOrder[] }>("/v1/pro-commerce/orders"),
           getQueuedProOrders(),
           api.get<{ wholesaler: Wholesaler | null }>("/v1/pro-commerce/wholesalers/me"),
+          api.get<{ active_spaces?: unknown }>("/v1/pro/me/subscription", {
+            headers: { "Cache-Control": "no-cache" },
+          }),
         ]);
+        const hasManagementAccess =
+          Array.isArray(subscriptionResponse.data.active_spaces) &&
+          subscriptionResponse.data.active_spaces.includes("WHOLESALER");
+        setHasWholesalerEntitlement(hasManagementAccess);
         setOrders(ordersResponse.data.orders);
         setQueuedCount(queued.length);
         setMyWholesaler(ownProfile.data.wholesaler);
         if (ownProfile.data.wholesaler) {
-          const ownProducts = await api.get<{ products: Product[] }>(
-            `/v1/pro-commerce/wholesalers/${ownProfile.data.wholesaler.id}/manage-products`,
-          );
-          setManagedProducts(ownProducts.data.products);
+          setBusinessName(ownProfile.data.wholesaler.business_name);
+          setDeliveryZone(ownProfile.data.wholesaler.delivery_zone);
+          setRccmNumber(ownProfile.data.wholesaler.rccm_number ?? "");
+          setIfuNumber(ownProfile.data.wholesaler.ifu_number ?? "");
+          if (hasManagementAccess) {
+            const ownProducts = await api.get<{ products: Product[] }>(
+              `/v1/pro-commerce/wholesalers/${ownProfile.data.wholesaler.id}/manage-products`,
+            );
+            setManagedProducts(ownProducts.data.products);
+          } else {
+            setManagedProducts([]);
+          }
         } else {
           setManagedProducts([]);
         }
       } else {
         setMyWholesaler(null);
+        setHasWholesalerEntitlement(false);
         setManagedProducts([]);
       }
     } catch (requestError) {
@@ -199,7 +241,9 @@ export default function ProCommerceScreen() {
   const cartTotal = cartItems.reduce((total, item) => total + item.unitPrice * item.quantity, 0);
   const activeWholesaler = wholesalers.find((entry) => entry.id === cartWholesalerId);
   const ownOrders = orders.filter((order) => order.buyer_id === user?.id);
-  const sellerOrders = orders.filter((order) => order.business_name && order.buyer_id !== user?.id);
+  const sellerOrders = hasWholesalerEntitlement
+    ? orders.filter((order) => order.business_name && order.buyer_id !== user?.id)
+    : [];
 
   const loadOrder = async (orderId: string) => {
     try {
@@ -372,12 +416,16 @@ export default function ProCommerceScreen() {
       const response = await api.post<{ wholesaler: Wholesaler }>("/v1/pro-commerce/wholesalers", {
         business_name: businessName.trim(),
         delivery_zone: deliveryZone.trim(),
-        catalog_slug: catalogSlug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-"),
+        rccm_number: rccmNumber.trim() || undefined,
+        ifu_number: ifuNumber.trim() || undefined,
       });
       await refresh();
       setMyWholesaler(response.data.wholesaler);
       Alert.alert("Profil créé", "Le catalogue sera public après la vérification RCCM et IFU.");
       setBusinessName(response.data.wholesaler.business_name);
+      setDeliveryZone(response.data.wholesaler.delivery_zone);
+      setRccmNumber(response.data.wholesaler.rccm_number ?? "");
+      setIfuNumber(response.data.wholesaler.ifu_number ?? "");
     } catch (requestError) {
       Alert.alert("Profil non créé", getApiErrorMessage(requestError, "Vérifiez le nom, la zone et le lien du catalogue."));
     }
@@ -477,6 +525,14 @@ export default function ProCommerceScreen() {
     </View>
   );
 
+  const modeOptions: { id: Mode; label: string }[] = [
+    { id: "catalog", label: "Catalogue" },
+    { id: "orders", label: "Commandes" },
+    ...(hasWholesalerEntitlement
+      ? [{ id: "wholesaler" as const, label: "Grossiste" }]
+      : []),
+  ];
+
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -489,9 +545,9 @@ export default function ProCommerceScreen() {
         </Pressable>
       </View>
       <View style={[styles.segment, { borderBottomColor: colors.border }]}>
-        {([ ["catalog", "Catalogue"], ["orders", "Commandes"], ["wholesaler", "Grossiste"] ] as const).map(([key, label]) => (
-          <Pressable key={key} accessibilityRole="button" accessibilityState={{ selected: mode === key }} onPress={() => setMode(key)} style={[styles.segmentButton, mode === key && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}>
-            <Text style={{ color: mode === key ? colors.primary : colors.secondaryText, fontSize: 13, fontWeight: "700" }}>{label}</Text>
+        {modeOptions.map(({ id, label }) => (
+          <Pressable key={id} accessibilityRole="button" accessibilityState={{ selected: mode === id }} onPress={() => setMode(id)} style={[styles.segmentButton, mode === id && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}>
+            <Text style={{ color: mode === id ? colors.primary : colors.secondaryText, fontSize: 13, fontWeight: "700" }}>{label}</Text>
           </Pressable>
         ))}
       </View>
@@ -594,8 +650,35 @@ export default function ProCommerceScreen() {
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Mon profil grossiste</Text>
             {myWholesaler && <Text style={[styles.muted, { color: colors.secondaryText }]}>RCCM : {myWholesaler.rccm_status} · IFU : {myWholesaler.ifu_status}</Text>}
             <TextInput value={businessName} onChangeText={setBusinessName} placeholder="Nom du commerce" placeholderTextColor={colors.secondaryText} style={[styles.input, { color: colors.text, borderColor: colors.border }]} />
-            <TextInput value={deliveryZone} onChangeText={setDeliveryZone} placeholder="Zone de livraison" placeholderTextColor={colors.secondaryText} style={[styles.input, { color: colors.text, borderColor: colors.border }]} />
-            <TextInput value={catalogSlug} onChangeText={setCatalogSlug} autoCapitalize="none" placeholder="Lien catalogue (ex. grossiste-ouaga)" placeholderTextColor={colors.secondaryText} style={[styles.input, { color: colors.text, borderColor: colors.border }]} />
+            <Pressable
+              accessibilityLabel={`Choisir la ville de livraison${deliveryZone ? `, ${deliveryZone}` : ""}`}
+              accessibilityRole="button"
+              onPress={() => setZonePickerOpen(true)}
+              style={[styles.citySelector, { borderColor: colors.border }]}
+            >
+              <Text style={{ color: deliveryZone ? colors.text : colors.secondaryText, fontSize: 14 }}>
+                {deliveryZone || "Choisir une ville de livraison"}
+              </Text>
+            </Pressable>
+            <Text style={[styles.muted, { color: colors.secondaryText }]}>
+              Lien catalogue généré automatiquement : {catalogSlugPreview(businessName)}
+            </Text>
+            <TextInput
+              accessibilityLabel="Numéro RCCM facultatif"
+              value={rccmNumber}
+              onChangeText={setRccmNumber}
+              placeholder="RCCM (facultatif)"
+              placeholderTextColor={colors.secondaryText}
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+            />
+            <TextInput
+              accessibilityLabel="Numéro IFU facultatif"
+              value={ifuNumber}
+              onChangeText={setIfuNumber}
+              placeholder="IFU (facultatif)"
+              placeholderTextColor={colors.secondaryText}
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+            />
             <ActionButton label="Créer ou actualiser mon profil" onPress={() => void createWholesalerProfile()} colors={colors} />
             {myWholesaler && (
               <>
@@ -641,6 +724,36 @@ export default function ProCommerceScreen() {
           </>
         )}
       </ScrollView>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setZonePickerOpen(false)}
+        transparent
+        visible={zonePickerOpen}
+      >
+        <View style={styles.cityBackdrop}>
+          <View style={[styles.citySheet, { backgroundColor: colors.card }]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Ville de livraison</Text>
+            <ScrollView>
+              {BURKINA_DELIVERY_CITIES.map((city) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: city === deliveryZone }}
+                  key={city}
+                  onPress={() => {
+                    setDeliveryZone(city);
+                    setZonePickerOpen(false);
+                  }}
+                  style={[styles.cityOption, { borderBottomColor: colors.border }]}
+                >
+                  <Text style={{ color: city === deliveryZone ? colors.primary : colors.text, fontSize: 14, fontWeight: "700" }}>
+                    {city}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -670,6 +783,10 @@ const styles = StyleSheet.create({
   error: { color: "#b42318", fontSize: 13, paddingHorizontal: 16, paddingTop: 8 },
   empty: { fontSize: 14, paddingVertical: 24, textAlign: "center" },
   sectionTitle: { fontSize: 16, fontWeight: "800", marginBottom: 8, marginTop: 18 },
+  citySelector: { borderRadius: 6, borderWidth: 1, justifyContent: "center", marginTop: 8, minHeight: 44, paddingHorizontal: 11 },
+  cityBackdrop: { backgroundColor: "rgba(15,23,42,0.5)", flex: 1, justifyContent: "flex-end" },
+  citySheet: { borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "75%", paddingBottom: 28, paddingHorizontal: 18, paddingTop: 12 },
+  cityOption: { borderBottomWidth: StyleSheet.hairlineWidth, justifyContent: "center", minHeight: 48, paddingHorizontal: 8 },
   rowTitle: { fontSize: 14, fontWeight: "700" },
   muted: { fontSize: 12, lineHeight: 18, marginTop: 3 },
   price: { fontSize: 14, fontWeight: "700", marginTop: 5 },

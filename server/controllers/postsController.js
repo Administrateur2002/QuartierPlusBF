@@ -82,6 +82,10 @@ export const signMediaUpload = async (request, response, next) => {
     if (mediaType !== "image" && mediaType !== "video") {
       return response.status(400).json({ error: "Type de média invalide." });
     }
+    const trimVideo = request.body?.trim_video === true;
+    if (trimVideo && mediaType !== "video") {
+      return response.status(400).json({ error: "Le découpage est réservé aux vidéos." });
+    }
     const timestamp = Math.floor(Date.now() / 1000);
     const folder = "quartierplus/posts";
     const publicId = `${user.id}_${randomUUID()}`;
@@ -89,6 +93,7 @@ export const signMediaUpload = async (request, response, next) => {
       folder,
       public_id: publicId,
       timestamp,
+      ...(trimVideo ? { context: "trim_video=true" } : {}),
     });
     return response.status(200).json({
       ...signature,
@@ -101,7 +106,9 @@ export const signMediaUpload = async (request, response, next) => {
           ? env.postMaxPhotoBytes
           : env.postMaxVideoBytes,
       max_duration_seconds:
-        mediaType === "video" ? env.postMaxVideoSeconds : null,
+        mediaType === "video" && !trimVideo ? env.postMaxVideoSeconds : null,
+      trim_video: trimVideo,
+      ...(trimVideo ? { context: "trim_video=true" } : {}),
     });
   } catch (error) {
     return next(error);
@@ -150,7 +157,12 @@ export const logMediaUploadFailure = (request, response) => {
   return response.status(204).end();
 };
 
-const getVerifiedAsset = async (userId, mediaPublicId, mediaType) => {
+const getVerifiedAsset = async (
+  userId,
+  mediaPublicId,
+  mediaType,
+  trimVideo = false,
+) => {
   if (
     typeof mediaPublicId !== "string" ||
     mediaPublicId.length > 255 ||
@@ -180,6 +192,12 @@ const getVerifiedAsset = async (userId, mediaPublicId, mediaType) => {
   ) {
     return { error: "L’adresse sécurisée du média est invalide." };
   }
+  const signedTrimContext =
+    asset.context?.custom?.trim_video === "true" ||
+    asset.context?.trim_video === "true";
+  if (trimVideo && (mediaType !== "video" || !signedTrimContext)) {
+    return { error: "Le découpage demandé n’a pas été autorisé pour cette vidéo." };
+  }
   const allowedFormats = mediaType === "image" ? IMAGE_FORMATS : VIDEO_FORMATS;
   const format = String(asset.format ?? "").toLowerCase();
   if (!allowedFormats.has(format)) {
@@ -201,16 +219,29 @@ const getVerifiedAsset = async (userId, mediaPublicId, mediaType) => {
     mediaType === "video" &&
     (!Number.isFinite(duration) ||
       duration <= 0 ||
-      duration > env.postMaxVideoSeconds)
+      (duration > env.postMaxVideoSeconds && !trimVideo))
   ) {
     return {
       error: `La vidéo doit durer au maximum ${env.postMaxVideoSeconds} secondes.`,
     };
   }
+  const isTrimmedVideo =
+    mediaType === "video" &&
+    trimVideo &&
+    duration > env.postMaxVideoSeconds;
+  const verifiedAsset = isTrimmedVideo
+    ? {
+        ...asset,
+        secure_url: asset.secure_url.replace(
+          "/video/upload/",
+          `/video/upload/so_0,du_${env.postMaxVideoSeconds}/`,
+        ),
+      }
+    : asset;
   return {
-    asset,
+    asset: verifiedAsset,
     format,
-    duration,
+    duration: isTrimmedVideo ? env.postMaxVideoSeconds : duration,
   };
 };
 
@@ -229,6 +260,9 @@ export const createPost = async (request, response, next) => {
   }
   if (hasMedia && mediaType !== "image" && mediaType !== "video") {
     return response.status(400).json({ error: "Type de média invalide." });
+  }
+  if (request.body?.trim_video === true && mediaType !== "video") {
+    return response.status(400).json({ error: "Le découpage est réservé aux vidéos." });
   }
   if (caption.length > 1000) {
     return response.status(400).json({
@@ -260,6 +294,7 @@ export const createPost = async (request, response, next) => {
           user.id,
           request.body?.media_public_id,
           mediaType,
+          request.body?.trim_video === true,
         )
       : null;
     if (media?.error) return response.status(400).json({ error: media.error });
