@@ -125,7 +125,7 @@ const ACTIVITIES = [
 const PLUS_DESTINATIONS = [
   { screen: "Talkie", label: "Talkie-Walkie" },
   { screen: "Grin", label: "Grin" },
-  { screen: "EspacePro", label: "Pro" },
+  { screen: "CommerceGrowth", label: "Développez votre commerce" },
   { screen: "Événements", label: "Événements" },
 ] as const;
 
@@ -783,9 +783,13 @@ export default function ProfileScreen() {
   };
 
   const openPlusDestination = (
-    screen: "Talkie" | "Grin" | "EspacePro" | "Événements",
+    screen: "Talkie" | "Grin" | "CommerceGrowth" | "Événements",
   ) => {
-    navigation.navigate("Main", { screen });
+    if (screen === "CommerceGrowth") {
+      navigation.navigate("CommerceGrowth");
+    } else {
+      navigation.navigate("Main", { screen });
+    }
   };
 
   if (!user) {

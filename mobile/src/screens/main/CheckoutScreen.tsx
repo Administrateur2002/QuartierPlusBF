@@ -1,4 +1,9 @@
-import { useNavigation, type NavigationProp } from "@react-navigation/native";
+import {
+  useNavigation,
+  useRoute,
+  type NavigationProp,
+  type RouteProp,
+} from "@react-navigation/native";
 import { ArrowLeft, CheckCircle2, ImagePlus, MapPin, ShieldCheck } from "lucide-react-native";
 import * as WebBrowser from "expo-web-browser";
 import { useEffect, useState } from "react";
@@ -27,7 +32,9 @@ type Offer =
   | "SPONSORED_PIN"
   | "SYNDIC"
   | "TOWN_HALL"
-  | "SECURITY_AGENT";
+  | "SECURITY_AGENT"
+  | "WHOLESALER"
+  | "TRANSPORT_COMPANY";
 
 const OFFERS: {
   id: Offer;
@@ -46,6 +53,18 @@ const OFFERS: {
     title: "Épingle sponsorisée",
     description: "Votre commerce mis en avant sur la carte radar · 7 jours",
     price: "2 000 FCFA / semaine",
+  },
+  {
+    id: "WHOLESALER",
+    title: "Espace Grossiste",
+    description: "Catalogue et commandes professionnelles",
+    price: "25 000 FCFA / mois",
+  },
+  {
+    id: "TRANSPORT_COMPANY",
+    title: "Espace Compagnie de transport",
+    description: "Espace professionnel dédié aux compagnies de transport",
+    price: "20 000 FCFA / mois",
   },
   {
     id: "SYNDIC",
@@ -87,8 +106,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export default function CheckoutScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
+  const route = useRoute<RouteProp<RootStackParamList, "Checkout">>();
   const { refreshUser } = useAuth();
-  const [offer, setOffer] = useState<Offer>("ALLIANCE_PRO");
+  const [offer, setOffer] = useState<Offer>(route.params?.offer ?? "ALLIANCE_PRO");
   const [merchantItems, setMerchantItems] = useState<MerchantItem[]>([]);
   const [merchantId, setMerchantId] = useState("");
   const [merchantPickerVisible, setMerchantPickerVisible] = useState(false);
@@ -97,11 +117,16 @@ export default function CheckoutScreen() {
   const [publicationDescription, setPublicationDescription] = useState("");
   const [pinPhoto, setPinPhoto] = useState<{ uri: string; size: number } | null>(null);
   const [billingEnabled, setBillingEnabled] = useState(true);
+  const [promoFreeAccess, setPromoFreeAccess] = useState(false);
   const [billingConfigLoaded, setBillingConfigLoaded] = useState(false);
   const [uploadedPhotoId, setUploadedPhotoId] = useState<string | null>(null);
   const [offerActivatedFree, setOfferActivatedFree] = useState(false);
   const [isPaying, setIsPaying] = useState(false);
   const [isPaid, setIsPaid] = useState(false);
+
+  useEffect(() => {
+    setOffer(route.params?.offer ?? "ALLIANCE_PRO");
+  }, [route.params?.offer]);
 
   useEffect(() => {
     let active = true;
@@ -121,10 +146,17 @@ export default function CheckoutScreen() {
         ]);
         if (!config.ok) throw new Error("La configuration des offres est indisponible.");
         const configPayload: unknown = await config.json();
-        if (!isRecord(configPayload) || typeof configPayload.billingEnabled !== "boolean") {
+        if (
+          !isRecord(configPayload) ||
+          typeof configPayload.billingEnabled !== "boolean" ||
+          typeof configPayload.promoFreeAccess !== "boolean"
+        ) {
           throw new Error("La configuration des offres est invalide.");
         }
-        if (active) setBillingEnabled(configPayload.billingEnabled);
+        if (active) {
+          setBillingEnabled(configPayload.billingEnabled);
+          setPromoFreeAccess(configPayload.promoFreeAccess);
+        }
         if (merchantResponse.ok) {
           const merchantPayload: unknown = await merchantResponse.json();
           const rows = isRecord(merchantPayload) && Array.isArray(merchantPayload.items)
@@ -245,7 +277,7 @@ export default function CheckoutScreen() {
             title: publicationTitle.trim(),
             description: publicationDescription.trim(),
           };
-      if (!billingEnabled) {
+      if (!billingEnabled || promoFreeAccess) {
         const activation = await apiFetch(`${API_BASE_URL}/v1/pro/offers/activate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -368,7 +400,7 @@ export default function CheckoutScreen() {
       <Text style={styles.subtitle}>
         Activez votre présence professionnelle dans votre quartier.
       </Text>
-      {!billingEnabled && billingConfigLoaded && (
+      {(!billingEnabled || promoFreeAccess) && billingConfigLoaded && (
         <View accessibilityRole="summary" style={styles.freeBanner}>
           <Text style={styles.freeBannerText}>Gratuit pendant la phase de test</Text>
         </View>
@@ -508,14 +540,14 @@ export default function CheckoutScreen() {
         ) : (
           <>
             <Text style={styles.primaryButtonText}>
-              {billingEnabled
+              {billingEnabled && !promoFreeAccess
                 ? "Payer avec FedaPay (Mobile Money / Carte Visa)"
                 : "Publier gratuitement"}
             </Text>
           </>
         )}
       </Pressable>
-      {billingEnabled && (
+      {billingEnabled && !promoFreeAccess && (
         <Text style={styles.secureNote}>
           Vous serez redirigé vers la page sécurisée de FedaPay. L'offre n'est activée
           qu'après confirmation du paiement.

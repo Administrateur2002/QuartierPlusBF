@@ -30,6 +30,7 @@ test("free Pro offer activation inserts an active subscription immediately", asy
     calls.push({ sql, values });
     return { rowCount: 1, rows: [{ plan_type: "SYNDIC", status: "ACTIVE" }] };
   });
+
   const result = response();
 
   await activateFreeOffer(
@@ -53,6 +54,35 @@ test("free Pro offer activation inserts an active subscription immediately", asy
     USER_ID,
     "SYNDIC",
     JSON.stringify({ title: "Syndic", description: "Présentation du syndic." }),
+  ]);
+});
+
+test("free commerce plans activate subscriptions with their publication details", async (context) => {
+  let inserted;
+  context.mock.method(pool, "query", async (sql, values) => {
+    inserted = { sql, values };
+    return { rowCount: 1, rows: [{ plan_type: values[1], status: "ACTIVE" }] };
+  });
+  const result = response();
+
+  await activateFreeOffer(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        payment_type: "WHOLESALER",
+        publication: { title: "Grossiste du centre", description: "Catalogue local" },
+      },
+    },
+    result,
+    (error) => { throw error; },
+  );
+
+  assert.equal(result.statusCode, 201);
+  assert.equal(result.payload.subscription.plan_type, "WHOLESALER");
+  assert.deepEqual(inserted.values, [
+    USER_ID,
+    "WHOLESALER",
+    JSON.stringify({ title: "Grossiste du centre", description: "Catalogue local" }),
   ]);
 });
 

@@ -59,7 +59,19 @@ export type RootStackParamList = {
   PhoneAuth: { mode?: "login" | "register" } | undefined;
   CompleteProfile: undefined;
   Main: NavigatorScreenParams<MainTabParamList>;
-  Checkout: undefined;
+  Checkout:
+    | {
+        offer?:
+          | "ALLIANCE_PRO"
+          | "SPONSORED_PIN"
+          | "SYNDIC"
+          | "TOWN_HALL"
+          | "SECURITY_AGENT"
+          | "WHOLESALER"
+          | "TRANSPORT_COMPANY";
+      }
+    | undefined;
   AlliancePlus: undefined;
+  CommerceGrowth: undefined;
   MyActivity: { activity: "listings" | "services" | "alerts" };
 };

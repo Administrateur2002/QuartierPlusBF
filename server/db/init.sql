@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     payment_type VARCHAR(20) NOT NULL
         CHECK (payment_type IN (
             'ALLIANCE_PRO', 'SPONSORED_PIN', 'SYNDIC', 'TOWN_HALL',
-            'SECURITY_AGENT', 'TICKET'
+            'SECURITY_AGENT', 'WHOLESALER', 'TRANSPORT_COMPANY', 'TICKET'
         )),
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

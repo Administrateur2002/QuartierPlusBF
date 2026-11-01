@@ -138,7 +138,10 @@ test("neighborhood scope rejects missing position and country code", async (cont
   test("public configuration reports billing state without private configuration", () => {
     const response = createResponse();
     getPublicConfig({}, response);
-    assert.deepEqual(response.payload, { billingEnabled: false });
+    assert.deepEqual(response.payload, {
+      billingEnabled: false,
+      promoFreeAccess: false,
+    });
   });
 
   test("media status reports configuration names only", () => {

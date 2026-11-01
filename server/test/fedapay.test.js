@@ -142,6 +142,8 @@ test("FedaPay checkout accepts every Pro plan at its server-defined price", asyn
     ["SYNDIC", 2500],
     ["TOWN_HALL", 75000],
     ["SECURITY_AGENT", 50000],
+    ["WHOLESALER", 25000],
+    ["TRANSPORT_COMPANY", 20000],
   ];
   try {
     for (const [paymentType, amount] of plans) {

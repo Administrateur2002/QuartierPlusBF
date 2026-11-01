@@ -1,5 +1,6 @@
 import { pool } from "../db/pool.js";
 import { env } from "../config/env.js";
+import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
 
 const CLOUDINARY_VARIABLES = [
   ["CLOUDINARY_CLOUD_NAME", env.cloudinaryCloudName],
@@ -13,7 +14,10 @@ const isCloudinaryValueMissing = (value) =>
   );
 
 export const getPublicConfig = (_request, response) =>
-  response.status(200).json({ billingEnabled: env.billingEnabled });
+  response.status(200).json({
+    billingEnabled: env.billingEnabled,
+    promoFreeAccess: IS_PROMO_FREE_ACCESS,
+  });
 
 export const getMediaStatus = (_request, response) => {
   const cloudinaryMissing = CLOUDINARY_VARIABLES

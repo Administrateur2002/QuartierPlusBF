@@ -7,6 +7,7 @@ import {
 } from "../services/fedapay.js";
 import { issueTicket } from "../services/tickets.service.js";
 import { getCloudinaryAsset } from "../services/cloudinary.js";
+import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
 
 const OFFERS = {
   ALLIANCE_PRO: {
@@ -28,6 +29,16 @@ const OFFERS = {
   SECURITY_AGENT: {
     amount: 50000,
     description: "Accès Certifié Secours - 30 jours",
+    durationDays: 30,
+  },
+  WHOLESALER: {
+    amount: 25000,
+    description: "Espace Grossiste - 30 jours",
+    durationDays: 30,
+  },
+  TRANSPORT_COMPANY: {
+    amount: 20000,
+    description: "Espace Compagnie de transport - 30 jours",
     durationDays: 30,
   },
 };
@@ -79,7 +90,7 @@ const validatePublication = (value) => {
 };
 
 export const createTransaction = async (request, response, next) => {
-  if (!env.billingEnabled) {
+  if (!env.billingEnabled || IS_PROMO_FREE_ACCESS) {
     return response.status(403).json({
       error: "Le paiement est désactivé pendant la phase de test.",
     });

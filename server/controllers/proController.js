@@ -7,6 +7,8 @@ const FEATURE_SECTIONS = {
   SYNDIC: ["COTISATIONS", "GARDIENNAGE"],
   TOWN_HALL: ["COMMUNIQUES", "SIGNALEMENTS"],
   SECURITY_AGENT: ["CONSOLE_SOS"],
+  WHOLESALER: ["CATALOGUE", "COMMANDES"],
+  TRANSPORT_COMPANY: ["SERVICES_TRANSPORT"],
 };
 
 export const getMySubscription = async (request, response, next) => {

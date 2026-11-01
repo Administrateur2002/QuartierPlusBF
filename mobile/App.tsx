@@ -65,6 +65,7 @@ import VoyageNavigator from "./src/navigation/VoyageNavigator";
 import AlliancePlusScreen from "./src/screens/AlliancePlusScreen";
 import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
 import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
+import CommerceGrowthScreen from "./src/screens/CommerceGrowthScreen";
 import { LockKeyhole, X } from "lucide-react-native";
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -91,6 +92,7 @@ function MainTabs() {
   const { colors, t } = useTheme();
   const [proCommerceEnabled, setProCommerceEnabled] = useState(false);
   const [voyageEnabled, setVoyageEnabled] = useState(false);
+  const [proActivated, setProActivated] = useState(false);
   const compactTabs = width < 430 && proCommerceEnabled && voyageEnabled;
   const compactMessageLabel = t("tabHome") === "Accueil" ? "Messa" : "Msg";
   useEffect(() => {
@@ -105,6 +107,33 @@ function MainTabs() {
       });
     return () => {
       active = false;
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const refreshProAccess = async () => {
+      try {
+        const response = await api.get<{ subscription?: unknown }>(
+          "/v1/pro/me/subscription",
+          { headers: { "Cache-Control": "no-cache" } },
+        );
+        if (active) {
+          setProActivated(
+            response.data.subscription !== null &&
+              response.data.subscription !== undefined,
+          );
+        }
+      } catch {
+        if (active) setProActivated(false);
+      }
+    };
+    void refreshProAccess();
+    const unsubscribe = navigationRef.addListener("state", () => {
+      void refreshProAccess();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
     };
   }, []);
   useEffect(() => {
@@ -225,8 +254,10 @@ function MainTabs() {
         name="EspacePro"
         component={ProTabNavigator}
         options={{
-          tabBarButton: () => null,
-          tabBarItemStyle: { display: "none" },
+          tabBarButton: proActivated ? undefined : () => null,
+          tabBarItemStyle: proActivated ? undefined : { display: "none" },
+          tabBarLabel: renderTabLabel("Pro"),
+          tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
         }}
       />
       <Tab.Screen
@@ -282,6 +313,7 @@ function RootNavigator() {
       )}
       <Stack.Screen name="Main" component={MainTabs} />
       <Stack.Screen name="MyActivity" component={MyActivityScreen} />
+      <Stack.Screen name="CommerceGrowth" component={CommerceGrowthScreen} />
       <Stack.Screen name="PhoneAuth" component={PhoneAuthScreen} />
       {user && !hasCompletedProfile && (
         <Stack.Screen name="CompleteProfile" component={CompleteProfileScreen} />

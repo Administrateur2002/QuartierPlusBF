@@ -23,7 +23,9 @@ type PlanType =
   | "ALLIANCE_PRO"
   | "SYNDIC"
   | "TOWN_HALL"
-  | "SECURITY_AGENT";
+  | "SECURITY_AGENT"
+  | "WHOLESALER"
+  | "TRANSPORT_COMPANY";
 
 type ProNavigation = CompositeNavigationProp<
   BottomTabNavigationProp<MainTabParamList, "EspacePro">,
@@ -41,7 +43,9 @@ const isPlanType = (value: unknown): value is PlanType =>
   value === "ALLIANCE_PRO" ||
   value === "SYNDIC" ||
   value === "TOWN_HALL" ||
-  value === "SECURITY_AGENT";
+  value === "SECURITY_AGENT" ||
+  value === "WHOLESALER" ||
+  value === "TRANSPORT_COMPANY";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -194,7 +198,31 @@ export default function ProTabNavigator() {
           )}
         </>
       )}
-      <ProDashboardScreen subscription={displayedSubscription} />
+      {displayedSubscription.plan_type === "WHOLESALER" ||
+      displayedSubscription.plan_type === "TRANSPORT_COMPANY" ? (
+        <View style={styles.growthPanel}>
+          <Text style={styles.growthTitle}>
+            {displayedSubscription.plan_type === "WHOLESALER"
+              ? "Espace Grossiste actif"
+              : "Espace Compagnie de transport actif"}
+          </Text>
+          <Text style={styles.growthCopy}>
+            Votre abonnement est actif jusqu’au{" "}
+            {new Date(displayedSubscription.expires_at).toLocaleDateString("fr-FR")}.
+          </Text>
+          {displayedSubscription.plan_type === "WHOLESALER" && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => navigation.navigate("Grossistes")}
+              style={styles.growthButton}
+            >
+              <Text style={styles.growthButtonText}>Ouvrir l’espace Grossistes</Text>
+            </Pressable>
+          )}
+        </View>
+      ) : (
+        <ProDashboardScreen subscription={displayedSubscription} />
+      )}
     </View>
   );
 }
@@ -204,6 +232,8 @@ const PLAN_OPTIONS: { id: PlanType; title: string }[] = [
   { id: "SYNDIC", title: "Syndic" },
   { id: "TOWN_HALL", title: "Mairie" },
   { id: "SECURITY_AGENT", title: "Secours" },
+  { id: "WHOLESALER", title: "Grossiste" },
+  { id: "TRANSPORT_COMPANY", title: "Transport" },
 ];
 
 const styles = StyleSheet.create({
@@ -232,4 +262,22 @@ const styles = StyleSheet.create({
   activePlanChip: { backgroundColor: "#2563eb" },
   planText: { color: "#334155", fontSize: 11, fontWeight: "600" },
   activePlanText: { color: "#ffffff" },
+  growthPanel: {
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 14,
+    borderWidth: 1,
+    margin: 16,
+    padding: 18,
+  },
+  growthTitle: { color: "#172b4d", fontSize: 18, fontWeight: "800" },
+  growthCopy: { color: "#64748b", fontSize: 13, lineHeight: 20, marginTop: 8 },
+  growthButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 9,
+    marginTop: 16,
+    padding: 12,
+  },
+  growthButtonText: { color: "#ffffff", fontSize: 13, fontWeight: "700" },
 });

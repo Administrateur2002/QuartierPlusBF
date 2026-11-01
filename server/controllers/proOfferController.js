@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
 import { pool } from "../db/pool.js";
 import { getCloudinaryAsset } from "../services/cloudinary.js";
 
@@ -7,6 +8,8 @@ const PLANS = new Set([
   "SYNDIC",
   "TOWN_HALL",
   "SECURITY_AGENT",
+  "WHOLESALER",
+  "TRANSPORT_COMPANY",
 ]);
 
 const isValidPin = (pin) =>
@@ -52,7 +55,7 @@ const getPinImageUrl = async (userId, publicId) => {
 };
 
 export const activateFreeOffer = async (request, response, next) => {
-  if (env.billingEnabled) {
+  if (env.billingEnabled && !IS_PROMO_FREE_ACCESS) {
     return response.status(403).json({
       error: "Cette offre nécessite le parcours de paiement.",
     });
