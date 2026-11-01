@@ -15,6 +15,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
@@ -55,6 +56,7 @@ export default function VoiceAssistantModal({
   onNavigate,
 }: VoiceAssistantModalProps) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { isOffline, user } = useAuth();
   const {
     clearActiveInput,
@@ -87,6 +89,7 @@ export default function VoiceAssistantModal({
     new Animated.Value(0),
   ]).current;
   const startRequestRef = useRef(0);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isVisibleRef = useRef(false);
   const dictationOnlyRef = useRef(false);
   const pendingSosCommandRef = useRef<VoiceCommand | null>(null);
@@ -173,6 +176,7 @@ export default function VoiceAssistantModal({
     () => () => {
       startRequestRef.current += 1;
       if (sosTimerRef.current) clearInterval(sosTimerRef.current);
+      if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
       if (isVisibleRef.current) ExpoSpeechRecognitionModule.abort();
       Speech.stop();
     },
@@ -224,6 +228,7 @@ export default function VoiceAssistantModal({
               "Le téléphone est prêt. Confirmez l’appel dans l’application Téléphone.";
             setFeedback(result);
             speak(result);
+            closeAfterFeedback();
           })
           .catch(() => {
             const result =
@@ -263,6 +268,7 @@ export default function VoiceAssistantModal({
       setPendingSosCommand(null);
       setFeedback(command.feedback);
       speak(command.feedback);
+      closeAfterFeedback();
       return;
     }
 
@@ -275,6 +281,8 @@ export default function VoiceAssistantModal({
   }
 
   async function startListening(mode: "command" | "dictation" = "command") {
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = null;
     const requestId = ++startRequestRef.current;
     dictationOnlyRef.current = mode === "dictation";
     isVisibleRef.current = true;
@@ -481,14 +489,16 @@ export default function VoiceAssistantModal({
     dispatchVoiceEvent("stop");
   }
 
-  function close() {
+  function close({ preserveSpeech = false }: { preserveSpeech?: boolean } = {}) {
     startRequestRef.current += 1;
     if (sosTimerRef.current) clearInterval(sosTimerRef.current);
     sosTimerRef.current = null;
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = null;
     isVisibleRef.current = false;
     setAssistantActive(false);
     ExpoSpeechRecognitionModule.abort();
-    Speech.stop();
+    if (!preserveSpeech) Speech.stop();
     clearActiveInput();
     dispatchVoiceEvent("reset");
     setIsVisible(false);
@@ -500,6 +510,14 @@ export default function VoiceAssistantModal({
 
   function confirmSos() {
     beginSosCountdown();
+  }
+
+  function closeAfterFeedback() {
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => {
+      feedbackTimerRef.current = null;
+      close({ preserveSpeech: true });
+    }, 1800);
   }
 
   function beginSosCountdown() {
@@ -558,22 +576,35 @@ export default function VoiceAssistantModal({
       "J’ouvre le panneau SOS. Choisissez le type d’urgence et confirmez l’envoi dans l’écran.";
     setFeedback(confirmation);
     speak(confirmation);
+    closeAfterFeedback();
   }
 
   return (
     <>
       <Modal
         animationType="fade"
-        onRequestClose={close}
+        onRequestClose={() => close()}
         statusBarTranslucent
         transparent
         visible={isVisible}
       >
-        <View style={styles.backdrop}>
-          <View accessibilityViewIsModal style={[styles.dialog, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.backdrop,
+            { paddingBottom: insets.bottom + 84 },
+          ]}
+        >
+          <View
+            accessibilityViewIsModal
+            style={[
+              styles.dialog,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
             {permissionExplanationVisible ? (
               <>
-                <Text style={[styles.title, { color: colors.text }]}>Avant d’activer le microphone</Text>
+                <Text style={[styles.permissionTitle, { color: colors.text }]}>Avant d’activer le microphone</Text>
                 <Text style={[styles.confirmationText, { color: colors.secondaryText }]}>
                   QuartierPlus utilise la reconnaissance vocale du téléphone
                   uniquement après votre action. L’application ne stocke pas
@@ -584,7 +615,7 @@ export default function VoiceAssistantModal({
                 <View style={styles.confirmationActions}>
                   <Pressable
                     accessibilityRole="button"
-                    onPress={close}
+                    onPress={() => close()}
                     style={styles.cancelButton}
                   >
                     <Text style={styles.cancelButtonText}>Annuler</Text>
@@ -600,27 +631,11 @@ export default function VoiceAssistantModal({
               </>
             ) : (
               <>
-            <View style={styles.header}>
-              <View style={styles.titleGroup}>
-                <Text style={[styles.title, { color: colors.text }]}>Assistant vocal</Text>
-                <Text style={[styles.subtitle, { color: colors.secondaryText }]}>
-                  Dictez dans un champ ou donnez une commande
-                </Text>
-              </View>
-              <Pressable
-                accessibilityLabel="Fermer l’assistant vocal"
-                accessibilityRole="button"
-                onPress={close}
-                style={styles.closeButton}
-              >
-                <X color="#475569" size={21} />
-              </Pressable>
-            </View>
-
             <View
               accessibilityLiveRegion="polite"
               style={[
                 styles.listeningPanel,
+                { backgroundColor: colors.card, borderColor: colors.border },
                 isListening && styles.listeningPanelActive,
               ]}
             >
@@ -630,6 +645,7 @@ export default function VoiceAssistantModal({
                     key={index}
                     style={[
                       styles.waveBar,
+                      { backgroundColor: colors.primary },
                       {
                         opacity: value.interpolate({
                           inputRange: [0, 1],
@@ -648,21 +664,56 @@ export default function VoiceAssistantModal({
                   />
                 ))}
               </View>
-              <Text style={styles.listeningText}>
-                {isListening ? "Je vous écoute…" : "Microphone en pause"}
+              <Text style={[styles.listeningText, { color: colors.text }]}>
+                {isListening ? "Je vous écoute…" : "Assistant vocal"}
               </Text>
+              <Pressable
+                accessibilityLabel={
+                  isListening ? "Arrêter l’écoute vocale" : "Réessayer l’écoute vocale"
+                }
+                accessibilityRole="button"
+                onPress={
+                  isListening
+                    ? stopListening
+                    : () => void startListening("command")
+                }
+                style={[
+                  styles.listenIconButton,
+                  isListening && styles.stopButton,
+                ]}
+              >
+                {isListening ? (
+                  <MicOff color="#ffffff" size={17} />
+                ) : (
+                  <Mic color="#ffffff" size={17} />
+                )}
+              </Pressable>
+              <Pressable
+                accessibilityLabel="Fermer l’assistant vocal"
+                accessibilityRole="button"
+                onPress={() => close()}
+                style={styles.closeButton}
+              >
+                <X color={colors.secondaryText} size={19} />
+              </Pressable>
             </View>
 
             {transcript ? (
               <View style={styles.transcriptPanel}>
                 <Text style={styles.panelLabel}>Compris</Text>
-                <Text accessibilityRole="text" style={styles.transcript}>
+                <Text
+                  accessibilityRole="text"
+                  style={[styles.transcript, { color: colors.text }]}
+                >
                   « {transcript} »
                 </Text>
               </View>
             ) : null}
             {feedback ? (
-              <Text accessibilityLiveRegion="polite" style={styles.feedback}>
+              <Text
+                accessibilityLiveRegion="polite"
+                style={[styles.feedback, { color: colors.primary }]}
+              >
                 {feedback}
               </Text>
             ) : null}
@@ -728,34 +779,6 @@ export default function VoiceAssistantModal({
               </View>
             ) : null}
 
-            <View style={styles.footer}>
-              <Text style={styles.offlineNote}>
-                {isOffline
-                  ? "Hors ligne : la dictée exige un modèle français installé sur l’appareil."
-                  : "Les commandes locales fonctionnent sans connexion."}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                onPress={
-                  isListening
-                    ? stopListening
-                    : () => void startListening("command")
-                }
-                style={[
-                  styles.listenButton,
-                  isListening && styles.stopButton,
-                ]}
-              >
-                {isListening ? (
-                  <MicOff color="#ffffff" size={18} />
-                ) : (
-                  <Mic color="#ffffff" size={18} />
-                )}
-                <Text style={styles.listenButtonText}>
-                  {isListening ? "Arrêter" : "Réessayer"}
-                </Text>
-              </Pressable>
-            </View>
               </>
             )}
           </View>
@@ -770,58 +793,64 @@ const styles = StyleSheet.create({
   technicalDetails: { color: "#64748b", fontSize: 11, lineHeight: 16 },
   backdrop: {
     alignItems: "center",
-    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    backgroundColor: "transparent",
     flex: 1,
-    justifyContent: "center",
-    padding: 22,
+    justifyContent: "flex-end",
+    paddingHorizontal: 12,
   },
   dialog: {
-    backgroundColor: "#ffffff",
-    borderRadius: 24,
-    gap: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    elevation: 8,
+    gap: 10,
     maxWidth: 480,
-    padding: 22,
+    padding: 10,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
     width: "100%",
   },
-  header: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  titleGroup: { flex: 1, gap: 4 },
-  title: { color: "#0f172a", fontSize: 21, fontWeight: "800" },
-  subtitle: { color: "#64748b", fontSize: 13 },
+  permissionTitle: { fontSize: 18, fontWeight: "800" },
   closeButton: {
     alignItems: "center",
     backgroundColor: "#f1f5f9",
-    borderRadius: 18,
-    height: 36,
+    borderRadius: 16,
+    height: 32,
     justifyContent: "center",
-    width: 36,
+    width: 32,
   },
   listeningPanel: {
     alignItems: "center",
-    backgroundColor: "#f1f5f9",
-    borderRadius: 16,
+    borderRadius: 15,
+    borderWidth: 1,
     flexDirection: "row",
-    gap: 14,
-    minHeight: 66,
-    paddingHorizontal: 18,
+    gap: 10,
+    minHeight: 56,
+    paddingHorizontal: 11,
   },
-  listeningPanelActive: { backgroundColor: "#eff6ff" },
+  listeningPanelActive: { backgroundColor: "rgba(37,99,235,0.08)" },
+  listenIconButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 16,
+    height: 32,
+    justifyContent: "center",
+    width: 32,
+  },
+  stopButton: { backgroundColor: "#475569" },
   waveform: {
     alignItems: "center",
     flexDirection: "row",
     gap: 4,
-    height: 25,
+    height: 22,
   },
   waveBar: {
-    backgroundColor: "#2563eb",
     borderRadius: 2,
     height: 16,
     width: 4,
   },
-  listeningText: { color: "#1e293b", fontSize: 15, fontWeight: "600" },
+  listeningText: { flex: 1, fontSize: 14, fontWeight: "600" },
   transcriptPanel: {
     backgroundColor: "#f8fafc",
     borderLeftColor: "#2563eb",
@@ -835,9 +864,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textTransform: "uppercase",
   },
-  transcript: { color: "#0f172a", fontSize: 15, lineHeight: 21 },
-  feedback: { color: "#1d4ed8", fontSize: 14, lineHeight: 20 },
-  error: { color: "#b91c1c", fontSize: 14, lineHeight: 20 },
+  transcript: { fontSize: 14, lineHeight: 19 },
+  feedback: { fontSize: 13, lineHeight: 18 },
+  error: { color: "#b91c1c", fontSize: 13, lineHeight: 18 },
   confirmationPanel: {
     backgroundColor: "#fff7ed",
     borderColor: "#fed7aa",
@@ -868,18 +897,4 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   confirmButtonText: { color: "#ffffff", fontSize: 14, fontWeight: "700" },
-  footer: { alignItems: "center", gap: 14 },
-  offlineNote: { color: "#64748b", fontSize: 12, lineHeight: 17 },
-  listenButton: {
-    alignItems: "center",
-    backgroundColor: "#2563eb",
-    borderRadius: 12,
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "center",
-    minHeight: 48,
-    width: "100%",
-  },
-  stopButton: { backgroundColor: "#475569" },
-  listenButtonText: { color: "#ffffff", fontSize: 15, fontWeight: "700" },
 });

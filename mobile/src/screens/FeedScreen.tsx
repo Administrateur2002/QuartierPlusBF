@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Bookmark,
   BusFront,
+  Calendar,
   ChevronRight,
   Download,
   Heart,
@@ -338,8 +339,10 @@ export default function FeedScreen() {
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const [carouselIndices, setCarouselIndices] = useState<Record<string, number>>({});
   const [expandedCaptionPostId, setExpandedCaptionPostId] = useState<string | null>(null);
-  const [feedPageHeight, setFeedPageHeight] = useState(Math.max(320, windowHeight * 0.5));
-  const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
+  const [feedPageHeight, setFeedPageHeight] = useState(
+    Math.max(320, windowHeight - insets.top),
+  );
+  const cardLayoutsRef = useRef<Array<{ left: number; width: number }>>([]);
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [interfaceVisible, setInterfaceVisible] = useState(true);
@@ -616,9 +619,9 @@ export default function FeedScreen() {
   const movePagerTo = useCallback(
     (nextScope: FeedScope) => {
       const index = FEED_SCOPES.findIndex((option) => option.id === nextScope);
-      pagerRef.current?.scrollTo({ x: index * pageWidth, animated: true });
+      pagerRef.current?.scrollTo({ y: index * feedPageHeight, animated: true });
     },
-    [pageWidth],
+    [feedPageHeight],
   );
 
   const chooseScope = useCallback(
@@ -685,8 +688,8 @@ export default function FeedScreen() {
   useEffect(() => {
     if (!scopeReady) return;
     const index = FEED_SCOPES.findIndex((option) => option.id === scope);
-    pagerRef.current?.scrollTo({ x: index * pageWidth, animated: false });
-  }, [pageWidth, scope, scopeReady]);
+    pagerRef.current?.scrollTo({ y: index * feedPageHeight, animated: false });
+  }, [feedPageHeight, scope, scopeReady]);
 
   useEffect(() => {
     setActiveMediaIndex(0);
@@ -2119,7 +2122,12 @@ export default function FeedScreen() {
   };
 
   return (
-    <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+    <View
+      style={[
+        styles.screen,
+        { backgroundColor: colors.background, paddingTop: insets.top },
+      ]}
+    >
       <Pressable
         accessibilityLabel="Afficher les commandes du fil"
         accessibilityRole="button"
@@ -2127,13 +2135,18 @@ export default function FeedScreen() {
           setInterfaceVisible(true);
           showFloatingBar();
         }}
-        style={styles.topEdgeTouch}
+        style={[styles.topEdgeTouch, { top: insets.top }]}
       />
       <ScrollView
-        horizontal
+        onLayout={(event) => {
+          const nextHeight = event.nativeEvent.layout.height;
+          if (nextHeight > 0) setFeedPageHeight((current) =>
+            Math.abs(current - nextHeight) > 1 ? nextHeight : current,
+          );
+        }}
         onMomentumScrollEnd={(event) => {
           const index = Math.round(
-            event.nativeEvent.contentOffset.x / pageWidth,
+            event.nativeEvent.contentOffset.y / feedPageHeight,
           );
           const nextScope = FEED_SCOPES[index]?.id;
           if (nextScope && nextScope !== scope) {
@@ -2142,19 +2155,13 @@ export default function FeedScreen() {
         }}
         pagingEnabled
         ref={pagerRef}
-        showsHorizontalScrollIndicator={false}
+        showsVerticalScrollIndicator={false}
         style={styles.pager}
       >
         {FEED_SCOPES.map((option) => (
           <View
             key={option.id}
-            onLayout={(event) => {
-              const nextHeight = event.nativeEvent.layout.height;
-              if (nextHeight > 0) setFeedPageHeight((current) =>
-                Math.abs(current - nextHeight) > 1 ? nextHeight : current,
-              );
-            }}
-            style={[styles.pagerPage, { width: pageWidth }]}
+            style={[styles.pagerPage, { height: feedPageHeight, width: pageWidth }]}
           >
             {isLoading && entries.length === 0 ? (
               <View style={styles.skeletonList}>
@@ -2184,6 +2191,7 @@ export default function FeedScreen() {
                 drawDistance={Math.min(800, windowHeight * 1.5)}
                 contentContainerStyle={styles.immersiveList}
                 extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}:${searchQuery}:${interfaceVisible}:${quickActionsPost?.id ?? ""}:${JSON.stringify(carouselIndices)}:${expandedCaptionPostId}`}
+                horizontal
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
                 onEndReached={() => void loadMore()}
@@ -2191,19 +2199,19 @@ export default function FeedScreen() {
                 pagingEnabled
                 onScroll={(event) => {
                   const { contentOffset, layoutMeasurement } = event.nativeEvent;
-                  const viewportTop = contentOffset.y;
-                  const viewportBottom = viewportTop + layoutMeasurement.height;
+                  const viewportLeft = contentOffset.x;
+                  const viewportRight = viewportLeft + layoutMeasurement.width;
                   const previousOffset = scopeScrollOffsets.current[option.id];
                   if (option.id === scope) {
                     const nextScopeBarVisibility = feedScopeBarVisibilityOnScroll(
-                      viewportTop,
+                      viewportLeft,
                       previousOffset,
                     );
                     if (nextScopeBarVisibility !== null) {
                       setTabBarVisible(nextScopeBarVisibility);
                     }
                   }
-                  scopeScrollOffsets.current[option.id] = viewportTop;
+                  scopeScrollOffsets.current[option.id] = viewportLeft;
                   let nextActiveMedia = -1;
                   let greatestVisibility = 0;
                   visibleEntries.forEach((entry, entryIndex) => {
@@ -2211,8 +2219,8 @@ export default function FeedScreen() {
                     if (!layout) return;
                     const visibleHeight = Math.max(
                       0,
-                      Math.min(layout.top + layout.height, viewportBottom) -
-                        Math.max(layout.top, viewportTop),
+                      Math.min(layout.left + layout.width, viewportRight) -
+                        Math.max(layout.left, viewportLeft),
                     );
                     if (visibleHeight > greatestVisibility) {
                       greatestVisibility = visibleHeight;
@@ -2229,8 +2237,8 @@ export default function FeedScreen() {
                   <View
                     onLayout={(event) => {
                       cardLayoutsRef.current[index] = {
-                        top: event.nativeEvent.layout.y,
-                        height: event.nativeEvent.layout.height,
+                        left: event.nativeEvent.layout.x,
+                        width: event.nativeEvent.layout.width,
                       };
                     }}
                     style={[
@@ -2597,7 +2605,10 @@ export default function FeedScreen() {
           </View>
         ))}
       </ScrollView>
-      <View pointerEvents="box-none" style={styles.floatingTopContainer}>
+      <View
+        pointerEvents="box-none"
+        style={[styles.floatingTopContainer, { top: insets.top + 10 }]}
+      >
         <Animated.View
           pointerEvents={floatingBarVisible && interfaceVisible ? "box-none" : "none"}
           style={[
@@ -2640,8 +2651,55 @@ export default function FeedScreen() {
             </Pressable>
           </View>
         </Animated.View>
+        <Animated.View
+          pointerEvents={interfaceVisible ? "box-none" : "none"}
+          style={[
+            styles.homeShortcutsRow,
+            { opacity: interfaceVisible ? 1 : 0 },
+          ]}
+        >
+          <Pressable
+            accessibilityLabel="Réserver un billet"
+            accessibilityRole="button"
+            onPress={() => navigation.navigate("Événements")}
+            style={styles.homeShortcut}
+          >
+            <Calendar color="#a7f3d0" size={16} />
+            <Text numberOfLines={2} style={styles.homeShortcutText}>
+              Réserver un billet
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel="Ouvrir les préférences du fil"
+            accessibilityRole="button"
+            onPress={() => {
+              setFeedSettingsOpen(true);
+              void loadBlockedUsers();
+            }}
+            style={styles.homeShortcut}
+          >
+            <Settings2 color="#a7f3d0" size={16} />
+            <Text numberOfLines={2} style={styles.homeShortcutText}>
+              Préférences du fil
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityLabel="Lancer l’assistant vocal"
+            accessibilityRole="button"
+            onPress={requestAssistant}
+            style={styles.homeShortcut}
+          >
+            <Mic color="#a7f3d0" size={16} />
+            <Text numberOfLines={2} style={styles.homeShortcutText}>
+              Assistant vocal
+            </Text>
+          </Pressable>
+        </Animated.View>
       </View>
-      <View pointerEvents="box-none" style={styles.noticesOverlay}>
+      <View
+        pointerEvents="box-none"
+        style={[styles.noticesOverlay, { top: insets.top + 108 }]}
+      >
         {locationInvitation ? (
           <View style={[styles.locationInvitation, { backgroundColor: colors.card }]}>
             <MapPin color="#2563eb" size={18} />
@@ -2681,7 +2739,7 @@ export default function FeedScreen() {
         ) : null}
       </View>
       {tripleTapHintVisible && interfaceVisible ? (
-        <View pointerEvents="none" style={[styles.tripleTapHint, { top: 58 }]}>
+        <View pointerEvents="none" style={[styles.tripleTapHint, { top: insets.top + 106 }]}>
           <Text style={styles.tripleTapHintText}>Triple appui pour plus d’actions</Text>
         </View>
       ) : null}
@@ -3528,13 +3586,28 @@ const styles = StyleSheet.create({
   pagerPage: { flex: 1 },
   feedPage: { flex: 1 },
   topEdgeTouch: { height: 8, left: 0, position: "absolute", right: 0, top: 0, zIndex: 9 },
-  floatingTopContainer: { left: 0, position: "absolute", right: 0, top: 8, zIndex: 8 },
+  floatingTopContainer: { left: 0, position: "absolute", right: 0, top: 0, zIndex: 8 },
   topFloatingRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 12 },
-  scopePill: { alignItems: "center", backgroundColor: "rgba(15,23,42,0.68)", borderRadius: 20, flexDirection: "row", gap: 7, minHeight: 38, paddingHorizontal: 14 },
+  homeShortcutsRow: { flexDirection: "row", gap: 6, marginTop: 8, paddingHorizontal: 12 },
+  homeShortcut: {
+    alignItems: "center",
+    backgroundColor: "rgba(12,28,40,0.78)",
+    borderColor: "rgba(255,255,255,0.2)",
+    borderRadius: 14,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: "row",
+    gap: 5,
+    justifyContent: "center",
+    minHeight: 46,
+    paddingHorizontal: 7,
+  },
+  homeShortcutText: { color: "#ffffff", flexShrink: 1, fontSize: 10, fontWeight: "700", lineHeight: 11 },
+  scopePill: { alignItems: "center", backgroundColor: "rgba(12,28,40,0.78)", borderColor: "rgba(255,255,255,0.2)", borderRadius: 20, borderWidth: 1, flexDirection: "row", gap: 7, minHeight: 40, paddingHorizontal: 14 },
   scopePillText: { color: "#ffffff", fontSize: 13, fontWeight: "700" },
   activeFilterDot: { backgroundColor: "#38bdf8", borderRadius: 4, height: 8, width: 8 },
   topFloatingActions: { flexDirection: "row", gap: 8 },
-  floatingIconButton: { alignItems: "center", backgroundColor: "rgba(15,23,42,0.68)", borderRadius: 20, height: 40, justifyContent: "center", width: 40 },
+  floatingIconButton: { alignItems: "center", backgroundColor: "rgba(12,28,40,0.78)", borderColor: "rgba(255,255,255,0.2)", borderRadius: 21, borderWidth: 1, height: 42, justifyContent: "center", width: 42 },
   noticesOverlay: { left: 0, position: "absolute", right: 0, top: 54, zIndex: 7 },
   tripleTapHint: { alignSelf: "center", backgroundColor: "rgba(15,23,42,0.78)", borderRadius: 18, paddingHorizontal: 14, paddingVertical: 8, position: "absolute", zIndex: 7 },
   tripleTapHintText: { color: "#ffffff", fontSize: 12, fontWeight: "700" },
@@ -3683,8 +3756,13 @@ const styles = StyleSheet.create({
   immersiveAuthorName: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
   immersiveMeta: { color: "#e2e8f0", fontSize: 10, fontWeight: "600" },
   immersiveCopy: {
+    backgroundColor: "rgba(8,20,30,0.56)",
+    borderColor: "rgba(255,255,255,0.18)",
+    borderRadius: 18,
+    borderWidth: 1,
     gap: 7,
     left: 16,
+    padding: 13,
     position: "absolute",
     right: 82,
     zIndex: 2,
@@ -3735,8 +3813,10 @@ const styles = StyleSheet.create({
   },
   immersiveAction: {
     alignItems: "center",
-    backgroundColor: "rgba(15,23,42,0.55)",
+    backgroundColor: "rgba(12,28,40,0.68)",
+    borderColor: "rgba(255,255,255,0.22)",
     borderRadius: 23,
+    borderWidth: 1,
     height: 46,
     justifyContent: "center",
     width: 46,
