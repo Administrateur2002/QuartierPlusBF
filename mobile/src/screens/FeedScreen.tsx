@@ -16,15 +16,16 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  Search,
   Share2,
   Settings2,
-  Users,
 } from "lucide-react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useIsFocused, useNavigation } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Alert,
   Image,
   Linking,
@@ -42,6 +43,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as MediaLibrary from "expo-media-library";
 import * as SecureStore from "expo-secure-store";
 import NetInfo from "@react-native-community/netinfo";
@@ -100,6 +102,7 @@ type FeedEntry = {
   authorBadge?: string | null;
   likesCount: number;
   commentsCount: number;
+  sharesCount: number;
   likedByMe: boolean;
   authorIsAlly: boolean;
   allianceStatus?: "PENDING" | "ALLIED" | null;
@@ -219,6 +222,7 @@ const normalizePost = (value: unknown): FeedEntry | null => {
       typeof value.author_badge === "string" ? value.author_badge : null,
     likesCount: Number(value.likes_count ?? 0),
     commentsCount: Number(value.comments_count ?? 0),
+    sharesCount: Number(value.shares_count ?? value.share_count ?? 0),
     likedByMe: value.liked_by_me === true,
     authorIsAlly: value.author_is_ally === true,
     price:
@@ -252,6 +256,7 @@ const normalizeAlert = (value: unknown): FeedEntry | null => {
     category: String(value.category ?? value.emergency_type ?? "Urgence"),
     likesCount: 0,
     commentsCount: 0,
+    sharesCount: 0,
     likedByMe: false,
     authorIsAlly: false,
   };
@@ -284,13 +289,15 @@ const formatDate = (date: string) => {
 export default function FeedScreen() {
   const navigation =
     useNavigation<BottomTabNavigationProp<MainTabParamList>>();
+  const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { authStatus, isOffline, requestAuthentication, queueOfflineAction, user } = useAuth();
   const { requestAssistant } = useVoiceAssistant();
   const { width: pageWidth, height: windowHeight } = useWindowDimensions();
   const pagerRef = useRef<ScrollView>(null);
   const [scope, setScope] = useState<FeedScope>("country");
-  const [scopeBarVisible, setScopeBarVisible] = useState(true);
+  const [tabBarVisible, setTabBarVisible] = useState(true);
   const scopeScrollOffsets = useRef<Record<FeedScope, number>>({
     neighborhood: 0,
     region: 0,
@@ -304,10 +311,15 @@ export default function FeedScreen() {
   const [entries, setEntries] = useState<FeedEntry[]>([]);
   const [savedPostIds, setSavedPostIds] = useState<string[]>([]);
   const [showSavedOnly, setShowSavedOnly] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("Tout");
   const visibleEntries = entries.filter((entry) =>
     (!showSavedOnly || savedPostIds.includes(entry.id)) &&
-    matchesFeedFilter(entry, feedFilter),
+    matchesFeedFilter(entry, feedFilter) &&
+    (!searchQuery.trim() ||
+      `${entry.title} ${entry.body} ${entry.location} ${entry.authorName ?? ""}`
+        .toLocaleLowerCase("fr-FR")
+        .includes(searchQuery.trim().toLocaleLowerCase("fr-FR"))),
   );
   const [dataSaverEnabled, setDataSaverEnabled] = useState(false);
   const [autoDataSaver, setAutoDataSaver] = useState(false);
@@ -328,13 +340,102 @@ export default function FeedScreen() {
   const [expandedCaptionPostId, setExpandedCaptionPostId] = useState<string | null>(null);
   const [feedPageHeight, setFeedPageHeight] = useState(Math.max(320, windowHeight * 0.5));
   const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
+  const [explorerOpen, setExplorerOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [interfaceVisible, setInterfaceVisible] = useState(true);
+  const [floatingBarVisible, setFloatingBarVisible] = useState(true);
+  const [quickActionsPost, setQuickActionsPost] = useState<FeedEntry | null>(null);
+  const [tripleTapHintVisible, setTripleTapHintVisible] = useState(false);
+  const floatingBarOpacity = useRef(new Animated.Value(1)).current;
+  const floatingBarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quickActionsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tripleTapHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tripleTapHintShown = useRef(false);
+  const tabBarHeight = 68 + insets.bottom;
+
+  const showFloatingBar = useCallback(() => {
+    if (floatingBarTimer.current) clearTimeout(floatingBarTimer.current);
+    setFloatingBarVisible(true);
+    Animated.timing(floatingBarOpacity, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+    floatingBarTimer.current = setTimeout(() => {
+      Animated.timing(floatingBarOpacity, {
+        toValue: 0,
+        duration: 350,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setFloatingBarVisible(false);
+      });
+    }, 2000);
+  }, [floatingBarOpacity]);
+
+  const showQuickActions = useCallback((entry: FeedEntry) => {
+    if (quickActionsTimer.current) clearTimeout(quickActionsTimer.current);
+    setQuickActionsPost(entry);
+    quickActionsTimer.current = setTimeout(() => {
+      setQuickActionsPost(null);
+      quickActionsTimer.current = null;
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    showFloatingBar();
+    return () => {
+      if (floatingBarTimer.current) clearTimeout(floatingBarTimer.current);
+      if (quickActionsTimer.current) clearTimeout(quickActionsTimer.current);
+      if (tripleTapHintTimer.current) clearTimeout(tripleTapHintTimer.current);
+    };
+  }, [showFloatingBar]);
+
+  useEffect(() => {
+    if (!isFocused) {
+      navigation.setOptions({ tabBarStyle: undefined });
+      return;
+    }
+    navigation.setOptions({
+      tabBarStyle: tabBarVisible
+        ? {
+            position: "absolute",
+            width: "100%",
+            backgroundColor: `${colors.card}D9`,
+            borderTopColor: colors.border,
+            justifyContent: "space-around",
+            height: tabBarHeight,
+            paddingBottom: Math.max(insets.bottom, 4),
+            paddingTop: 5,
+            elevation: 0,
+            shadowOpacity: 0,
+          }
+        : { display: "none" },
+    });
+  }, [colors.card, colors.border, insets.bottom, isFocused, navigation, tabBarHeight, tabBarVisible]);
+
+  useEffect(() => {
+    if (!visibleEntries.length || tripleTapHintShown.current) return;
+    tripleTapHintShown.current = true;
+    void SecureStore.getItemAsync("quartierplus.feed.triple-tap-hint")
+      .then(async (shown) => {
+        if (shown === "true") return;
+        setTripleTapHintVisible(true);
+        await SecureStore.setItemAsync("quartierplus.feed.triple-tap-hint", "true");
+        tripleTapHintTimer.current = setTimeout(() => setTripleTapHintVisible(false), 4000);
+      })
+      .catch((hintError: unknown) => {
+        console.warn("Unable to persist feed action hint:", hintError);
+        setTripleTapHintVisible(true);
+        tripleTapHintTimer.current = setTimeout(() => setTripleTapHintVisible(false), 4000);
+      });
+  }, [visibleEntries.length]);
 
   useEffect(() => {
     cardLayoutsRef.current = [];
     setActiveMediaIndex(0);
     setCarouselIndices({});
     setExpandedCaptionPostId(null);
-  }, [feedFilter, showSavedOnly]);
+  }, [feedFilter, searchQuery, showSavedOnly]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<FeedError | null>(null);
@@ -522,6 +623,7 @@ export default function FeedScreen() {
 
   const chooseScope = useCallback(
     async (nextScope: FeedScope) => {
+      setExplorerOpen(false);
       if (nextScope === "neighborhood" || nextScope === "region") {
         if (authStatus === "guest") {
           requestAuthentication();
@@ -566,6 +668,7 @@ export default function FeedScreen() {
           return;
         }
       }
+      if (nextScope !== scope) Vibration.vibrate(10);
       setScope(nextScope);
       setLocationInvitation(false);
       movePagerTo(nextScope);
@@ -2016,151 +2119,16 @@ export default function FeedScreen() {
   };
 
   return (
-    <View style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
-        <View style={styles.headerCopy}>
-          <Text style={styles.title}>Fil du quartier</Text>
-          <Text style={styles.subtitle}>
-            {authStatus === "guest"
-              ? "Publications publiques"
-              : "Publications et alertes à proximité"}
-          </Text>
-        </View>
-        <View style={styles.headerActions}>
-          <Pressable
-            accessibilityLabel="Préférences du fil"
-            accessibilityRole="button"
-            onPress={() => {
-              setFeedSettingsOpen(true);
-              void loadBlockedUsers();
-            }}
-            style={styles.microphoneButton}
-          >
-            <Settings2 color={colors.secondaryText} size={18} />
-          </Pressable>
-          <Pressable
-            accessibilityLabel="Assistant vocal"
-            accessibilityRole="button"
-            onPress={requestAssistant}
-            style={styles.microphoneButton}
-          >
-            <Mic color="#475569" size={18} />
-          </Pressable>
-          <Pressable
-            accessibilityLabel="Actualiser le fil"
-            accessibilityRole="button"
-            onPress={refresh}
-            style={styles.refreshButton}
-          >
-            <RefreshCw color="#2563eb" size={20} />
-          </Pressable>
-        </View>
-      </View>
+    <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: insets.top }]}>
       <Pressable
+        accessibilityLabel="Afficher les commandes du fil"
         accessibilityRole="button"
-        onPress={() => navigation.navigate("Voyage")}
-        style={styles.voyageEntry}
-      >
-        <BusFront color="#2563eb" size={20} />
-        <View style={styles.voyageEntryCopy}>
-          <Text style={styles.voyageEntryTitle}>Réserver un billet de car</Text>
-          <Text style={styles.voyageEntrySubtitle}>Voyageur · sans abonnement</Text>
-        </View>
-        <ChevronRight color="#64748b" size={18} />
-      </Pressable>
-      {scopeBarVisible ? (
-        <View style={[styles.scopeBar, { backgroundColor: colors.card }]}>
-          {FEED_SCOPES.map((option) => (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: scope === option.id }}
-              key={option.id}
-              onPress={() => void chooseScope(option.id)}
-              style={[styles.scopeChip, scope === option.id && styles.scopeChipSelected]}
-            >
-              <Text
-                style={[
-                  styles.scopeLabel,
-                  scope === option.id && styles.scopeLabelSelected,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      ) : null}
-      <View style={styles.feedFiltersRow}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ selected: showSavedOnly }}
-          onPress={() => setShowSavedOnly((current) => !current)}
-          style={[styles.savedFilter, showSavedOnly && styles.savedFilterSelected]}
-        >
-          <Bookmark color={showSavedOnly ? "#ffffff" : "#166534"} fill={showSavedOnly ? "#166534" : "transparent"} size={16} />
-          <Text style={[styles.savedFilterText, showSavedOnly && styles.savedFilterTextSelected]}>Enregistrées</Text>
-        </Pressable>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryFilters}>
-          {FEED_FILTERS.map((filter) => (
-            <Pressable
-              key={filter}
-              accessibilityRole="button"
-              accessibilityState={{ selected: feedFilter === filter }}
-              onPress={() => setFeedFilter(filter)}
-              style={[styles.categoryFilter, feedFilter === filter && styles.categoryFilterSelected]}
-            >
-              <Text style={[styles.categoryFilterText, feedFilter === filter && styles.categoryFilterTextSelected]}>{filter}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-      </View>
-      {locationInvitation && (
-        <View style={styles.locationInvitation}>
-          <MapPin color="#2563eb" size={18} />
-          <View style={styles.invitationCopy}>
-            <Text style={styles.invitationText}>
-              Activez la localisation pour voir votre quartier
-            </Text>
-            {authStatus === "guest" ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={requestAuthentication}
-              >
-                <Text style={styles.invitationAction}>Se connecter</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => void Linking.openSettings()}
-              >
-                <Text style={styles.invitationAction}>Ouvrir les réglages</Text>
-              </Pressable>
-            )}
-          </View>
-        </View>
-      )}
-      {error && (
-        <View style={[styles.notice, entries.length ? styles.cachedNotice : styles.errorNotice]}>
-          <Text style={styles.noticeText}>{error.message}</Text>
-          <Pressable accessibilityRole="button" onPress={refresh}>
-            <Text style={styles.retryText}>Réessayer</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: showTechnicalDetails }}
-            onPress={() => setShowTechnicalDetails((shown) => !shown)}
-          >
-            <Text style={styles.detailsToggle}>
-              {showTechnicalDetails ? "Masquer les détails" : "Détails techniques"}
-            </Text>
-          </Pressable>
-          {showTechnicalDetails && (
-            <Text selectable style={styles.technicalDetails}>
-              {error.details}
-            </Text>
-          )}
-        </View>
-      )}
+        onPress={() => {
+          setInterfaceVisible(true);
+          showFloatingBar();
+        }}
+        style={styles.topEdgeTouch}
+      />
       <ScrollView
         horizontal
         onMomentumScrollEnd={(event) => {
@@ -2168,7 +2136,9 @@ export default function FeedScreen() {
             event.nativeEvent.contentOffset.x / pageWidth,
           );
           const nextScope = FEED_SCOPES[index]?.id;
-          if (nextScope && nextScope !== scope) void chooseScope(nextScope);
+          if (nextScope && nextScope !== scope) {
+            void chooseScope(nextScope);
+          }
         }}
         pagingEnabled
         ref={pagerRef}
@@ -2213,7 +2183,7 @@ export default function FeedScreen() {
                 data={visibleEntries}
                 drawDistance={Math.min(800, windowHeight * 1.5)}
                 contentContainerStyle={styles.immersiveList}
-                extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}:${JSON.stringify(carouselIndices)}:${expandedCaptionPostId}`}
+                extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}:${searchQuery}:${interfaceVisible}:${quickActionsPost?.id ?? ""}:${JSON.stringify(carouselIndices)}:${expandedCaptionPostId}`}
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
                 onEndReached={() => void loadMore()}
@@ -2230,7 +2200,7 @@ export default function FeedScreen() {
                       previousOffset,
                     );
                     if (nextScopeBarVisibility !== null) {
-                      setScopeBarVisible(nextScopeBarVisibility);
+                      setTabBarVisible(nextScopeBarVisibility);
                     }
                   }
                   scopeScrollOffsets.current[option.id] = viewportTop;
@@ -2309,11 +2279,16 @@ export default function FeedScreen() {
                                 height={feedPageHeight}
                                 immersive
                                 lowDataMode={lowDataMode}
+                                showControls={interfaceVisible}
+                                onSingleTap={() => {
+                                  setInterfaceVisible((visible) => !visible);
+                                  showFloatingBar();
+                                }}
                                 onDoubleTap={() => {
                                   if (!entry.likedByMe) void likePost(entry);
                                 }}
-                                onLongPress={() => setActionPost(entry)}
-                                onTripleTap={() => setActionPost(entry)}
+                                onLongPress={() => showQuickActions(entry)}
+                                onTripleTap={() => showQuickActions(entry)}
                                 type="image"
                                 uri={uri}
                               />
@@ -2323,9 +2298,9 @@ export default function FeedScreen() {
                         <View
                           accessibilityLabel={`Photo ${(carouselIndices[entry.id] ?? 0) + 1} sur ${entry.imageUrls?.length ?? 0}`}
                           pointerEvents="none"
-                          style={styles.carouselDots}
+                          style={[styles.carouselDots, { bottom: tabBarHeight + 110 }]}
                         >
-                          {entry.imageUrls?.map((_, mediaIndex) => (
+                          {interfaceVisible ? entry.imageUrls?.map((_, mediaIndex) => (
                             <View
                               key={`${entry.id}:dot:${mediaIndex}`}
                               style={[
@@ -2334,7 +2309,7 @@ export default function FeedScreen() {
                                   styles.carouselDotActive,
                               ]}
                             />
-                          ))}
+                          )) : null}
                         </View>
                       </View>
                     ) : entry.imageUrl ? (
@@ -2345,11 +2320,16 @@ export default function FeedScreen() {
                         height={feedPageHeight}
                         immersive
                         lowDataMode={lowDataMode}
+                        showControls={interfaceVisible}
+                        onSingleTap={() => {
+                          setInterfaceVisible((visible) => !visible);
+                          showFloatingBar();
+                        }}
                         onDoubleTap={() => {
                           if (!entry.likedByMe) void likePost(entry);
                         }}
-                        onLongPress={() => setActionPost(entry)}
-                        onTripleTap={() => setActionPost(entry)}
+                        onLongPress={() => showQuickActions(entry)}
+                        onTripleTap={() => showQuickActions(entry)}
                         preloadUri={
                           option.id === scope &&
                           index === activeMediaIndex &&
@@ -2391,31 +2371,33 @@ export default function FeedScreen() {
                         />
                       </Svg>
                     ) : null}
-                    <View style={styles.immersiveHeader}>
-                      {entry.kind === "post" ? (
-                        <ProfileAvatar
-                          name={entry.authorName}
-                          photoUrl={entry.authorPhotoUrl}
-                          size={42}
-                          isAlly={entry.authorIsAlly}
-                          isProVerified={entry.authorBadge === "Commerçant Certifié"}
-                        />
-                      ) : (
-                        <View style={[styles.icon, styles.alertIcon]}>
-                          <AlertTriangle color="#dc2626" size={19} />
-                        </View>
-                      )}
-                      <View style={styles.immersiveAuthor}>
-                        {entry.authorName ? (
-                          <Text numberOfLines={1} style={styles.immersiveAuthorName}>{entry.authorName}</Text>
-                        ) : null}
-                        <Text numberOfLines={1} style={styles.immersiveMeta}>
-                          {entry.kind === "alert" ? "Alerte" : entry.category} · {formatDate(entry.createdAt)}
-                        </Text>
-                      </View>
-                      {entry.price ? <Text style={styles.immersivePrice}>{entry.price}</Text> : null}
-                    </View>
-                    <View style={styles.immersiveCopy}>
+                    <Svg
+                      height={Math.min(330, feedPageHeight * 0.48)}
+                      pointerEvents="none"
+                      style={styles.bottomGradient}
+                      width={pageWidth}
+                    >
+                      <Defs>
+                        <LinearGradient
+                          id={`feed-bottom-${option.id}-${entry.id}`}
+                          x1="0%"
+                          x2="0%"
+                          y1="0%"
+                          y2="100%"
+                        >
+                          <Stop offset="0%" stopColor="#000000" stopOpacity="0" />
+                          <Stop offset="100%" stopColor="#000000" stopOpacity="0.72" />
+                        </LinearGradient>
+                      </Defs>
+                      <Rect
+                        fill={`url(#feed-bottom-${option.id}-${entry.id})`}
+                        height="100%"
+                        width="100%"
+                      />
+                    </Svg>
+                    {interfaceVisible ? <View
+                      style={[styles.immersiveCopy, { bottom: tabBarHeight + 70 }]}
+                    >
                       {entry.kind === "alert" ? (
                         <Text style={styles.immersiveTitle}>{entry.title}</Text>
                       ) : null}
@@ -2458,9 +2440,10 @@ export default function FeedScreen() {
                           <Text numberOfLines={1} style={styles.immersiveLocationText}>{entry.location}</Text>
                         </View>
                       ) : null}
-                    </View>
-                    {entry.kind === "post" ? (
-                      <View style={styles.immersiveActions}>
+                    </View> : null}
+                    {interfaceVisible && entry.kind === "post" ? (
+                      <>
+                      <View style={[styles.immersiveActions, { bottom: tabBarHeight + 66 }]}>
                         <Pressable
                           accessibilityLabel={`Adorer, ${entry.likesCount} mentions J’adore`}
                           accessibilityRole="button"
@@ -2481,47 +2464,39 @@ export default function FeedScreen() {
                           <Text style={styles.immersiveActionCount}>{entry.commentsCount}</Text>
                         </Pressable>
                         <Pressable
-                          accessibilityLabel="Partager cette publication"
+                          accessibilityLabel={`Propager, ${entry.sharesCount} partages`}
                           accessibilityRole="button"
                           onPress={() => void sharePost(entry)}
                           style={styles.immersiveAction}
                         >
                           <Share2 color="#ffffff" size={24} />
+                          <Text style={styles.immersiveActionCount}>{entry.sharesCount}</Text>
                         </Pressable>
-                        {entry.imageUrl ? (
-                          <Pressable
-                            accessibilityLabel={`Télécharger ${entry.mediaType === "video" ? "la vidéo" : "la photo"}`}
-                            accessibilityRole="button"
-                            onPress={() =>
-                              void downloadMedia(
-                                entry,
-                                entry.imageUrls?.[
-                                  carouselIndices[entry.id] ?? 0
-                                ] ?? entry.imageUrl,
-                              )
-                            }
-                            style={styles.immersiveAction}
-                          >
-                            <Download color="#ffffff" size={23} />
-                          </Pressable>
-                        ) : null}
-                        <Pressable
-                          accessibilityLabel={savedPostIds.includes(entry.id) ? "Retirer des favoris" : "Enregistrer dans les favoris"}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: savedPostIds.includes(entry.id) }}
-                          onPress={() => void savePostFavorite(entry)}
-                          style={styles.immersiveAction}
-                        >
-                          <Bookmark color="#ffffff" fill={savedPostIds.includes(entry.id) ? "#ffffff" : "transparent"} size={24} />
-                        </Pressable>
-                        <Pressable
-                          accessibilityLabel="Autres actions de publication"
-                          accessibilityRole="button"
-                          onPress={() => setActionPost(entry)}
-                          style={styles.immersiveAction}
-                        >
-                          <MoreHorizontal color="#ffffff" size={25} />
-                        </Pressable>
+                      </View>
+                      <View style={[styles.authorFooter, { bottom: tabBarHeight + 10 }]}>
+                        <View style={styles.avatarRing}>
+                          {entry.kind === "post" ? (
+                            <ProfileAvatar
+                              name={entry.authorName}
+                              photoUrl={entry.authorPhotoUrl}
+                              size={38}
+                              isAlly={entry.authorIsAlly}
+                              isProVerified={entry.authorBadge === "Commerçant Certifié"}
+                            />
+                          ) : (
+                            <View style={[styles.icon, styles.alertIcon]}>
+                              <AlertTriangle color="#dc2626" size={19} />
+                            </View>
+                          )}
+                        </View>
+                        <View style={styles.authorDetails}>
+                          <Text numberOfLines={1} style={styles.immersiveAuthorName}>
+                            {entry.authorName ?? "QuartierPlus"}
+                          </Text>
+                          <Text numberOfLines={1} style={styles.immersiveMeta}>
+                            Annonce · {formatDate(entry.createdAt)}
+                          </Text>
+                        </View>
                         {entry.authorId === user?.id ? (
                           <View accessibilityLabel="Votre publication" style={styles.immersiveRallyButton}>
                             <Text style={styles.immersiveRallyText}>Vous</Text>
@@ -2540,12 +2515,58 @@ export default function FeedScreen() {
                             onPress={() => void requestAlliance(entry)}
                             style={styles.immersiveRallyButton}
                           >
-                            <Users color="#ffffff" size={20} />
                             <Text style={styles.immersiveRallyText}>
                               {entry.authorIsAlly ? "Allié" : entry.allianceStatus === "PENDING" ? "Envoyé" : "Se rallier"}
                             </Text>
                           </Pressable>
                         ) : null}
+                      </View>
+                      </>
+                    ) : null}
+                    {entry.kind === "post" && quickActionsPost?.id === entry.id ? (
+                      <View style={[styles.quickActions, { bottom: tabBarHeight + 220 }]}>
+                        {entry.imageUrl ? (
+                          <Pressable
+                            accessibilityLabel={`Télécharger ${entry.mediaType === "video" ? "la vidéo" : "la photo"}`}
+                            accessibilityRole="button"
+                            onPress={() => {
+                              setQuickActionsPost(null);
+                              void downloadMedia(
+                                entry,
+                                entry.imageUrls?.[carouselIndices[entry.id] ?? 0] ?? entry.imageUrl!,
+                              );
+                            }}
+                            style={styles.quickActionButton}
+                          >
+                            <Download color="#ffffff" size={19} />
+                          </Pressable>
+                        ) : null}
+                        <Pressable
+                          accessibilityLabel={savedPostIds.includes(entry.id) ? "Retirer des favoris" : "Enregistrer dans les favoris"}
+                          accessibilityRole="button"
+                          onPress={() => {
+                            setQuickActionsPost(null);
+                            void savePostFavorite(entry);
+                          }}
+                          style={styles.quickActionButton}
+                        >
+                          <Bookmark
+                            color="#ffffff"
+                            fill={savedPostIds.includes(entry.id) ? "#ffffff" : "transparent"}
+                            size={19}
+                          />
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel="Signaler ou copier le lien"
+                          accessibilityRole="button"
+                          onPress={() => {
+                            setQuickActionsPost(null);
+                            setActionPost(entry);
+                          }}
+                          style={styles.quickActionButton}
+                        >
+                          <MoreHorizontal color="#ffffff" size={21} />
+                        </Pressable>
                       </View>
                     ) : null}
                   </View>
@@ -2576,14 +2597,259 @@ export default function FeedScreen() {
           </View>
         ))}
       </ScrollView>
-      <Pressable
-        accessibilityLabel="Créer une publication"
-        accessibilityRole="button"
-        onPress={createPublication}
-        style={styles.createButton}
+      <View pointerEvents="box-none" style={styles.floatingTopContainer}>
+        <Animated.View
+          pointerEvents={floatingBarVisible && interfaceVisible ? "box-none" : "none"}
+          style={[
+            styles.topFloatingRow,
+            { opacity: floatingBarVisible ? floatingBarOpacity : 0 },
+          ]}
+        >
+          <Pressable
+            accessibilityLabel={`Explorer, portée ${FEED_SCOPES.find((option) => option.id === scope)?.label ?? "Pays"}`}
+            accessibilityRole="button"
+            onPress={() => setExplorerOpen(true)}
+            style={styles.scopePill}
+          >
+            <Text style={styles.scopePillText}>
+              {FEED_SCOPES.find((option) => option.id === scope)?.label ?? "Pays"} ▾
+            </Text>
+            {showSavedOnly || feedFilter !== "Tout" || Boolean(searchQuery.trim()) ? (
+              <View style={styles.activeFilterDot} />
+            ) : null}
+          </Pressable>
+          <View style={styles.topFloatingActions}>
+            <Pressable
+              accessibilityLabel="Rechercher dans le fil"
+              accessibilityRole="button"
+              onPress={() => {
+                setSearchOpen(true);
+                setInterfaceVisible(true);
+              }}
+              style={styles.floatingIconButton}
+            >
+              <Search color="#ffffff" size={20} />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Créer une publication"
+              accessibilityRole="button"
+              onPress={createPublication}
+              style={styles.floatingIconButton}
+            >
+              <Plus color="#ffffff" size={22} />
+            </Pressable>
+          </View>
+        </Animated.View>
+      </View>
+      <View pointerEvents="box-none" style={styles.noticesOverlay}>
+        {locationInvitation ? (
+          <View style={[styles.locationInvitation, { backgroundColor: colors.card }]}>
+            <MapPin color="#2563eb" size={18} />
+            <View style={styles.invitationCopy}>
+              <Text style={[styles.invitationText, { color: colors.text }]}>Activez la localisation pour voir votre quartier</Text>
+              {authStatus === "guest" ? (
+                <Pressable accessibilityRole="button" onPress={requestAuthentication}>
+                  <Text style={[styles.invitationAction, { color: colors.primary }]}>Se connecter</Text>
+                </Pressable>
+              ) : (
+                <Pressable accessibilityRole="button" onPress={() => void Linking.openSettings()}>
+                  <Text style={[styles.invitationAction, { color: colors.primary }]}>Ouvrir les réglages</Text>
+                </Pressable>
+              )}
+            </View>
+          </View>
+        ) : null}
+        {error ? (
+          <View style={[styles.notice, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}>
+            <Text style={[styles.noticeText, { color: colors.text }]}>{error.message}</Text>
+            <Pressable accessibilityRole="button" onPress={refresh}>
+              <Text style={[styles.retryText, { color: colors.primary }]}>Réessayer</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showTechnicalDetails }}
+              onPress={() => setShowTechnicalDetails((shown) => !shown)}
+            >
+              <Text style={[styles.detailsToggle, { color: colors.secondaryText }]}>
+                {showTechnicalDetails ? "Masquer les détails" : "Détails techniques"}
+              </Text>
+            </Pressable>
+            {showTechnicalDetails ? (
+              <Text selectable style={[styles.technicalDetails, { color: colors.secondaryText }]}>{error.details}</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+      {tripleTapHintVisible && interfaceVisible ? (
+        <View pointerEvents="none" style={[styles.tripleTapHint, { top: 58 }]}>
+          <Text style={styles.tripleTapHintText}>Triple appui pour plus d’actions</Text>
+        </View>
+      ) : null}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setExplorerOpen(false)}
+        transparent
+        visible={explorerOpen}
       >
-        <Plus color="#ffffff" size={28} strokeWidth={2.5} />
-      </Pressable>
+        <View style={styles.commentBackdrop}>
+          <View style={[styles.explorerSheet, { backgroundColor: colors.card, paddingBottom: insets.bottom + 16 }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.preferenceTitle, { color: colors.text }]}>Explorer</Text>
+              <Pressable
+                accessibilityLabel="Fermer Explorer"
+                accessibilityRole="button"
+                onPress={() => setExplorerOpen(false)}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={[styles.explorerSectionTitle, { color: colors.secondaryText }]}>PÉRIMÈTRE</Text>
+              <View style={styles.explorerOptions}>
+                {FEED_SCOPES.map((option) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: scope === option.id }}
+                    key={option.id}
+                    onPress={() => void chooseScope(option.id)}
+                    style={[
+                      styles.explorerOption,
+                      { borderColor: colors.border },
+                      scope === option.id && { backgroundColor: colors.primary },
+                    ]}
+                  >
+                    <Text style={[
+                      styles.explorerOptionText,
+                      { color: scope === option.id ? colors.onPrimary : colors.text },
+                    ]}>{option.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.explorerSectionTitle, { color: colors.secondaryText }]}>FILTRES</Text>
+              <View style={styles.explorerFilterList}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: showSavedOnly }}
+                  onPress={() => {
+                    setShowSavedOnly(true);
+                    setFeedFilter("Tout");
+                    setExplorerOpen(false);
+                  }}
+                  style={[styles.explorerFilter, { borderBottomColor: colors.border }]}
+                >
+                  <Bookmark color={colors.primary} size={18} />
+                  <Text style={[styles.explorerFilterText, { color: colors.text }]}>Enregistrées</Text>
+                  {showSavedOnly ? <View style={[styles.selectedFilterMark, { backgroundColor: colors.primary }]} /> : null}
+                </Pressable>
+                {FEED_FILTERS.map((filter) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: feedFilter === filter && !showSavedOnly }}
+                    key={filter}
+                    onPress={() => {
+                      setShowSavedOnly(false);
+                      setFeedFilter(filter);
+                      setExplorerOpen(false);
+                    }}
+                    style={[styles.explorerFilter, { borderBottomColor: colors.border }]}
+                  >
+                    <Text style={[styles.explorerFilterText, { color: colors.text }]}>{filter}</Text>
+                    {feedFilter === filter && !showSavedOnly ? (
+                      <View style={[styles.selectedFilterMark, { backgroundColor: colors.primary }]} />
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setExplorerOpen(false);
+                  navigation.navigate("Voyage");
+                }}
+                style={[styles.explorerTravelLink, { borderColor: colors.border }]}
+              >
+                <BusFront color={colors.primary} size={20} />
+                <View style={styles.voyageEntryCopy}>
+                  <Text style={[styles.voyageEntryTitle, { color: colors.text }]}>Réserver un billet de car</Text>
+                  <Text style={[styles.voyageEntrySubtitle, { color: colors.secondaryText }]}>Voyageur · sans abonnement</Text>
+                </View>
+                <ChevronRight color={colors.secondaryText} size={18} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setExplorerOpen(false);
+                  setFeedSettingsOpen(true);
+                  void loadBlockedUsers();
+                }}
+                style={styles.explorerUtilityLink}
+              >
+                <Settings2 color={colors.secondaryText} size={18} />
+                <Text style={[styles.explorerUtilityText, { color: colors.text }]}>Préférences du fil</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setExplorerOpen(false);
+                  requestAssistant();
+                }}
+                style={styles.explorerUtilityLink}
+              >
+                <Mic color={colors.secondaryText} size={18} />
+                <Text style={[styles.explorerUtilityText, { color: colors.text }]}>Assistant vocal</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setExplorerOpen(false);
+                  refresh();
+                }}
+                style={styles.explorerUtilityLink}
+              >
+                <RefreshCw color={colors.secondaryText} size={18} />
+                <Text style={[styles.explorerUtilityText, { color: colors.text }]}>Actualiser le fil</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setSearchOpen(false)}
+        transparent
+        visible={searchOpen}
+      >
+        <View style={styles.commentBackdrop}>
+          <View style={[styles.searchSheet, { backgroundColor: colors.card, paddingBottom: insets.bottom + 18 }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.preferenceTitle, { color: colors.text }]}>Rechercher</Text>
+              <Pressable
+                accessibilityLabel="Fermer la recherche"
+                accessibilityRole="button"
+                onPress={() => setSearchOpen(false)}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            <TextInput
+              accessibilityLabel="Rechercher dans le fil"
+              autoFocus
+              onChangeText={setSearchQuery}
+              onSubmitEditing={() => setSearchOpen(false)}
+              placeholder="Nom, lieu ou publication"
+              placeholderTextColor={colors.secondaryText}
+              returnKeyType="search"
+              style={[styles.searchInput, { backgroundColor: colors.muted, color: colors.text }]}
+              value={searchQuery}
+            />
+            <Text style={[styles.searchResultCount, { color: colors.secondaryText }]}>
+              {visibleEntries.length} résultat{visibleEntries.length === 1 ? "" : "s"}
+            </Text>
+          </View>
+        </View>
+      </Modal>
       <Modal
         animationType="slide"
         onRequestClose={cancelPublication}
@@ -3257,10 +3523,36 @@ export default function FeedScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { backgroundColor: "#f1f5f9", flex: 1, paddingTop: 28 },
+  screen: { backgroundColor: "#f1f5f9", flex: 1 },
   pager: { flex: 1 },
   pagerPage: { flex: 1 },
   feedPage: { flex: 1 },
+  topEdgeTouch: { height: 8, left: 0, position: "absolute", right: 0, top: 0, zIndex: 9 },
+  floatingTopContainer: { left: 0, position: "absolute", right: 0, top: 8, zIndex: 8 },
+  topFloatingRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 12 },
+  scopePill: { alignItems: "center", backgroundColor: "rgba(15,23,42,0.68)", borderRadius: 20, flexDirection: "row", gap: 7, minHeight: 38, paddingHorizontal: 14 },
+  scopePillText: { color: "#ffffff", fontSize: 13, fontWeight: "700" },
+  activeFilterDot: { backgroundColor: "#38bdf8", borderRadius: 4, height: 8, width: 8 },
+  topFloatingActions: { flexDirection: "row", gap: 8 },
+  floatingIconButton: { alignItems: "center", backgroundColor: "rgba(15,23,42,0.68)", borderRadius: 20, height: 40, justifyContent: "center", width: 40 },
+  noticesOverlay: { left: 0, position: "absolute", right: 0, top: 54, zIndex: 7 },
+  tripleTapHint: { alignSelf: "center", backgroundColor: "rgba(15,23,42,0.78)", borderRadius: 18, paddingHorizontal: 14, paddingVertical: 8, position: "absolute", zIndex: 7 },
+  tripleTapHintText: { color: "#ffffff", fontSize: 12, fontWeight: "700" },
+  explorerSheet: { borderTopLeftRadius: 22, borderTopRightRadius: 22, maxHeight: "86%", paddingHorizontal: 18, paddingTop: 18 },
+  searchSheet: { borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 18, paddingTop: 18 },
+  searchInput: { borderRadius: 12, fontSize: 15, minHeight: 48, paddingHorizontal: 14 },
+  searchResultCount: { fontSize: 12, marginTop: 10 },
+  explorerSectionTitle: { fontSize: 11, fontWeight: "800", letterSpacing: 0.8, marginBottom: 9, marginTop: 16 },
+  explorerOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  explorerOption: { borderRadius: 18, borderWidth: 1, minWidth: "46%", paddingHorizontal: 14, paddingVertical: 10 },
+  explorerOptionText: { fontSize: 13, fontWeight: "700", textAlign: "center" },
+  explorerFilterList: { gap: 0 },
+  explorerFilter: { alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: "row", gap: 10, minHeight: 46 },
+  explorerFilterText: { flex: 1, fontSize: 14 },
+  selectedFilterMark: { borderRadius: 5, height: 9, width: 9 },
+  explorerTravelLink: { alignItems: "center", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 10, marginTop: 16, padding: 12 },
+  explorerUtilityLink: { alignItems: "center", flexDirection: "row", gap: 10, minHeight: 44, paddingHorizontal: 4 },
+  explorerUtilityText: { fontSize: 13, fontWeight: "600" },
   header: {
     alignItems: "center",
     backgroundColor: "#ffffff",
@@ -3384,42 +3676,17 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   immersiveFallback: { backgroundColor: "#111827" },
-  immersiveHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 10,
-    left: 14,
-    position: "absolute",
-    right: 68,
-    top: 16,
-    zIndex: 3,
-  },
-  immersiveAuthor: {
-    backgroundColor: "rgba(15,23,42,0.65)",
-    borderRadius: 12,
-    flex: 1,
-    gap: 3,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
+  bottomGradient: { bottom: 0, left: 0, position: "absolute" },
+  authorFooter: { alignItems: "center", flexDirection: "row", gap: 9, left: 14, position: "absolute", right: 84, zIndex: 4 },
+  avatarRing: { alignItems: "center", borderColor: "#ffffff", borderRadius: 24, borderWidth: 2, height: 46, justifyContent: "center", width: 46 },
+  authorDetails: { flex: 1, gap: 3, minWidth: 0 },
   immersiveAuthorName: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
   immersiveMeta: { color: "#e2e8f0", fontSize: 10, fontWeight: "600" },
-  immersivePrice: {
-    backgroundColor: "rgba(15,23,42,0.75)",
-    borderRadius: 14,
-    color: "#bbf7d0",
-    fontSize: 11,
-    fontWeight: "800",
-    overflow: "hidden",
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-  },
   immersiveCopy: {
-    bottom: 92,
     gap: 7,
     left: 16,
     position: "absolute",
-    right: 100,
+    right: 82,
     zIndex: 2,
   },
   immersiveTitle: { color: "#ffffff", fontSize: 19, fontWeight: "800" },
@@ -3461,7 +3728,6 @@ const styles = StyleSheet.create({
   immersiveLocationText: { color: "#ffffff", fontSize: 12, fontWeight: "600" },
   immersiveActions: {
     alignItems: "center",
-    bottom: 86,
     gap: 9,
     position: "absolute",
     right: 10,
@@ -3476,6 +3742,8 @@ const styles = StyleSheet.create({
     width: 46,
   },
   immersiveActionCount: { color: "#ffffff", fontSize: 10, fontWeight: "800", marginTop: 1 },
+  quickActions: { alignItems: "center", backgroundColor: "rgba(15,23,42,0.72)", borderRadius: 23, flexDirection: "row", gap: 7, padding: 6, position: "absolute", right: 10, zIndex: 5 },
+  quickActionButton: { alignItems: "center", borderRadius: 18, height: 38, justifyContent: "center", width: 38 },
   immersiveRallyButton: {
     alignItems: "center",
     backgroundColor: "#15803d",

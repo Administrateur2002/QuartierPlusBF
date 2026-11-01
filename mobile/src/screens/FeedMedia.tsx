@@ -18,6 +18,7 @@ import type { CloudinaryMediaType } from "../services/cloudinaryUpload";
 type Props = {
   uri: string;
   type: CloudinaryMediaType;
+  onSingleTap?: () => void;
   onDoubleTap?: () => void;
   onTripleTap?: () => void;
   onLongPress?: () => void;
@@ -29,11 +30,13 @@ type Props = {
   autoPlay?: boolean;
   creatorName?: string;
   immersive?: boolean;
+  showControls?: boolean;
 };
 
 export default function FeedMedia({
   uri,
   type,
+  onSingleTap,
   onDoubleTap,
   onTripleTap,
   onLongPress,
@@ -45,6 +48,7 @@ export default function FeedMedia({
   autoPlay = true,
   creatorName,
   immersive = false,
+  showControls = true,
 }: Props) {
   const [muted, setMuted] = useState(true);
   const [progress, setProgress] = useState(0);
@@ -55,7 +59,6 @@ export default function FeedMedia({
   const [fitMode, setFitMode] = useState<"contain" | "cover">("contain");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const lastTap = useRef(0);
   const tapCount = useRef(0);
   const tapTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastViewerTap = useRef(0);
@@ -129,11 +132,10 @@ export default function FeedMedia({
     }),
   ).current;
   const handleTap = (onSingleTap?: () => void) => {
-    lastTap.current = Date.now();
     tapCount.current += 1;
-    const count = tapCount.current;
     if (tapTimeout.current) clearTimeout(tapTimeout.current);
     tapTimeout.current = setTimeout(() => {
+      const count = tapCount.current;
       tapCount.current = 0;
       tapTimeout.current = null;
       if (count >= 3) {
@@ -141,27 +143,27 @@ export default function FeedMedia({
         return;
       }
       if (count === 2) {
-      heartProgress.setValue(0);
-      Vibration.vibrate(10);
-      Animated.sequence([
-        Animated.spring(heartProgress, {
-          toValue: 1,
-          useNativeDriver: true,
-          speed: 18,
-          bounciness: 12,
-        }),
-        Animated.delay(350),
-        Animated.timing(heartProgress, {
-          toValue: 0,
-          duration: 220,
-          useNativeDriver: true,
-        }),
-      ]).start();
-      onDoubleTap?.();
+        heartProgress.setValue(0);
+        Vibration.vibrate(10);
+        Animated.sequence([
+          Animated.spring(heartProgress, {
+            toValue: 1,
+            useNativeDriver: true,
+            speed: 18,
+            bounciness: 12,
+          }),
+          Animated.delay(350),
+          Animated.timing(heartProgress, {
+            toValue: 0,
+            duration: 220,
+            useNativeDriver: true,
+          }),
+        ]).start();
+        onDoubleTap?.();
         return;
       }
       onSingleTap?.();
-    }, 320);
+    }, 250);
   };
   const handleLongPress = () => {
     if (tapTimeout.current) clearTimeout(tapTimeout.current);
@@ -169,6 +171,12 @@ export default function FeedMedia({
     tapCount.current = 0;
     onLongPress?.();
   };
+  useEffect(
+    () => () => {
+      if (tapTimeout.current) clearTimeout(tapTimeout.current);
+    },
+    [],
+  );
   const heartStyle = {
     opacity: heartProgress,
     transform: [
@@ -256,24 +264,26 @@ export default function FeedMedia({
         <Pressable
           accessibilityLabel="Ouvrir la photo en plein écran"
           onLongPress={handleLongPress}
-          onPress={() => handleTap()}
+          onPress={() => handleTap(onSingleTap)}
           style={StyleSheet.absoluteFill}
         />
         <Animated.View pointerEvents="none" style={[styles.heartOverlay, heartStyle]}>
           <Heart color="#ffffff" fill="#ffffff" size={76} />
         </Animated.View>
-        <Pressable
-          accessibilityLabel="Afficher la photo en plein écran"
-          accessibilityRole="button"
-          onPress={() => {
-            setFitMode("contain");
-            setViewerZoom(1);
-            setViewerOpen(true);
-          }}
-          style={styles.expandButton}
-        >
-          <Expand color="#ffffff" size={18} />
-        </Pressable>
+        {showControls ? (
+          <Pressable
+            accessibilityLabel="Afficher la photo en plein écran"
+            accessibilityRole="button"
+            onPress={() => {
+              setFitMode("contain");
+              setViewerZoom(1);
+              setViewerOpen(true);
+            }}
+            style={styles.expandButton}
+          >
+            <Expand color="#ffffff" size={18} />
+          </Pressable>
+        ) : null}
         <Modal
           animationType="fade"
           onRequestClose={() => setViewerOpen(false)}
@@ -351,6 +361,7 @@ export default function FeedMedia({
         onLongPress={handleLongPress}
         onPress={() => {
           handleTap(() => {
+            onSingleTap?.();
             if (player.playing) player.pause();
             else if (!playbackError) player.play();
           });
@@ -359,7 +370,7 @@ export default function FeedMedia({
       >
         {!viewerOpen ? <VideoView contentFit="cover" nativeControls={false} player={player} style={StyleSheet.absoluteFill} /> : null}
       </Pressable>
-      {immersive && !isPlaying ? (
+      {showControls && immersive && !isPlaying ? (
         <Pressable
           accessibilityLabel="Lire la vidéo"
           accessibilityRole="button"
@@ -372,19 +383,31 @@ export default function FeedMedia({
       <Animated.View pointerEvents="none" style={[styles.heartOverlay, heartStyle]}>
         <Heart color="#ffffff" fill="#ffffff" size={76} />
       </Animated.View>
-      <Pressable
-        accessibilityLabel={muted ? "Activer le son de la vidéo" : "Couper le son de la vidéo"}
-        accessibilityRole="button"
-        onPress={() => {
-          setMuted((current) => {
-            player.muted = !current;
-            return !current;
-          });
-        }}
-        style={styles.soundButton}
-      >
-        {muted ? <VolumeX color="#ffffff" size={18} /> : <Volume2 color="#ffffff" size={18} />}
-      </Pressable>
+      {showControls ? (
+        <Pressable
+          accessibilityLabel={muted ? "Activer le son de la vidéo" : "Couper le son de la vidéo"}
+          accessibilityRole="button"
+          onPress={() => {
+            setMuted((current) => {
+              player.muted = !current;
+              return !current;
+            });
+          }}
+          style={styles.soundButton}
+        >
+          {muted ? <VolumeX color="#ffffff" size={18} /> : <Volume2 color="#ffffff" size={18} />}
+        </Pressable>
+      ) : null}
+      {showControls && immersive ? (
+        <Pressable
+          accessibilityLabel="Afficher la vidéo en plein écran"
+          accessibilityRole="button"
+          onPress={() => setViewerOpen(true)}
+          style={styles.expandButton}
+        >
+          <Expand color="#ffffff" size={18} />
+        </Pressable>
+      ) : null}
       {!immersive ? (
         <View style={styles.videoControls}>
           <Pressable
