@@ -75,6 +75,7 @@ import FeedMedia from "./FeedMedia";
 import ProfileAvatar from "../components/ProfileAvatar";
 import {
   FEED_SCOPES,
+  feedScopeBarVisibilityOnScroll,
   isFeedCoordinates,
   resolveFeedCountryCode,
   type FeedCoordinates,
@@ -289,6 +290,13 @@ export default function FeedScreen() {
   const { width: pageWidth, height: windowHeight } = useWindowDimensions();
   const pagerRef = useRef<ScrollView>(null);
   const [scope, setScope] = useState<FeedScope>("country");
+  const [scopeBarVisible, setScopeBarVisible] = useState(true);
+  const scopeScrollOffsets = useRef<Record<FeedScope, number>>({
+    neighborhood: 0,
+    region: 0,
+    country: 0,
+    international: 0,
+  });
   const [countryCode, setCountryCode] = useState<string | null>(null);
   const [coordinates, setCoordinates] = useState<FeedCoordinates | null>(null);
   const [scopeReady, setScopeReady] = useState(false);
@@ -2011,7 +2019,6 @@ export default function FeedScreen() {
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
         <View style={styles.headerCopy}>
-          <Text style={styles.eyebrow}>QUARTIERPLUS</Text>
           <Text style={styles.title}>Fil du quartier</Text>
           <Text style={styles.subtitle}>
             {authStatus === "guest"
@@ -2061,26 +2068,28 @@ export default function FeedScreen() {
         </View>
         <ChevronRight color="#64748b" size={18} />
       </Pressable>
-      <View style={[styles.scopeBar, { backgroundColor: colors.card }]}>
-        {FEED_SCOPES.map((option) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: scope === option.id }}
-            key={option.id}
-            onPress={() => void chooseScope(option.id)}
-            style={[styles.scopeChip, scope === option.id && styles.scopeChipSelected]}
-          >
-            <Text
-              style={[
-                styles.scopeLabel,
-                scope === option.id && styles.scopeLabelSelected,
-              ]}
+      {scopeBarVisible ? (
+        <View style={[styles.scopeBar, { backgroundColor: colors.card }]}>
+          {FEED_SCOPES.map((option) => (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: scope === option.id }}
+              key={option.id}
+              onPress={() => void chooseScope(option.id)}
+              style={[styles.scopeChip, scope === option.id && styles.scopeChipSelected]}
             >
-              {option.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+              <Text
+                style={[
+                  styles.scopeLabel,
+                  scope === option.id && styles.scopeLabelSelected,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
       <View style={styles.feedFiltersRow}>
         <Pressable
           accessibilityRole="button"
@@ -2214,6 +2223,17 @@ export default function FeedScreen() {
                   const { contentOffset, layoutMeasurement } = event.nativeEvent;
                   const viewportTop = contentOffset.y;
                   const viewportBottom = viewportTop + layoutMeasurement.height;
+                  const previousOffset = scopeScrollOffsets.current[option.id];
+                  if (option.id === scope) {
+                    const nextScopeBarVisibility = feedScopeBarVisibilityOnScroll(
+                      viewportTop,
+                      previousOffset,
+                    );
+                    if (nextScopeBarVisibility !== null) {
+                      setScopeBarVisible(nextScopeBarVisibility);
+                    }
+                  }
+                  scopeScrollOffsets.current[option.id] = viewportTop;
                   let nextActiveMedia = -1;
                   let greatestVisibility = 0;
                   visibleEntries.forEach((entry, entryIndex) => {
@@ -2273,7 +2293,7 @@ export default function FeedScreen() {
                           showsHorizontalScrollIndicator={false}
                           style={StyleSheet.absoluteFill}
                         >
-                          {entry.imageUrls.map((uri, mediaIndex) => (
+                          {entry.imageUrls?.map((uri, mediaIndex) => (
                             <View
                               key={`${entry.id}:photo:${mediaIndex}`}
                               style={{ width: pageWidth, height: feedPageHeight }}
@@ -2301,11 +2321,11 @@ export default function FeedScreen() {
                           ))}
                         </ScrollView>
                         <View
-                          accessibilityLabel={`Photo ${(carouselIndices[entry.id] ?? 0) + 1} sur ${entry.imageUrls.length}`}
+                          accessibilityLabel={`Photo ${(carouselIndices[entry.id] ?? 0) + 1} sur ${entry.imageUrls?.length ?? 0}`}
                           pointerEvents="none"
                           style={styles.carouselDots}
                         >
-                          {entry.imageUrls.map((_, mediaIndex) => (
+                          {entry.imageUrls?.map((_, mediaIndex) => (
                             <View
                               key={`${entry.id}:dot:${mediaIndex}`}
                               style={[
@@ -3237,7 +3257,7 @@ export default function FeedScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { backgroundColor: "#f1f5f9", flex: 1, paddingTop: 54 },
+  screen: { backgroundColor: "#f1f5f9", flex: 1, paddingTop: 28 },
   pager: { flex: 1 },
   pagerPage: { flex: 1 },
   feedPage: { flex: 1 },
@@ -3248,23 +3268,22 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingBottom: 16,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
   },
   headerCopy: { flex: 1, minWidth: 0 },
-  eyebrow: { color: "#2563eb", fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
-  title: { color: "#0f172a", fontSize: 24, fontWeight: "800", marginTop: 3 },
-  subtitle: { color: "#64748b", fontSize: 13, marginTop: 3 },
+  title: { color: "#0f172a", fontSize: 20, fontWeight: "800", marginTop: 0 },
+  subtitle: { color: "#64748b", fontSize: 11, marginTop: 1 },
   headerActions: { alignItems: "center", flexDirection: "row", gap: 8 },
   voyageEntry: {
     alignItems: "center",
     backgroundColor: "#eff6ff",
     flexDirection: "row",
-    gap: 12,
-    marginHorizontal: 12,
-    marginVertical: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    gap: 8,
+    marginHorizontal: 8,
+    marginVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 12,
   },
   voyageEntryCopy: { flex: 1 },
@@ -3284,13 +3303,13 @@ const styles = StyleSheet.create({
     gap: 5,
     justifyContent: "space-around",
     paddingHorizontal: 10,
-    paddingBottom: 10,
+    paddingBottom: 6,
   },
   feedFiltersRow: {
     alignItems: "center",
     flexDirection: "row",
     gap: 8,
-    paddingBottom: 8,
+    paddingBottom: 4,
     paddingHorizontal: 10,
   },
   savedFilter: {
@@ -3299,7 +3318,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     flexDirection: "row",
     gap: 5,
-    minHeight: 34,
+    minHeight: 30,
     paddingHorizontal: 10,
   },
   savedFilterSelected: { backgroundColor: "#166534" },
@@ -3311,7 +3330,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#f1f5f9",
     borderRadius: 16,
     justifyContent: "center",
-    minHeight: 34,
+    minHeight: 30,
     paddingHorizontal: 10,
   },
   categoryFilterSelected: { backgroundColor: "#dbeafe" },
@@ -3321,7 +3340,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderRadius: 16,
     flex: 1,
-    minHeight: 34,
+    minHeight: 30,
     justifyContent: "center",
     paddingHorizontal: 4,
   },

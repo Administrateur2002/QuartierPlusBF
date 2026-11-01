@@ -65,7 +65,7 @@ test("health handler returns safe diagnostics when migration registry is unavail
 test("health handler reports the latest recorded migration", async (context) => {
   const { pool } = await import("../db/pool.js");
   const latestMigration = {
-    version: "024_community_alliances.sql",
+    version: "029_post_media_carousel.sql",
     applied_at: "2026-11-01T10:00:00.000Z",
   };
   context.mock.method(pool, "query", async () => ({ rows: [latestMigration] }));

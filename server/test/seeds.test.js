@@ -8,6 +8,30 @@ const authMigration = readFileSync(
   new URL("../db/auth-migration.sql", import.meta.url),
   "utf8",
 );
+const profilePhotoMigration = readFileSync(
+  new URL("../../migrations/026_user_profile_photos.sql", import.meta.url),
+  "utf8",
+);
+const postMediaMigration = readFileSync(
+  new URL("../../migrations/029_post_media_carousel.sql", import.meta.url),
+  "utf8",
+);
+const commerceGrowthMigration = readFileSync(
+  new URL("../../migrations/025_commerce_growth_offers.sql", import.meta.url),
+  "utf8",
+);
+const wholesalerMigration = readFileSync(
+  new URL("../../migrations/027_wholesaler_optional_registration_fields.sql", import.meta.url),
+  "utf8",
+);
+const voyageMigration = readFileSync(
+  new URL("../../migrations/028_voyage_station_reservations.sql", import.meta.url),
+  "utf8",
+);
+const deployGuide = readFileSync(
+  new URL("../../docs/DEPLOY.md", import.meta.url),
+  "utf8",
+);
 const countryRows = [
   ...seeds.matchAll(
     /^    \('([A-Z]{2,3})', '((?:[^']|'')*)', '(\+\d+)', '([^']*)', '([^']*)', '([^']*)'\)(,?)$/gm,
@@ -78,4 +102,34 @@ test("country seeds upsert by country code and channels are replay-safe", () => 
 
 test("unknown emergency numbers are empty rather than invented", () => {
   assert.deepEqual(countryByCode.get("DE")?.slice(4, 7), ["", "", ""]);
+});
+
+test("profile photos and feed carousel migrations are additive and documented for deployment", () => {
+  assert.match(profilePhotoMigration, /ADD COLUMN IF NOT EXISTS profile_photo_url TEXT/);
+  assert.match(profilePhotoMigration, /ADD COLUMN IF NOT EXISTS profile_photo_public_id TEXT/);
+  assert.doesNotMatch(profilePhotoMigration, /\b(DROP|DELETE|TRUNCATE)\b/i);
+  assert.match(schema, /profile_photo_public_id TEXT/);
+  assert.match(schema, /profile_photo_url TEXT/);
+  assert.match(postMediaMigration, /CREATE TABLE IF NOT EXISTS post_media_items/);
+  for (const [migration, version] of [
+    [commerceGrowthMigration, "025_commerce_growth_offers.sql"],
+    [profilePhotoMigration, "026_user_profile_photos.sql"],
+    [wholesalerMigration, "027_wholesaler_optional_registration_fields.sql"],
+    [voyageMigration, "028_voyage_station_reservations.sql"],
+    [postMediaMigration, "029_post_media_carousel.sql"],
+  ]) {
+    assert.ok(migration.includes(`VALUES ('${version}')`));
+  }
+
+  const versions = [
+    "024_community_alliances.sql",
+    "025_commerce_growth_offers.sql",
+    "026_user_profile_photos.sql",
+    "027_wholesaler_optional_registration_fields.sql",
+    "028_voyage_station_reservations.sql",
+    "029_post_media_carousel.sql",
+  ];
+  const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
+  assert.ok(positions.every((position) => position >= 0));
+  assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
 });

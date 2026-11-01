@@ -25,6 +25,9 @@ CREATE TABLE users (
     reputation_score INT DEFAULT 100,
     is_verified BOOLEAN DEFAULT FALSE,
     phone_verified_at TIMESTAMPTZ,
+    badge VARCHAR(100),
+    profile_photo_public_id TEXT,
+    profile_photo_url TEXT,
     email_verified_at TIMESTAMPTZ,
     last_location GEOMETRY(Point, 4326),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

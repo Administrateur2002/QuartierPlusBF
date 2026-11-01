@@ -104,11 +104,15 @@ app.use((error, _request, response, _next) => {
     }
     return safe;
   };
-  console.error("Unhandled API error:", {
+  const loggedError = {
     status,
     code,
     reason: redact(reason),
-  });
+  };
+  if (status === 500 && error.code === "42703" && typeof error.message === "string") {
+    loggedError.databaseMessage = redact(error.message);
+  }
+  console.error("Unhandled API error:", loggedError);
   return response.status(status).json({
     error:
       status === 500

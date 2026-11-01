@@ -10,3 +10,7 @@ ALTER TABLE voy_tickets
         CHECK (payment_method IN ('ONLINE', 'PAY_AT_STATION', 'FREE')),
     ADD CONSTRAINT voy_tickets_payment_status_check
         CHECK (payment_status IN ('PENDING', 'PAID'));
+
+INSERT INTO app_migrations (version)
+VALUES ('028_voyage_station_reservations.sql')
+ON CONFLICT (version) DO NOTHING;

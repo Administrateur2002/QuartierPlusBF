@@ -10,3 +10,7 @@ CREATE TABLE IF NOT EXISTS post_media_items (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (post_id, position)
 );
+
+INSERT INTO app_migrations (version)
+VALUES ('029_post_media_carousel.sql')
+ON CONFLICT (version) DO NOTHING;

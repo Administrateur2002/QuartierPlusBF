@@ -1,5 +1,6 @@
 import {
   FEED_SCOPES,
+  feedScopeBarVisibilityOnScroll,
   isFeedCoordinates,
   resolveFeedCountryCode,
 } from "./feedScopes";
@@ -40,5 +41,12 @@ describe("feed scopes", () => {
     expect(isFeedCoordinates({ latitude: 12, longitude: -1 })).toBe(true);
     expect(isFeedCoordinates({ latitude: 91, longitude: -1 })).toBe(false);
     expect(isFeedCoordinates({ latitude: 12, longitude: "0" })).toBe(false);
+  });
+
+  it("hides scope filters while scrolling down and restores them while scrolling up", () => {
+    expect(feedScopeBarVisibilityOnScroll(20, 10)).toBe(false);
+    expect(feedScopeBarVisibilityOnScroll(10, 20)).toBe(true);
+    expect(feedScopeBarVisibilityOnScroll(0, 10)).toBe(true);
+    expect(feedScopeBarVisibilityOnScroll(14, 10)).toBeNull();
   });
 });

@@ -13,3 +13,7 @@ ALTER TABLE transactions
         'TRANSPORT_COMPANY',
         'TICKET'
     ));
+
+INSERT INTO app_migrations (version)
+VALUES ('025_commerce_growth_offers.sql')
+ON CONFLICT (version) DO NOTHING;

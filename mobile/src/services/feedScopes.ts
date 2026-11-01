@@ -17,6 +17,15 @@ export const FEED_SCOPES: {
   { id: "international", label: "International" },
 ];
 
+export const feedScopeBarVisibilityOnScroll = (
+  currentOffset: number,
+  previousOffset: number,
+): boolean | null => {
+  if (currentOffset <= 0 || currentOffset < previousOffset - 6) return true;
+  if (currentOffset > previousOffset + 6) return false;
+  return null;
+};
+
 export const isFeedCoordinates = (
   value: unknown,
 ): value is FeedCoordinates => {

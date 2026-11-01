@@ -74,6 +74,11 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 26. `migrations/022_user_blocks.sql`
 27. `migrations/023_private_message_media.sql`
 28. `migrations/024_community_alliances.sql`
+29. `migrations/025_commerce_growth_offers.sql`
+30. `migrations/026_user_profile_photos.sql`
+31. `migrations/027_wholesaler_optional_registration_fields.sql`
+32. `migrations/028_voyage_station_reservations.sql`
+33. `migrations/029_post_media_carousel.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -114,6 +119,14 @@ La migration 024 ajoute Alliance+ et commence le suivi des migrations dans
 `app_migrations`. Les migrations antérieures ne sont pas enregistrées
 rétroactivement ; l’endpoint de santé renvoie `null` tant que 024 n’a pas été
 appliquée.
+Les migrations 025 à 029 complètent les offres de croissance, les photos de
+profil, l’inscription facultative des grossistes, les réservations en gare et
+les médias multiples du fil. La migration 026 ajoute les colonnes de photo de
+profil avec `IF NOT EXISTS` sans supprimer ni réécrire les données existantes ;
+elle est nécessaire avant de déployer les routes de profil, d’alliances, de
+messagerie et de fil qui lisent `users.profile_photo_url`. La migration 029
+crée `post_media_items`, lue par le fil. Appliquez ces migrations dans l’ordre
+avant de déployer cette version de l’API.
 
 ## 2. Créer le service web Render
 
