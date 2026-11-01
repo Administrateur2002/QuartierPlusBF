@@ -150,7 +150,7 @@ jobs:
           else
             export EXPO_PUBLIC_EAS_PROJECT_ID="$GITHUB_EXPO_PUBLIC_EAS_PROJECT_ID"
           fi
-          timeout --kill-after=3s 50s npx expo export --platform android --output-dir "$RUNNER_TEMP/qp-update-export"
+          timeout --kill-after=3s 180s npx expo export --platform android --output-dir "$RUNNER_TEMP/qp-update-export"
 
       - name: Publier sur la branche preview
         working-directory: mobile
