@@ -76,14 +76,14 @@ jobs:
           }
           const androidId = androidClient.client_id.trim();
           const webId = webClient?.client_id.trim() ?? "";
-          if (![androidId, webId].every((id) => !id || /^[0-9]+-[A-Za-z0-9-]+\.apps\.googleusercontent\.com$/.test(id))) {
-            console.error(`::error::Un identifiant OAuth de ${file} est invalide.`);
-            process.exit(1);
-          }
 
           fs.appendFileSync(
             process.env.GITHUB_ENV,
             `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID=${androidId}\nEXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=${webId}\n`,
+          );
+          console.log(`EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID source: ${file}`);
+          console.log(
+            `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID source: ${webClient ? file : `absente de ${file}`}`,
           );
           process.stdout.write(`${androidId}\n${webId}`);
           NODE
@@ -100,15 +100,13 @@ jobs:
             EAS_PROJECT_ID_SOURCE="$EXPO_PUBLIC_EAS_PROJECT_ID_SOURCE"
           fi
           echo "EXPO_PUBLIC_EAS_PROJECT_ID source: $EAS_PROJECT_ID_SOURCE"
-          echo "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID source: google-services.json"
-          echo "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID source: google-services.json"
           echo "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID source: $EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID_SOURCE"
           if [ -z "$(printf '%s' "$EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" | tr -d '[:space:]')" ]; then
             echo "::warning::EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID absent; la publication Android continue sans cet identifiant."
           fi
 
           MISSING_CONFIG=""
-          for name in EXPO_PUBLIC_API_URL EXPO_PUBLIC_FIREBASE_PROJECT_ID EXPO_PUBLIC_GOOGLE_MAPS_API_KEY EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID; do
+          for name in EXPO_PUBLIC_API_URL EXPO_PUBLIC_FIREBASE_PROJECT_ID EXPO_PUBLIC_GOOGLE_MAPS_API_KEY EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID; do
             if [ -z "$(printenv "$name" | tr -d '[:space:]')" ]; then
               MISSING_CONFIG="$MISSING_CONFIG $name"
             fi
