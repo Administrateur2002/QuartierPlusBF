@@ -102,6 +102,11 @@ CREATE TABLE IF NOT EXISTS user_blocks (
     CHECK (blocker_id <> blocked_id)
 );
 
+CREATE TABLE IF NOT EXISTS app_migrations (
+    version VARCHAR(128) PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS community_alliances (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     creator_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

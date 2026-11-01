@@ -171,6 +171,8 @@ export default function ProfileScreen() {
   const [phoneOtpRequested, setPhoneOtpRequested] = useState(false);
   const [isUpdatingPhone, setIsUpdatingPhone] = useState(false);
   const [aboutVisible, setAboutVisible] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [privacyVisible, setPrivacyVisible] = useState(false);
   const [termsVisible, setTermsVisible] = useState(false);
   const [technicalStatus, setTechnicalStatus] = useState(getTechnicalAvailability);
@@ -303,8 +305,11 @@ export default function ProfileScreen() {
           : null;
         if (
           !counters ||
+          typeof counters.allies !== "number" ||
           !Number.isSafeInteger(counters.allies) || counters.allies < 0 ||
+          typeof counters.received_invitations !== "number" ||
           !Number.isSafeInteger(counters.received_invitations) || counters.received_invitations < 0 ||
+          typeof counters.pending_invitations !== "number" ||
           !Number.isSafeInteger(counters.pending_invitations) || counters.pending_invitations < 0
         ) {
           throw new Error("Les compteurs d’alliance sont invalides.");
@@ -745,6 +750,38 @@ export default function ProfileScreen() {
     void updatePreferences({ ...preferences, defaultRadiusKm: nextRadius });
   };
 
+  const checkForAppUpdate = async () => {
+    if (isCheckingUpdates) return;
+    setIsCheckingUpdates(true);
+    setUpdateMessage(null);
+    try {
+      if (!Updates.isEnabled) {
+        setUpdateMessage("Les mises à jour OTA ne sont pas activées pour cette installation. Un nouvel APK est nécessaire.");
+        return;
+      }
+      const check = await Updates.checkForUpdateAsync();
+      if (!check.isAvailable) {
+        setUpdateMessage("Aucune mise à jour compatible n’est disponible pour cette version.");
+        return;
+      }
+      const fetched = await Updates.fetchUpdateAsync();
+      if (!fetched.isNew) {
+        setUpdateMessage("Aucune nouvelle mise à jour compatible n’a pu être installée.");
+        return;
+      }
+      setUpdateMessage("Mise à jour téléchargée. Redémarrage de l’application…");
+      await Updates.reloadAsync();
+    } catch (error) {
+      setUpdateMessage(
+        error instanceof Error
+          ? `Recherche impossible : ${error.message}`
+          : "Recherche de mise à jour impossible. Vérifiez votre connexion.",
+      );
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+
   const openPlusDestination = (
     screen: "Talkie" | "Grin" | "EspacePro" | "Événements",
   ) => {
@@ -856,8 +893,10 @@ export default function ProfileScreen() {
         <Modal animationType="slide" onRequestClose={() => setAboutVisible(false)} transparent visible={aboutVisible}>
           <View style={styles.guestModalBackdrop}>
             <View style={styles.guestModal}>
-              <Text accessibilityRole="header" style={styles.guestModalTitle}>À propos de QuartierPlus</Text>
+              <Text accessibilityRole="header" style={styles.guestModalTitle}>À propos et mises à jour</Text>
               <Text style={styles.guestMetadata}>Version : {require("../../app.json").expo.version}</Text>
+              <Text style={styles.guestMetadata}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
+              <Text style={styles.guestMetadata}>Canal : {Updates.channel ?? "—"}</Text>
               <Text style={styles.guestMetadata}>Update ID : {Updates.updateId ?? "Version intégrée à l’APK"}</Text>
               <Text style={styles.guestMetadata}>Canal : {Updates.channel ?? "—"}</Text>
               <Text style={styles.guestMetadata}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
@@ -865,11 +904,21 @@ export default function ProfileScreen() {
                 Commit du serveur : {serverHealth?.commit ?? "indisponible"}
               </Text>
               <Text style={styles.guestMetadata}>
+                Démarrage serveur : {serverHealth?.startedAt ?? "indisponible"}
+              </Text>
+              <Text style={styles.guestMetadata}>
+                Dernière migration : {serverHealth?.lastMigration?.version ?? "inconnue"}
+              </Text>
+              <Text style={styles.guestMetadata}>
                 Hôte API : {API_BASE_URL ? new URL(API_BASE_URL).host : "non configuré"}
               </Text>
               <Text style={styles.guestMetadata}>
                 SHA du commit : {process.env.EXPO_PUBLIC_GIT_SHA ?? "non fourni"}
               </Text>
+              <Pressable accessibilityRole="button" disabled={isCheckingUpdates} onPress={() => void checkForAppUpdate()} style={styles.guestModalClose}>
+                {isCheckingUpdates ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.guestModalCloseText}>Rechercher une mise à jour</Text>}
+              </Pressable>
+              {updateMessage && <Text accessibilityLiveRegion="polite" style={styles.guestModalCopy}>{updateMessage}</Text>}
               <Text style={styles.guestTechnicalTitle}>Détails techniques</Text>
               <Text style={styles.guestMetadata}>Firebase : {technicalStatus.firebase}</Text>
               <Text style={styles.guestMetadata}>Crashlytics : {technicalStatus.crashlytics}</Text>
@@ -1476,7 +1525,7 @@ export default function ProfileScreen() {
             style={styles.menuRow}
           >
             <Info color="#2563eb" size={19} />
-            <Text style={[styles.menuLabel, { color: colors.text }]}>{t("profileAbout")}</Text>
+            <Text style={[styles.menuLabel, { color: colors.text }]}>À propos et mises à jour</Text>
             <ChevronRight color="#94a3b8" size={18} />
           </Pressable>
         </View>
@@ -1532,16 +1581,34 @@ export default function ProfileScreen() {
       >
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>À propos de QuartierPlus</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>À propos et mises à jour</Text>
+            <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Version : {require("../../app.json").expo.version}</Text>
+            <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
+            <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Canal : {Updates.channel ?? "—"}</Text>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
               Update ID : {Updates.updateId ?? "Version intégrée à l’APK"}
             </Text>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
               Commit du serveur : {serverHealth?.commit ?? "indisponible"}
             </Text>
+            <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Démarrage serveur : {serverHealth?.startedAt ?? "indisponible"}</Text>
+            <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Dernière migration : {serverHealth?.lastMigration?.version ?? "inconnue"}</Text>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
               Hôte API : {API_BASE_URL ? new URL(API_BASE_URL).host : "non configuré"}
             </Text>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isCheckingUpdates}
+              onPress={() => void checkForAppUpdate()}
+              style={styles.primaryAction}
+            >
+              {isCheckingUpdates ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.primaryActionText}>Rechercher une mise à jour</Text>}
+            </Pressable>
+            {updateMessage && (
+              <Text accessibilityLiveRegion="polite" style={[styles.settingDescription, { color: colors.secondaryText }]}>
+                {updateMessage}
+              </Text>
+            )}
             <Pressable
               accessibilityRole="button"
               onPress={() => setAboutVisible(false)}

@@ -41,7 +41,7 @@ app.use(
     verify: captureFedaPayRawBody,
   }),
 );
-app.get("/health", handleHealth);
+app.get(["/health", "/v1/health"], handleHealth);
 app.get(
   ["/api/v1/monetization/config", "/v1/monetization/config"],
   getMonetizationConfig,

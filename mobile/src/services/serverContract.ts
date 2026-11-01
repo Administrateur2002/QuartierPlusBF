@@ -6,6 +6,8 @@ export type ServerHealth = {
   status: string;
   commit: string;
   contractVersion: number;
+  startedAt: string | null;
+  lastMigration: { version: string; applied_at: string } | null;
 };
 
 let healthPromise: Promise<ServerHealth | null> | null = null;
@@ -35,7 +37,7 @@ export const checkServerContract = async (): Promise<ServerHealth | null> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const response = await fetch(`${API_BASE_URL}/health`, {
+      const response = await fetch(`${API_BASE_URL}/v1/health`, {
         signal: controller.signal,
       });
       if (!response.ok) return null;
@@ -49,6 +51,16 @@ export const checkServerContract = async (): Promise<ServerHealth | null> => {
         typeof payload.contractVersion === "number"
           ? payload.contractVersion
           : 0;
+      const migration = "lastMigration" in payload ? payload.lastMigration : null;
+      const lastMigration =
+        typeof migration === "object" &&
+        migration !== null &&
+        "version" in migration &&
+        typeof migration.version === "string" &&
+        "applied_at" in migration &&
+        typeof migration.applied_at === "string"
+          ? { version: migration.version, applied_at: migration.applied_at }
+          : null;
       serverHealth = {
         status: payload.status,
         commit:
@@ -56,6 +68,11 @@ export const checkServerContract = async (): Promise<ServerHealth | null> => {
             ? payload.commit
             : "unknown",
         contractVersion,
+        startedAt:
+          "startedAt" in payload && typeof payload.startedAt === "string"
+            ? payload.startedAt
+            : null,
+        lastMigration,
       };
       isUpdating =
         serverHealth.status === "ok" &&

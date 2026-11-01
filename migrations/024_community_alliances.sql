@@ -1,3 +1,8 @@
+CREATE TABLE IF NOT EXISTS app_migrations (
+    version VARCHAR(128) PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS community_alliances (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     creator_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -45,3 +50,7 @@ CREATE INDEX IF NOT EXISTS community_alliances_creator_idx
 
 CREATE INDEX IF NOT EXISTS community_alliance_members_user_idx
     ON community_alliance_members (user_id);
+
+INSERT INTO app_migrations (version)
+VALUES ('024_community_alliances.sql')
+ON CONFLICT (version) DO NOTHING;

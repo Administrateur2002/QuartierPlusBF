@@ -73,6 +73,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 25. `migrations/021_post_comment_interactions.sql`
 26. `migrations/022_user_blocks.sql`
 27. `migrations/023_private_message_media.sql`
+28. `migrations/024_community_alliances.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -109,6 +110,10 @@ La migration 022 ajoute les blocages persistants et doit être appliquée avant
 le déploiement des filtres du fil et de la messagerie.
 La migration 023 ajoute les champs média aux messages privés; déployez-la avant
 la version mobile qui permet d’y joindre des photos ou vidéos.
+La migration 024 ajoute Alliance+ et commence le suivi des migrations dans
+`app_migrations`. Les migrations antérieures ne sont pas enregistrées
+rétroactivement ; l’endpoint de santé renvoie `null` tant que 024 n’a pas été
+appliquée.
 
 ## 2. Créer le service web Render
 
