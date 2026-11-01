@@ -6,7 +6,13 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-nati
 import api from "../../services/api";
 import type { VoyageStackParamList } from "../../navigation/types";
 
-type Result = { status: "SUCCESS" | "ALREADY_USED" | "EXPIRED" | "WRONG_DATE" | "INVALID"; reason?: string; traveler_name?: string; seat_number?: string };
+type Result = {
+  status: "SUCCESS" | "ALREADY_USED" | "EXPIRED" | "WRONG_DATE" | "PAYMENT_REQUIRED" | "PAYMENT_CONFIRMED" | "INVALID";
+  reason?: string;
+  ticket_id?: string;
+  traveler_name?: string;
+  seat_number?: string;
+};
 
 export default function VoyageAgentScannerScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<VoyageStackParamList>>();
@@ -14,6 +20,7 @@ export default function VoyageAgentScannerScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState("");
+  const [confirmingPayment, setConfirmingPayment] = useState(false);
   const locked = useRef(false);
 
   const scan = async (qrPayload: string) => {
@@ -28,9 +35,34 @@ export default function VoyageAgentScannerScreen() {
     }
   };
 
+  const confirmStationPayment = async () => {
+    if (!result?.ticket_id || confirmingPayment) return;
+    setConfirmingPayment(true);
+    setError("");
+    try {
+      await api.post(`/v1/voyage/tickets/${result.ticket_id}/confirm-station-payment`);
+      setResult({
+        status: "PAYMENT_CONFIRMED",
+        reason: "Paiement confirmé. Scannez à nouveau le billet au moment de l’embarquement.",
+        traveler_name: result.traveler_name,
+        seat_number: result.seat_number,
+      });
+    } catch (paymentError) {
+      setError(paymentError instanceof Error ? paymentError.message : "Confirmation du paiement impossible.");
+    } finally {
+      setConfirmingPayment(false);
+    }
+  };
+
+  const scanNext = () => {
+    setResult(null);
+    setError("");
+    locked.current = false;
+  };
+
   if (!permission) return <View style={styles.center}><ActivityIndicator color="#fff" /></View>;
   if (!permission.granted) return <View style={styles.center}><Text style={styles.title}>Accès caméra requis</Text><Pressable onPress={() => void requestPermission()} style={styles.button}><Text style={styles.buttonText}>Autoriser</Text></Pressable></View>;
-  const accepted = result?.status === "SUCCESS";
+  const accepted = result?.status === "SUCCESS" || result?.status === "PAYMENT_CONFIRMED";
   return (
     <View style={[styles.screen, result && (accepted ? styles.success : styles.failure)]}>
       {!result ? <>
@@ -38,14 +70,28 @@ export default function VoyageAgentScannerScreen() {
         <CameraView style={styles.camera} facing="back" barcodeScannerSettings={{ barcodeTypes: ["qr"] }} onBarcodeScanned={({ data }) => void scan(data)} />
         <View pointerEvents="none" style={styles.overlay}><View style={styles.scanBox} /><Text style={styles.hint}>Scanner le billet du départ</Text></View>
         <Text style={styles.trip}>Départ sélectionné · {route.params.tripId.slice(0, 8)}</Text>
-      </> : <Pressable accessibilityRole="button" style={styles.feedback} onPress={() => { setResult(null); setError(""); locked.current = false; }}>
-        <Text style={styles.status}>{accepted ? "BILLET VALIDE" : result.status === "ALREADY_USED" ? "DÉJÀ UTILISÉ" : result.status === "EXPIRED" ? "EXPIRÉ" : result.status === "WRONG_DATE" ? "AUTRE DATE" : "REFUSÉ"}</Text>
+      </> : <View style={styles.feedback}>
+        <Text style={styles.status}>
+          {result.status === "SUCCESS" ? "BILLET VALIDE" :
+            result.status === "PAYMENT_REQUIRED" ? "PAIEMENT EN GARE" :
+              result.status === "PAYMENT_CONFIRMED" ? "PAIEMENT CONFIRMÉ" :
+                result.status === "ALREADY_USED" ? "DÉJÀ UTILISÉ" :
+                  result.status === "EXPIRED" ? "EXPIRÉ" :
+                    result.status === "WRONG_DATE" ? "AUTRE DATE" : "REFUSÉ"}
+        </Text>
         <Text style={styles.reason}>{result.reason ?? (accepted ? "Embarquement autorisé" : "Vérification refusée")}</Text>
         {result.traveler_name && <Text style={styles.passenger}>{result.traveler_name}</Text>}
         {result.seat_number && <Text style={styles.passenger}>Siège {result.seat_number}</Text>}
         {error ? <Text style={styles.reason}>{error}</Text> : null}
-        <Text style={styles.hint}>Toucher pour scanner le suivant</Text>
-      </Pressable>}
+        {result.status === "PAYMENT_REQUIRED" && (
+          <Pressable accessibilityRole="button" disabled={confirmingPayment} onPress={() => void confirmStationPayment()} style={styles.button}>
+            <Text style={styles.buttonText}>{confirmingPayment ? "Confirmation…" : "Confirmer le paiement reçu"}</Text>
+          </Pressable>
+        )}
+        <Pressable accessibilityRole="button" onPress={scanNext} style={styles.nextButton}>
+          <Text style={styles.hint}>Scanner le billet suivant</Text>
+        </Pressable>
+      </View>}
     </View>
   );
 }
@@ -69,4 +115,5 @@ const styles = StyleSheet.create({
   title: { color: "#fff", fontSize: 20, fontWeight: "800", marginBottom: 16 },
   button: { backgroundColor: "#df5f36", borderRadius: 7, padding: 12 },
   buttonText: { color: "#fff", fontWeight: "700" },
+  nextButton: { marginTop: 24, padding: 12 },
 });

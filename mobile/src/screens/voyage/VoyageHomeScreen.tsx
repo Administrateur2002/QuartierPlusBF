@@ -11,7 +11,7 @@ import {
 import QRCode from "react-native-qrcode-svg";
 import * as Notifications from "expo-notifications";
 import { useCallback, useEffect, useState } from "react";
-import { Modal, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { Image, Modal, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import api from "../../services/api";
 import { getApiErrorMessage } from "../../services/apiError";
 import type { VoyageStackParamList } from "../../navigation/types";
@@ -27,6 +27,8 @@ type Trip = {
   vehicle: string;
   price: number;
   company_name: string;
+  company_logo_url?: string | null;
+  seats_available?: number;
   seats: { id: string; seat_number: string }[];
 };
 type VoyageTicket = {
@@ -45,7 +47,10 @@ type VoyageTicket = {
   price: number;
   traveler_photo_url?: string | null;
   traveler_badge?: string | null;
+  payment_method: "ONLINE" | "PAY_AT_STATION" | "FREE";
+  payment_status: "PENDING" | "PAID";
 };
+type AgentTrip = Pick<Trip, "id" | "departure" | "arrival" | "departure_at" | "company_name">;
 
 type DemoTrip = {
   id: string;
@@ -61,16 +66,16 @@ type DemoTrip = {
 type CityField = "departure" | "arrival";
 
 const VOYAGE_CITIES = [
-  "Abidjan",
-  "Abengourou",
-  "Bouaké",
-  "Daloa",
-  "Gagnoa",
-  "Grand-Bassam",
-  "Korhogo",
-  "Man",
-  "San-Pédro",
-  "Yamoussoukro",
+  "Banfora",
+  "Bobo-Dioulasso",
+  "Dédougou",
+  "Fada N’Gourma",
+  "Gaoua",
+  "Kaya",
+  "Koudougou",
+  "Ouagadougou",
+  "Ouahigouya",
+  "Tenkodogo",
 ];
 
 const demoDepartureDate = (daysFromToday: number, hour: number) => {
@@ -82,22 +87,22 @@ const demoDepartureDate = (daysFromToday: number, hour: number) => {
 
 export const VOYAGE_DEMO_DATA: DemoTrip[] = [
   {
-    id: "demo-abidjan-yamoussoukro",
-    departure: "Abidjan",
-    arrival: "Yamoussoukro",
+    id: "demo-ouagadougou-bobo",
+    departure: "Ouagadougou",
+    arrival: "Bobo-Dioulasso",
     departure_at: demoDepartureDate(1, 8),
     vehicle: "Car climatisé · exemple",
-    price: 6500,
+    price: 3500,
     company_name: "Compagnie de démonstration",
     seats_available: 12,
   },
   {
-    id: "demo-abidjan-bouake",
-    departure: "Abidjan",
-    arrival: "Bouaké",
+    id: "demo-ouagadougou-koudougou",
+    departure: "Ouagadougou",
+    arrival: "Koudougou",
     departure_at: demoDepartureDate(2, 9),
     vehicle: "Autocar · exemple",
-    price: 9000,
+    price: 2000,
     company_name: "Compagnie de démonstration",
     seats_available: 8,
   },
@@ -134,6 +139,7 @@ const formatDateFieldLabel = (value: string) => {
 export default function VoyageHomeScreen() {
   const navigation = useNavigation<Navigation>();
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [agentTrips, setAgentTrips] = useState<AgentTrip[]>([]);
   const [tickets, setTickets] = useState<VoyageTicket[]>([]);
   const [departure, setDeparture] = useState("");
   const [arrival, setArrival] = useState("");
@@ -141,6 +147,9 @@ export default function VoyageHomeScreen() {
   const [message, setMessage] = useState("");
   const [selectedTrip, setSelectedTrip] = useState("");
   const [bookedTrip, setBookedTrip] = useState<Trip | null>(null);
+  const [bookedStatus, setBookedStatus] = useState<"VALID" | "RESERVED">("VALID");
+  const [bookingSelection, setBookingSelection] = useState<{ trip: Trip; seatId: string } | null>(null);
+  const [demoDataEnabled, setDemoDataEnabled] = useState(false);
   const [citySelector, setCitySelector] = useState<CityField | null>(null);
   const [dateSelectorOpen, setDateSelectorOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -190,12 +199,16 @@ export default function VoyageHomeScreen() {
 
   const refresh = useCallback(async () => {
     try {
-      const [tripResponse, ticketResponse] = await Promise.all([
+      const [configResponse, tripResponse, ticketResponse, agentResponse] = await Promise.all([
+        api.get<{ demo_data_enabled: boolean }>("/v1/voyage/config"),
         api.get<{ trips: Trip[] }>("/v1/voyage/trips", { params: { departure, arrival, date } }),
         api.get<{ tickets: VoyageTicket[] }>("/v1/voyage/tickets/mine"),
+        api.get<{ trips: AgentTrip[] }>("/v1/voyage/agents/mine"),
       ]);
+      setDemoDataEnabled(configResponse.data.demo_data_enabled === true);
       setTrips(tripResponse.data.trips);
       setTickets(ticketResponse.data.tickets);
+      setAgentTrips(agentResponse.data.trips);
       setMessage("");
     } catch (error) {
       setMessage(getApiErrorMessage(error, "Chargement Voyage impossible."));
@@ -205,6 +218,18 @@ export default function VoyageHomeScreen() {
   useFocusEffect(useCallback(() => { void refresh(); }, [refresh]));
 
   const search = async () => {
+    if (!departure || !arrival || !date) {
+      setMessage("Choisissez une ville de départ, une ville d’arrivée et une date.");
+      return;
+    }
+    if (departure === arrival) {
+      setMessage("Les villes de départ et d’arrivée doivent être différentes.");
+      return;
+    }
+    if (date < todayValue) {
+      setMessage("Choisissez une date à partir d’aujourd’hui.");
+      return;
+    }
     const params = new URLSearchParams({ departure, arrival, date }).toString();
     try {
       const response = await api.get<{ trips: Trip[] }>(`/v1/voyage/trips?${params}`);
@@ -215,10 +240,15 @@ export default function VoyageHomeScreen() {
     }
   };
 
-  const book = async (trip: Trip, seatId: string) => {
+  const book = async (trip: Trip, seatId: string, paymentMethod: "PAY_AT_STATION" | "ONLINE" = "ONLINE") => {
     try {
-      await api.post(`/v1/voyage/trips/${trip.id}/book`, { seat_id: seatId });
+      const response = await api.post<{ ticket: { status: "VALID" | "RESERVED" } }>(
+        `/v1/voyage/trips/${trip.id}/book`,
+        { seat_id: seatId, payment_method: paymentMethod },
+      );
       setSelectedTrip("");
+      setBookingSelection(null);
+      setBookedStatus(response.data.ticket.status);
       setBookedTrip(trip);
       setMessage("");
       await refresh();
@@ -507,9 +537,10 @@ export default function VoyageHomeScreen() {
           <View style={styles.welcomeBackdrop}>
             <View style={styles.welcomeCard}>
               <Text style={styles.welcomeTitle}>
-                Bon voyage, {tickets.find((ticket) => ticket.trip_id === bookedTrip.id)?.traveler_name.split(" ")[0] || "voyageur"} ! 🚌
+                {bookedStatus === "RESERVED" ? "Place réservée" : `Bon voyage, ${tickets.find((ticket) => ticket.trip_id === bookedTrip.id)?.traveler_name.split(" ")[0] || "voyageur"} !`}
               </Text>
               <Text style={styles.welcomeRoute}>{bookedTrip.departure} → {bookedTrip.arrival}</Text>
+              {bookedStatus === "RESERVED" && <Text style={styles.welcomeDetail}>Présentez le QR code à l’agent et réglez le billet en gare avant l’embarquement.</Text>}
               <Text style={styles.welcomeDetail}>
                 {new Date(bookedTrip.departure_at).toLocaleString("fr-FR")} · {bookedTrip.company_name}
               </Text>
@@ -529,11 +560,38 @@ export default function VoyageHomeScreen() {
           </View>
         ) : null}
       </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setBookingSelection(null)}
+        transparent
+        visible={bookingSelection !== null}
+      >
+        {bookingSelection ? (
+          <View style={styles.welcomeBackdrop}>
+            <View style={styles.welcomeCard}>
+              <Text style={styles.welcomeTitle}>Réserver ce billet</Text>
+              <Text style={styles.welcomeRoute}>{bookingSelection.trip.departure} → {bookingSelection.trip.arrival}</Text>
+              <Text style={styles.welcomeDetail}>{Number(bookingSelection.trip.price).toLocaleString("fr-FR")} FCFA · Siège sélectionné</Text>
+              <Text style={styles.welcomeDetail}>Payez à la gare auprès d’un agent de la compagnie. Le billet sera confirmé après le paiement.</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void book(bookingSelection.trip, bookingSelection.seatId, "PAY_AT_STATION")}
+                style={styles.shareTripButton}
+              >
+                <Text style={styles.shareTripText}>Réserver, payer en gare</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => setBookingSelection(null)} style={styles.closeWelcome}>
+                <Text style={styles.closeWelcomeText}>Annuler</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+      </Modal>
       <Text style={styles.section}>Départs disponibles</Text>
       {!trips.length ? (
         <View>
           <Text style={styles.empty}>Aucun trajet réel ne correspond à la recherche.</Text>
-          {matchingDemoTrips.length > 0 ? (
+          {demoDataEnabled && matchingDemoTrips.length > 0 ? (
             <View>
               <Text style={styles.demoTitle}>Exemples de démonstration</Text>
               <Text style={styles.demoNotice}>Ces exemples servent à découvrir l’écran et ne sont pas réservables.</Text>
@@ -554,24 +612,39 @@ export default function VoyageHomeScreen() {
       ) : trips.map((trip) => (
         <View key={trip.id} style={styles.trip}>
           <View style={styles.tripHead}>
+            {trip.company_logo_url ? <Image source={{ uri: trip.company_logo_url }} style={styles.companyLogo} /> : null}
             <Text style={styles.route}>{trip.departure}  →  {trip.arrival}</Text>
             <Text style={styles.price}>{Number(trip.price).toLocaleString("fr-FR")} FCFA</Text>
           </View>
-          <Text style={styles.detail}>{trip.company_name} · {new Date(trip.departure_at).toLocaleString("fr-FR")}</Text>
-          <Text style={styles.detail}>{trip.vehicle} · {trip.seats.length} places libres</Text>
+          <Text style={styles.detail}>{trip.company_name} · Départ {new Date(trip.departure_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} · Arrivée {new Date(trip.arrival_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</Text>
+          <Text style={styles.detail}>{new Date(trip.departure_at).toLocaleDateString("fr-FR")} · {trip.vehicle} · {trip.seats_available ?? trip.seats.length} places restantes</Text>
           <Pressable onPress={() => { setSelectedTrip(selectedTrip === trip.id ? "" : trip.id); }} style={styles.selectButton}>
             <Text style={styles.selectText}>{selectedTrip === trip.id ? "Masquer les places" : "Choisir une place"}</Text>
           </Pressable>
           {selectedTrip === trip.id && <View style={styles.seats}>{trip.seats.map((seat) => (
-            <Pressable key={seat.id} onPress={() => void book(trip, seat.id)} style={styles.seat}>
+            <Pressable key={seat.id} onPress={() => {
+              if (Number(trip.price) > 0) setBookingSelection({ trip, seatId: seat.id });
+              else void book(trip, seat.id);
+            }} style={styles.seat}>
               <Text style={styles.seatText}>{seat.seat_number}</Text>
             </Pressable>
           ))}</View>}
-          <Pressable onPress={() => navigation.navigate("VoyageAgentScanner", { tripId: trip.id })} style={styles.agentButton}>
-            <Text style={styles.agentText}>Scanner agent</Text>
-          </Pressable>
         </View>
       ))}
+      {agentTrips.length > 0 && (
+        <>
+          <Text style={styles.section}>Espace agent</Text>
+          {agentTrips.map((trip) => (
+            <View key={trip.id} style={styles.trip}>
+              <Text style={styles.route}>{trip.departure} → {trip.arrival}</Text>
+              <Text style={styles.detail}>{trip.company_name} · {new Date(trip.departure_at).toLocaleString("fr-FR")}</Text>
+              <Pressable onPress={() => navigation.navigate("VoyageAgentScanner", { tripId: trip.id })} style={styles.agentButton}>
+                <Text style={styles.agentText}>Scanner les billets</Text>
+              </Pressable>
+            </View>
+          ))}
+        </>
+      )}
       <Text style={styles.section}>Mes billets</Text>
       {tickets.map((ticket) => (
         <View key={ticket.id} style={styles.ticket}>
@@ -583,12 +656,14 @@ export default function VoyageHomeScreen() {
               isProVerified={ticket.traveler_badge === "Commerçant Certifié"}
             />
             <Text style={styles.route}>{ticket.departure}  →  {ticket.arrival}</Text>
-            <Text style={ticket.status === "VALID" ? styles.valid : styles.invalid}>{ticket.status}</Text>
+            <Text style={ticket.status === "VALID" ? styles.valid : styles.invalid}>
+              {ticket.status === "RESERVED" ? "RÉSERVÉ · PAIEMENT EN GARE" : ticket.status}
+            </Text>
           </View>
           <Text style={styles.detail}>{ticket.company_name} · {ticket.traveler_name}</Text>
           <Text style={styles.detail}>{new Date(ticket.departure_at).toLocaleString("fr-FR")} · Siège {ticket.seat_number}</Text>
           <Text style={styles.detail}>{Number(ticket.price).toLocaleString("fr-FR")} FCFA · expire {new Date(ticket.expires_at).toLocaleString("fr-FR")}</Text>
-          {ticket.status === "VALID" && <View style={styles.qr}><QRCode value={ticket.qr_payload} size={190} ecl="H" logo={require("../../../assets/icon-small.webp")} logoSize={30} logoBackgroundColor="#ffffff" quietZone={10} /><Text style={styles.code}>Code secours : {ticket.short_code}</Text></View>}
+          {(ticket.status === "VALID" || ticket.status === "RESERVED") && <View style={styles.qr}><QRCode value={ticket.qr_payload} size={190} ecl="H" logo={require("../../../assets/icon-small.webp")} logoSize={30} logoBackgroundColor="#ffffff" quietZone={10} /><Text style={styles.code}>Code secours : {ticket.short_code}</Text></View>}
         </View>
       ))}
     </ScrollView>
@@ -623,6 +698,7 @@ const styles = StyleSheet.create({
   demoTrip: { backgroundColor: "#fff", borderColor: "#d8e2de", borderRadius: 8, borderStyle: "dashed", borderWidth: 1, marginTop: 10, padding: 14 },
   demoBadge: { color: "#a84428", fontSize: 10, fontWeight: "900", marginTop: 9 },
   tripHead: { alignItems: "center", flexDirection: "row", gap: 8, justifyContent: "space-between" },
+  companyLogo: { borderRadius: 8, height: 36, width: 36 },
   route: { color: "#153b35", flex: 1, fontSize: 15, fontWeight: "800" },
   price: { color: "#df5f36", fontSize: 14, fontWeight: "800" },
   detail: { color: "#61726e", fontSize: 12, lineHeight: 18, marginTop: 5 },

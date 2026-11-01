@@ -24,7 +24,7 @@ export type MainTabParamList = {
   Grossistes: undefined;
   EspacePro: undefined;
   Événements: undefined;
-  Voyage: undefined;
+  Voyage: NavigatorScreenParams<VoyageStackParamList> | undefined;
 };
 
 export type EventSummary = {
@@ -51,6 +51,7 @@ export type EventsStackParamList = {
 
 export type VoyageStackParamList = {
   VoyageHome: undefined;
+  VoyageCompany: undefined;
   VoyageAgentScanner: { tripId: string };
 };
 

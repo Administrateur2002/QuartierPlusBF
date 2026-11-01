@@ -209,6 +209,15 @@ export default function ProTabNavigator() {
               <Text style={styles.growthButtonText}>Ouvrir l’espace Grossistes</Text>
             </Pressable>
           )}
+          {displayedSubscription.plan_type === "TRANSPORT_COMPANY" && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => navigation.navigate("Voyage", { screen: "VoyageCompany" })}
+              style={styles.growthButton}
+            >
+              <Text style={styles.growthButtonText}>Gérer ma compagnie</Text>
+            </Pressable>
+          )}
         </View>
       ) : (
         <ProDashboardScreen subscription={displayedSubscription} />

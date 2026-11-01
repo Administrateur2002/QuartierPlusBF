@@ -151,6 +151,7 @@ test("production environment rejects malformed URLs and boolean variables", () =
     ["IS_PROMO_FREE_ACCESS", "sometimes"],
     ["BILLING_ENABLED", "sometimes"],
     ["PRO_ENABLED", "sometimes"],
+    ["VOYAGE_DEMO_DATA", "sometimes"],
   ]) {
     const result = loadProductionConfig({ [name]: value });
     assert.notEqual(result.status, 0, `${name} should be validated`);

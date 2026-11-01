@@ -41,6 +41,10 @@ const voyageEnabledValue = optional("VOYAGE_ENABLED");
 if (voyageEnabledValue && !["true", "false"].includes(voyageEnabledValue)) {
   throw new Error("VOYAGE_ENABLED must be true or false.");
 }
+const voyageDemoDataValue = optional("VOYAGE_DEMO_DATA");
+if (voyageDemoDataValue && !["true", "false"].includes(voyageDemoDataValue)) {
+  throw new Error("VOYAGE_DEMO_DATA must be true or false.");
+}
 const voyageEnabled = voyageEnabledValue === "true";
 const ticketSigningPrivateKeyB64 = optionalUnquoted(
   "TICKET_SIGNING_PRIVATE_KEY_B64",
@@ -253,6 +257,7 @@ export const env = Object.freeze({
   billingEnabled: billingEnabledValue === "true",
   proEnabled: proEnabledValue === "true",
   voyageEnabled,
+  voyageDemoData: voyageDemoDataValue === "true",
   ticketSigningPrivateKeyB64,
   ticketSigningKid: optional("TICKET_SIGNING_KID") || "v1",
   proAdminToken: optional("PRO_ADMIN_TOKEN"),
