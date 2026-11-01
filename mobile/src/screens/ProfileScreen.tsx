@@ -1066,6 +1066,16 @@ export default function ProfileScreen() {
           <ChevronRight color="#ffffff" size={19} />
         </Pressable>
 
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => navigation.navigate("AlliancePlus")}
+          style={[styles.menuRow, { marginTop: 12, padding: 14, backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}
+        >
+          <User color="#2563eb" size={19} />
+          <Text style={[styles.menuLabel, { color: colors.text }]}>Alliance+</Text>
+          <ChevronRight color="#94a3b8" size={18} />
+        </Pressable>
+
         <View style={styles.countryCard}>
           <View style={styles.countryHeading}>
             <Globe color="#2563eb" size={19} />

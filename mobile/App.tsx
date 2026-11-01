@@ -62,6 +62,7 @@ import MyActivityScreen from "./src/screens/MyActivityScreen";
 import ProTabNavigator from "./src/navigation/ProTabNavigator";
 import EventsNavigator from "./src/navigation/EventsNavigator";
 import VoyageNavigator from "./src/navigation/VoyageNavigator";
+import AlliancePlusScreen from "./src/screens/AlliancePlusScreen";
 import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
 import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
 import { LockKeyhole, X } from "lucide-react-native";
@@ -287,6 +288,9 @@ function RootNavigator() {
       )}
       {user && hasCompletedProfile && (
         <Stack.Screen name="Checkout" component={CheckoutScreen} />
+      )}
+      {user && hasCompletedProfile && (
+        <Stack.Screen name="AlliancePlus" component={AlliancePlusScreen} />
       )}
     </Stack.Navigator>
   );

@@ -60,5 +60,6 @@ export type RootStackParamList = {
   CompleteProfile: undefined;
   Main: NavigatorScreenParams<MainTabParamList>;
   Checkout: undefined;
+  AlliancePlus: undefined;
   MyActivity: { activity: "listings" | "services" | "alerts" };
 };
