@@ -6,7 +6,14 @@ process.env.DATABASE_URL ??= "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET ??= "test-secret-that-is-long-enough-for-jwt";
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
 
-const { blockUser, listPostComments, requestAlliance } = await import("../controllers/socialController.js");
+const {
+  blockUser,
+  createCommunityAlliance,
+  getAllyCounter,
+  listPostComments,
+  requestAlliance,
+  updateCommunityAllianceStatus,
+} = await import("../controllers/socialController.js");
 const { pool } = await import("../db/pool.js");
 
 const createResponse = () => ({
@@ -45,6 +52,31 @@ test("repeated alliance request preserves an existing allied status", async (con
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.payload, { status: "ALLIED" });
   assert.equal(statements.length, 2);
+});
+
+test("ally counter returns unique allies and directional pending invitations", async (context) => {
+  const userId = "1b490a29-02dd-44ad-8c9f-81d9cadc0001";
+  let queryValues;
+  context.mock.method(pool, "query", async (_statement, values) => {
+    queryValues = values;
+    return {
+      rowCount: 1,
+      rows: [{ allies: 3, received_invitations: 2, pending_invitations: 1 }],
+    };
+  });
+  const response = createResponse();
+
+  await getAllyCounter(
+    { auth: { userId } },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.payload, {
+    counters: { allies: 3, received_invitations: 2, pending_invitations: 1 },
+  });
+  assert.deepEqual(queryValues, [userId]);
 });
 
 test("blocking validates the account and stores an idempotent block", async (context) => {
@@ -121,6 +153,85 @@ test("comment listing returns one page and a continuation offset", async (contex
     6,
     "1b490a29-02dd-44ad-8c9f-81d9cadc0001",
   ]);
+});
+
+test("community alliance creation stores a valid payload and creator membership", async (context) => {
+  const statements = [];
+  context.mock.method(pool, "query", async (statement, values) => {
+    statements.push({ statement, values });
+    if (statement.includes("INSERT INTO community_alliances")) {
+      return {
+        rowCount: 1,
+        rows: [{
+          id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+          title: "Nettoyage du square",
+          category: "ENTRAIDE",
+          status: "PENDING",
+          creator_id: values[3],
+          description: "Nettoyage de la place du quartier",
+          objective: "Rendre l’espace plus propre",
+          location: null,
+          due_date: null,
+          participants: [values[3]],
+        }],
+      };
+    }
+    if (statement.includes("INSERT INTO community_alliance_members")) {
+      return { rowCount: 1, rows: [] };
+    }
+    return { rowCount: 0, rows: [] };
+  });
+
+  const response = createResponse();
+
+  await createCommunityAlliance(
+    {
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: {
+        title: "Nettoyage du square",
+        description: "Nettoyage de la place du quartier",
+        category: "ENTRAIDE",
+        objective: "Rendre l’espace plus propre",
+      },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.payload.alliance.title, "Nettoyage du square");
+  assert.deepEqual(response.payload.alliance.participants, ["1b490a29-02dd-44ad-8c9f-81d9cadc0001"]);
+  assert.match(statements[0].statement, /INSERT INTO community_alliances/i);
+});
+
+test("community alliance completion requires a real validation proof", async (context) => {
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [{
+      id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+      creator_id: "1b490a29-02dd-44ad-8c9f-81d9cadc0001",
+      status: "IN_PROGRESS",
+      participant_count: 2,
+      validation_note: null,
+      proof_url: null,
+      completion_confirmations: 1,
+    }],
+  }));
+
+  const response = createResponse();
+
+  await updateCommunityAllianceStatus(
+    {
+      params: { allianceId: "3b490a29-02dd-44ad-8c9f-81d9cadc0003" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: { status: "COMPLETED" },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.payload.error, /validation/i);
 });
 
 test("comment listing rejects invalid pagination parameters", async (context) => {

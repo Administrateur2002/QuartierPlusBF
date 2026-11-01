@@ -5,6 +5,33 @@ const UUID_PATTERN =
 const validId = (value) =>
   typeof value === "string" && UUID_PATTERN.test(value);
 
+const VALID_ALLIANCE_CATEGORIES = new Set([
+  "ENTRAIDE",
+  "COMMERCIAL",
+  "EVENEMENT",
+  "SPORT",
+  "COMMUNAUTE",
+  "AUTRE",
+]);
+const VALID_ALLIANCE_STATUSES = new Set([
+  "PENDING",
+  "ACCEPTED",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "CANCELLED",
+  "DISPUTED",
+]);
+
+const readJsonArray = (value) => {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
 export const requestAlliance = async (request, response, next) => {
   const recipientId = request.params.userId;
   const requesterId = request.auth.userId;
@@ -96,6 +123,177 @@ export const listAllies = async (request, response, next) => {
       [request.auth.userId],
     );
     return response.status(200).json({ allies: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const createCommunityAlliance = async (request, response, next) => {
+  const userId = request.auth.userId;
+  const payload = request.body ?? {};
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  const description = typeof payload.description === "string" ? payload.description.trim() : "";
+  const category = typeof payload.category === "string" ? payload.category.trim().toUpperCase() : "";
+  const objective = typeof payload.objective === "string" ? payload.objective.trim() : "";
+
+  if (!title || !description || !objective) {
+    return response.status(400).json({ error: "Titre, description et objectif sont obligatoires." });
+  }
+  if (!VALID_ALLIANCE_CATEGORIES.has(category)) {
+    return response.status(400).json({ error: "Catégorie d’alliance invalide." });
+  }
+
+  const dueDate = payload.due_date ?? payload.dueDate ?? null;
+  if (dueDate && Number.isNaN(Date.parse(dueDate))) {
+    return response.status(400).json({ error: "Date limite invalide." });
+  }
+
+  const location = typeof payload.location === "string" ? payload.location.trim() || null : null;
+  const participants = [userId];
+  const history = [{
+    action: "created",
+    actor_id: userId,
+    message: "L’alliance a été créée.",
+    created_at: new Date().toISOString(),
+  }];
+  try {
+    const result = await pool.query(
+      `INSERT INTO community_alliances (
+         title, description, category, creator_id, objective, due_date, location,
+         status, participants, history, notifications, participant_count
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8::jsonb, $9::jsonb, $10::jsonb, 1)
+       RETURNING id, title, description, category, creator_id, objective, due_date, location,
+                 status, participants, history, notifications, participant_count`,
+      [
+        title,
+        description,
+        category,
+        userId,
+        objective,
+        dueDate ?? null,
+        location,
+        JSON.stringify(participants),
+        JSON.stringify(history),
+        JSON.stringify([]),
+      ],
+    );
+
+    const alliance = result.rows[0];
+    await pool.query(
+      `INSERT INTO community_alliance_members (alliance_id, user_id, role)
+       VALUES ($1, $2, 'CREATOR')
+       ON CONFLICT (alliance_id, user_id) DO NOTHING`,
+      [alliance.id, userId],
+    );
+
+    return response.status(201).json({
+      alliance: {
+        ...alliance,
+        participants: readJsonArray(alliance.participants),
+        history: readJsonArray(alliance.history),
+        notifications: readJsonArray(alliance.notifications),
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const updateCommunityAllianceStatus = async (request, response, next) => {
+  const allianceId = request.params.allianceId;
+  const userId = request.auth.userId;
+  const nextStatus = typeof request.body?.status === "string"
+    ? request.body.status.trim().toUpperCase()
+    : "";
+
+  if (!validId(allianceId) || !VALID_ALLIANCE_STATUSES.has(nextStatus)) {
+    return response.status(400).json({ error: "Statut d’alliance invalide." });
+  }
+
+  try {
+    const allianceResult = await pool.query(
+      `SELECT id, creator_id, status, participant_count, validation_note, proof_url,
+              completion_confirmations, participants
+       FROM community_alliances
+       WHERE id = $1`,
+      [allianceId],
+    );
+    if (!allianceResult.rowCount) {
+      return response.status(404).json({ error: "Alliance introuvable." });
+    }
+    const alliance = allianceResult.rows[0];
+    const participants = readJsonArray(alliance.participants);
+    const isAuthorized = alliance.creator_id === userId || participants.includes(userId);
+    if (!isAuthorized) {
+      return response.status(403).json({ error: "Vous n’êtes pas participant à cette alliance." });
+    }
+
+    if (nextStatus === "COMPLETED") {
+      const validationNote = typeof request.body?.validation_note === "string"
+        ? request.body.validation_note.trim()
+        : "";
+      const proofUrl = typeof request.body?.proof_url === "string"
+        ? request.body.proof_url.trim()
+        : "";
+      const completionConfirmations = Number(request.body?.completion_confirmations ?? alliance.completion_confirmations ?? 0);
+      const validCompletion = Boolean(validationNote) && Boolean(proofUrl)
+        && Number(alliance.participant_count ?? 1) >= 2
+        && completionConfirmations >= 1;
+      if (!validCompletion) {
+        return response.status(400).json({
+          error: "Validation insuffisante pour clôturer l’alliance : ajoutez une preuve et une confirmation valide.",
+        });
+      }
+    }
+
+    const updated = await pool.query(
+      `UPDATE community_alliances
+       SET status = $1,
+           validation_note = COALESCE($2, validation_note),
+           proof_url = COALESCE($3, proof_url),
+           completion_confirmations = COALESCE($4, completion_confirmations),
+           updated_at = NOW()
+       WHERE id = $5
+       RETURNING id, title, description, category, creator_id, objective, due_date, location,
+                 status, participants, validation_note, proof_url, completion_confirmations, participant_count`,
+      [
+        nextStatus,
+        typeof request.body?.validation_note === "string" ? request.body.validation_note.trim() : null,
+        typeof request.body?.proof_url === "string" ? request.body.proof_url.trim() : null,
+        Number.isInteger(Number(request.body?.completion_confirmations))
+          ? Number(request.body.completion_confirmations)
+          : alliance.completion_confirmations,
+        allianceId,
+      ],
+    );
+
+    return response.status(200).json({ alliance: updated.rows[0] });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const getAllyCounter = async (request, response, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         COUNT(DISTINCT CASE
+           WHEN status = 'ALLIED' THEN CASE
+             WHEN requester_id = $1 THEN recipient_id
+             ELSE requester_id
+           END
+         END)::int AS allies,
+         COUNT(DISTINCT requester_id) FILTER (
+           WHERE status = 'PENDING' AND recipient_id = $1
+         )::int AS received_invitations,
+         COUNT(DISTINCT recipient_id) FILTER (
+           WHERE status = 'PENDING' AND requester_id = $1
+         )::int AS pending_invitations
+       FROM user_alliances
+       WHERE requester_id = $1 OR recipient_id = $1`,
+      [request.auth.userId],
+    );
+    return response.status(200).json({ counters: result.rows[0] });
   } catch (error) {
     return next(error);
   }

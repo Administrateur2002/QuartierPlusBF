@@ -179,6 +179,11 @@ export default function ProfileScreen() {
   );
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [allies, setAllies] = useState<{ id: string; name: string | null }[]>([]);
+  const [allyCounters, setAllyCounters] = useState<{
+    allies: number;
+    received_invitations: number;
+    pending_invitations: number;
+  } | null>(null);
 
   useEffect(
     () => subscribeToTechnicalAvailability(() => setTechnicalStatus(getTechnicalAvailability())),
@@ -249,6 +254,7 @@ export default function ProfileScreen() {
     let active = true;
     if (!user || !API_BASE_URL || isOffline) {
       setAllies([]);
+      setAllyCounters(null);
       return () => {
         active = false;
       };
@@ -274,6 +280,45 @@ export default function ProfileScreen() {
           console.error("Unable to load profile allies:", error);
           setDatabaseError(error instanceof Error ? error.message : "Impossible de charger les alliés.");
         }
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOffline, user]);
+
+  useEffect(() => {
+    let active = true;
+    if (!user || !API_BASE_URL || isOffline) {
+      setAllyCounters(null);
+      return () => {
+        active = false;
+      };
+    }
+    void apiFetch(`${API_BASE_URL}/v1/social/allies/counter`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Impossible de charger le Compteur Allié (HTTP ${response.status}).`);
+        const payload: unknown = await response.json();
+        const counters = isRecord(payload) && isRecord(payload.counters)
+          ? payload.counters
+          : null;
+        if (
+          !counters ||
+          !Number.isSafeInteger(counters.allies) || counters.allies < 0 ||
+          !Number.isSafeInteger(counters.received_invitations) || counters.received_invitations < 0 ||
+          !Number.isSafeInteger(counters.pending_invitations) || counters.pending_invitations < 0
+        ) {
+          throw new Error("Les compteurs d’alliance sont invalides.");
+        }
+        if (active) {
+          setAllyCounters({
+            allies: counters.allies,
+            received_invitations: counters.received_invitations,
+            pending_invitations: counters.pending_invitations,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) console.error("Unable to load ally counters:", error);
       });
     return () => {
       active = false;
@@ -1054,7 +1099,25 @@ export default function ProfileScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Mes alliés · {allies.length}</Text>
+          <Text style={[styles.sectionTitle, { color: colors.text }]}>Compteur Allié</Text>
+          <View style={[styles.settingsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={styles.menuRow}>
+              <User color="#2563eb" size={19} />
+              <Text style={[styles.menuLabel, { color: colors.text }]}>Alliés distincts</Text>
+              <Text style={[styles.menuLabel, { color: colors.text }]}>{allyCounters?.allies ?? "—"}</Text>
+            </View>
+            <View style={styles.menuRow}>
+              <Bell color="#2563eb" size={19} />
+              <Text style={[styles.menuLabel, { color: colors.text }]}>Invitations reçues en attente</Text>
+              <Text style={[styles.menuLabel, { color: colors.text }]}>{allyCounters?.received_invitations ?? "—"}</Text>
+            </View>
+            <View style={styles.menuRow}>
+              <Bell color="#2563eb" size={19} />
+              <Text style={[styles.menuLabel, { color: colors.text }]}>Invitations envoyées en attente</Text>
+              <Text style={[styles.menuLabel, { color: colors.text }]}>{allyCounters?.pending_invitations ?? "—"}</Text>
+            </View>
+          </View>
+          <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 16 }]}>Mes alliés</Text>
           <View style={[styles.settingsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             {allies.length ? allies.map((ally) => (
               <View key={ally.id} style={styles.menuRow}>

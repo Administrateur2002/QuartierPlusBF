@@ -4,8 +4,10 @@ import { authMiddleware } from "../middlewares/authMiddleware.js";
 import {
   acceptAlliance,
   blockUser,
+  createCommunityAlliance,
   createPostComment,
   deletePostComment,
+  getAllyCounter,
   getLocationShare,
   listAllies,
   listBlockedUsers,
@@ -17,6 +19,7 @@ import {
   togglePostLike,
   togglePostCommentLike,
   unblockUser,
+  updateCommunityAllianceStatus,
   updatePostComment,
   updateLocationShare,
 } from "../controllers/socialController.js";
@@ -36,6 +39,9 @@ router.get("/blocked-users", listBlockedUsers);
 router.post("/users/:userId/block", blockUser);
 router.delete("/users/:userId/block", unblockUser);
 router.get("/allies", listAllies);
+router.get("/allies/counter", getAllyCounter);
+router.post("/alliances", createCommunityAlliance);
+router.patch("/alliances/:allianceId/status", updateCommunityAllianceStatus);
 router.post("/alliance/:userId", requestAlliance);
 router.post("/alliance/:userId/accept", acceptAlliance);
 router.delete("/alliance/:userId", removeAlliance);
