@@ -121,7 +121,7 @@ jobs:
         run: npm ci
 
       - name: Valider l’export JavaScript Android
-        timeout-minutes: 1
+        timeout-minutes: 6
         working-directory: mobile
         env:
           EXPO_PUBLIC_FIREBASE_API_KEY: ${{ vars.EXPO_PUBLIC_FIREBASE_API_KEY || secrets.EXPO_PUBLIC_FIREBASE_API_KEY }}

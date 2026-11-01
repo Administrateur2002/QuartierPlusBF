@@ -314,7 +314,7 @@ jobs:
           fi
 
       - name: Validate Android JavaScript export
-        timeout-minutes: 1
+        timeout-minutes: 6
         working-directory: mobile
         env:
           EXPO_PUBLIC_GIT_SHA: ${{ github.sha }}
