@@ -113,8 +113,13 @@ export const createVoyageCompany = async (request, response, next) => {
 export const getMyVoyageCompany = async (request, response, next) => {
   try {
     const companyResult = await pool.query(
-      `SELECT id, owner_id, name, logo_url, rccm_status, ifu_status, license_status
-       FROM voy_companies WHERE owner_id = $1`,
+      `SELECT company.id, company.owner_id, company.name, company.logo_url,
+              company.rccm_status, company.ifu_status, company.license_status,
+              owner.profile_photo_url AS owner_photo_url,
+              owner.badge AS owner_badge
+       FROM voy_companies company
+       JOIN users owner ON owner.id = company.owner_id
+       WHERE company.owner_id = $1`,
       [request.auth.userId],
     );
     const company = companyResult.rows[0] ?? null;

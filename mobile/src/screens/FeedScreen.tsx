@@ -8,6 +8,7 @@ import {
   Bookmark,
   BusFront,
   ChevronRight,
+  Download,
   Heart,
   MapPin,
   MessageCircle,
@@ -45,6 +46,7 @@ import * as MediaLibrary from "expo-media-library";
 import * as SecureStore from "expo-secure-store";
 import NetInfo from "@react-native-community/netinfo";
 import { FlashList } from "@shopify/flash-list";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
@@ -89,6 +91,7 @@ type FeedEntry = {
   category: string;
   price?: string;
   imageUrl?: string;
+  imageUrls?: string[];
   mediaType?: CloudinaryMediaType;
   authorId?: string;
   authorName?: string;
@@ -182,6 +185,19 @@ const normalizePost = (value: unknown): FeedEntry | null => {
   if (!id || !title) return null;
   const free = value.is_free === true || value.isFree === true;
   const price = value.price;
+  const imageUrl =
+    typeof (value.media_url ?? value.image_url) === "string"
+      ? String(value.media_url ?? value.image_url)
+      : undefined;
+  const additionalMedia = Array.isArray(value.additional_media)
+    ? value.additional_media.filter(
+        (url): url is string => typeof url === "string",
+      )
+    : [];
+  const imageUrls =
+    mediaType === "image" && imageUrl
+      ? [imageUrl, ...additionalMedia].slice(0, 10)
+      : undefined;
   return {
     id,
     kind: "post",
@@ -190,10 +206,8 @@ const normalizePost = (value: unknown): FeedEntry | null => {
     location: String(value.neighborhood ?? value.location_name ?? ""),
     createdAt: String(value.created_at ?? value.createdAt ?? ""),
     category: String(value.category ?? "Annonce"),
-    imageUrl:
-      typeof (value.media_url ?? value.image_url) === "string"
-        ? String(value.media_url ?? value.image_url)
-        : undefined,
+    imageUrl,
+    imageUrls,
     mediaType,
     authorId: typeof value.author_id === "string" ? value.author_id : undefined,
     authorName:
@@ -302,12 +316,16 @@ export default function FeedScreen() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const [carouselIndices, setCarouselIndices] = useState<Record<string, number>>({});
+  const [expandedCaptionPostId, setExpandedCaptionPostId] = useState<string | null>(null);
   const [feedPageHeight, setFeedPageHeight] = useState(Math.max(320, windowHeight * 0.5));
   const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
 
   useEffect(() => {
     cardLayoutsRef.current = [];
     setActiveMediaIndex(0);
+    setCarouselIndices({});
+    setExpandedCaptionPostId(null);
   }, [feedFilter, showSavedOnly]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -319,6 +337,7 @@ export default function FeedScreen() {
     "closed" | "menu" | "preview"
   >("closed");
   const [draftMedia, setDraftMedia] = useState<DraftMedia | null>(null);
+  const [additionalDraftMedia, setAdditionalDraftMedia] = useState<DraftMedia[]>([]);
   const [draftCaption, setDraftCaption] = useState("");
   const [draftScope, setDraftScope] = useState<FeedScope>("country");
   const [isPublishing, setIsPublishing] = useState(false);
@@ -1430,15 +1449,18 @@ export default function FeedScreen() {
     );
   };
 
-  const downloadMedia = async (entry: FeedEntry) => {
-    if (!entry.imageUrl) return;
+  const downloadMedia = async (
+    entry: FeedEntry,
+    mediaUrl = entry.imageUrl,
+  ) => {
+    if (!mediaUrl) return;
     try {
       const permission = await MediaLibrary.requestPermissionsAsync();
       if (!permission.granted) {
         throw new Error("Autorisez l’accès à la galerie pour enregistrer ce média.");
       }
       const localFile = await File.downloadFileAsync(
-        entry.imageUrl,
+        mediaUrl,
         new File(Paths.cache, `quartierplus-${entry.id}.${entry.mediaType === "video" ? "mp4" : "jpg"}`),
       );
       await MediaLibrary.saveToLibraryAsync(localFile.uri);
@@ -1464,6 +1486,7 @@ export default function FeedScreen() {
       return;
     }
     setDraftMedia(null);
+    setAdditionalDraftMedia([]);
     setDraftCaption("");
     setDraftScope(scope);
     setComposerStage("menu");
@@ -1496,14 +1519,17 @@ export default function FeedScreen() {
             })
           : await ImagePicker.launchImageLibraryAsync({
               mediaTypes: resourceType === "image" ? ["images"] : ["videos"],
-              allowsMultipleSelection: false,
+              allowsMultipleSelection: resourceType === "image",
+              selectionLimit: resourceType === "image" ? 10 : 1,
               quality: 1,
             });
       if (selection.canceled) return;
-      const asset = selection.assets[0];
-      if (!asset?.uri) {
+      const selectedAssets =
+        resourceType === "image" ? selection.assets.slice(0, 10) : selection.assets.slice(0, 1);
+      if (!selectedAssets.length || selectedAssets.some((asset) => !asset.uri)) {
         throw new Error("Le média sélectionné est indisponible.");
       }
+      const asset = selectedAssets[0];
       const duration =
         typeof asset.duration === "number" ? asset.duration / 1000 : undefined;
       let trimVideo = false;
@@ -1527,52 +1553,57 @@ export default function FeedScreen() {
         });
         if (!trimVideo) return;
       }
-      let mediaUri = asset.uri;
-      let mimeType = asset.mimeType ?? "video/mp4";
-      let filename =
-        asset.fileName ??
-        `quartierplus-${Date.now()}.${resourceType === "image" ? "jpg" : "mp4"}`;
-      if (resourceType === "image") {
-        const sourceSize = new File(asset.uri).size;
-        if (sourceSize > MAX_PHOTO_BYTES) {
-          throw new Error("La photo doit peser 10 Mo maximum.");
+      const preparedAssets: DraftMedia[] = [];
+      for (const [index, selectedAsset] of selectedAssets.entries()) {
+        let mediaUri = selectedAsset.uri;
+        let mimeType = selectedAsset.mimeType ?? "video/mp4";
+        let filename =
+          selectedAsset.fileName ??
+          `quartierplus-${Date.now()}-${index}.${resourceType === "image" ? "jpg" : "mp4"}`;
+        if (resourceType === "image") {
+          const sourceSize = new File(selectedAsset.uri).size;
+          if (sourceSize > MAX_PHOTO_BYTES) {
+            throw new Error("Chaque photo doit peser 10 Mo maximum.");
+          }
+          const resizeActions =
+            Math.max(selectedAsset.width, selectedAsset.height) > MAX_PHOTO_DIMENSION
+              ? [
+                  {
+                    resize:
+                      selectedAsset.width >= selectedAsset.height
+                        ? { width: MAX_PHOTO_DIMENSION }
+                        : { height: MAX_PHOTO_DIMENSION },
+                  },
+                ]
+              : [];
+          const optimized = await ImageManipulator.manipulateAsync(
+            selectedAsset.uri,
+            resizeActions,
+            {
+              compress: 0.82,
+              format: ImageManipulator.SaveFormat.JPEG,
+            },
+          );
+          mediaUri = optimized.uri;
+          mimeType = "image/jpeg";
+          filename = `quartierplus-${Date.now()}-${index}.jpg`;
         }
-        const resizeActions =
-          Math.max(asset.width, asset.height) > MAX_PHOTO_DIMENSION
-            ? [
-                {
-                  resize:
-                    asset.width >= asset.height
-                      ? { width: MAX_PHOTO_DIMENSION }
-                      : { height: MAX_PHOTO_DIMENSION },
-                },
-              ]
-            : [];
-        const optimized = await ImageManipulator.manipulateAsync(
-          asset.uri,
-          resizeActions,
-          {
-            compress: 0.82,
-            format: ImageManipulator.SaveFormat.JPEG,
-          },
-        );
-        mediaUri = optimized.uri;
-        mimeType = "image/jpeg";
-        filename = `quartierplus-${Date.now()}.jpg`;
+        const size = new File(mediaUri).size;
+        if (resourceType === "image" && size > MAX_PHOTO_BYTES) {
+          throw new Error("Une photo optimisée dépasse la limite de 10 Mo.");
+        }
+        preparedAssets.push({
+          uri: mediaUri,
+          filename,
+          mimeType,
+          resourceType,
+          size,
+          duration: index === 0 ? duration : undefined,
+          trimVideo,
+        });
       }
-      const size = new File(mediaUri).size;
-      if (resourceType === "image" && size > MAX_PHOTO_BYTES) {
-        throw new Error("La photo optimisée dépasse la limite de 10 Mo.");
-      }
-      setDraftMedia({
-        uri: mediaUri,
-        filename,
-        mimeType,
-        resourceType,
-        size,
-        duration,
-        trimVideo,
-      });
+      setDraftMedia(preparedAssets[0]);
+      setAdditionalDraftMedia(preparedAssets.slice(1));
       setComposerStage("preview");
     } catch (selectionError) {
       Alert.alert(
@@ -1591,6 +1622,7 @@ export default function FeedScreen() {
     setUploadProgress(0);
     setComposerStage("closed");
     setDraftMedia(null);
+    setAdditionalDraftMedia([]);
   };
 
   const publishMedia = async () => {
@@ -1635,6 +1667,7 @@ export default function FeedScreen() {
         });
         setComposerStage("closed");
         setDraftMedia(null);
+        setAdditionalDraftMedia([]);
         setDraftCaption("");
         Alert.alert(
           "Publication mise en attente",
@@ -1793,6 +1826,76 @@ export default function FeedScreen() {
           },
         },
       );
+      const uploadedAdditionalMedia: string[] = [];
+      for (const [index, photo] of additionalDraftMedia.entries()) {
+        const additionalSignatureResponse = await apiFetch(
+          `${API_BASE_URL}/v1/media/sign`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ media_type: "image", trim_video: false }),
+            signal: controller.signal,
+          },
+        );
+        if (!additionalSignatureResponse.ok) {
+          const payload: unknown = await additionalSignatureResponse.json();
+          throw new PublicationApiError(
+            isRecord(payload) && typeof payload.reason === "string"
+              ? payload.reason
+              : isRecord(payload) && typeof payload.error === "string"
+                ? payload.error
+                : `Impossible de préparer la photo ${index + 2} (HTTP ${additionalSignatureResponse.status}).`,
+          );
+        }
+        const additionalSignaturePayload: unknown =
+          await additionalSignatureResponse.json();
+        if (
+          !isRecord(additionalSignaturePayload) ||
+          typeof additionalSignaturePayload.apiKey !== "string" ||
+          typeof additionalSignaturePayload.cloudName !== "string" ||
+          typeof additionalSignaturePayload.folder !== "string" ||
+          typeof additionalSignaturePayload.public_id !== "string" ||
+          typeof additionalSignaturePayload.signature !== "string" ||
+          typeof additionalSignaturePayload.timestamp !== "number" ||
+          typeof additionalSignaturePayload.max_bytes !== "number" ||
+          additionalSignaturePayload.resource_type !== "image" ||
+          additionalSignaturePayload.trim_video !== false ||
+          additionalSignaturePayload.max_duration_seconds !== null
+        ) {
+          throw new Error("La signature de photo supplémentaire est invalide.");
+        }
+        const additionalSignature =
+          additionalSignaturePayload as MediaSignature;
+        if (
+          photo.size >
+          Math.min(MAX_PHOTO_BYTES, additionalSignature.max_bytes)
+        ) {
+          throw new PublicationApiError(
+            `La photo ${index + 2} dépasse la limite de taille autorisée.`,
+          );
+        }
+        const uploadedPhoto = await uploadCloudinaryMedia(
+          additionalSignature,
+          {
+            uri: photo.uri,
+            name: photo.filename,
+            type: photo.mimeType,
+            size: photo.size,
+          },
+          {
+            signal: controller.signal,
+            onProgress: (progress) => {
+              const overallProgress =
+                90 +
+                Math.round(
+                  ((index + progress / 100) / additionalDraftMedia.length) * 4,
+                );
+              setUploadProgress(overallProgress);
+            },
+          },
+        );
+        uploadedAdditionalMedia.push(uploadedPhoto.publicId);
+      }
       setUploadProgress(94);
       postRequestStarted = true;
       const postResponse = await apiFetch(`${API_BASE_URL}/v1/posts`, {
@@ -1804,6 +1907,9 @@ export default function FeedScreen() {
           media_type: draftMedia.resourceType,
           media_public_id: uploaded.publicId,
           trim_video: draftMedia.trimVideo,
+          ...(uploadedAdditionalMedia.length
+            ? { additional_media: uploadedAdditionalMedia }
+            : {}),
           ...(position
             ? {
                 latitude: position.latitude,
@@ -1826,6 +1932,7 @@ export default function FeedScreen() {
       setUploadProgress(100);
       setComposerStage("closed");
       setDraftMedia(null);
+      setAdditionalDraftMedia([]);
       setDraftCaption("");
       refresh();
     } catch (publishError) {
@@ -1868,6 +1975,7 @@ export default function FeedScreen() {
         }
         setComposerStage("closed");
         setDraftMedia(null);
+        setAdditionalDraftMedia([]);
         setDraftCaption("");
         refresh();
         const uploadReason =
@@ -2096,7 +2204,7 @@ export default function FeedScreen() {
                 data={visibleEntries}
                 drawDistance={Math.min(800, windowHeight * 1.5)}
                 contentContainerStyle={styles.immersiveList}
-                extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}`}
+                extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}:${JSON.stringify(carouselIndices)}:${expandedCaptionPostId}`}
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
                 onEndReached={() => void loadMore()}
@@ -2141,7 +2249,75 @@ export default function FeedScreen() {
                       !entry.imageUrl && styles.immersiveFallback,
                     ]}
                   >
-                    {entry.imageUrl ? (
+                    {entry.imageUrl &&
+                    entry.mediaType === "image" &&
+                    (entry.imageUrls?.length ?? 0) > 1 ? (
+                      <View style={StyleSheet.absoluteFill}>
+                        <ScrollView
+                          horizontal
+                          nestedScrollEnabled
+                          onMomentumScrollEnd={(event) => {
+                            const nextIndex = Math.round(
+                              event.nativeEvent.contentOffset.x / pageWidth,
+                            );
+                            setCarouselIndices((current) => ({
+                              ...current,
+                              [entry.id]: nextIndex,
+                            }));
+                          }}
+                          pagingEnabled
+                          contentOffset={{
+                            x: (carouselIndices[entry.id] ?? 0) * pageWidth,
+                            y: 0,
+                          }}
+                          showsHorizontalScrollIndicator={false}
+                          style={StyleSheet.absoluteFill}
+                        >
+                          {entry.imageUrls.map((uri, mediaIndex) => (
+                            <View
+                              key={`${entry.id}:photo:${mediaIndex}`}
+                              style={{ width: pageWidth, height: feedPageHeight }}
+                            >
+                              <FeedMedia
+                                active={
+                                  option.id === scope &&
+                                  index === activeMediaIndex &&
+                                  mediaIndex === (carouselIndices[entry.id] ?? 0)
+                                }
+                                autoPlay={!wifiOnlyVideoAutoplay || isWifiConnected}
+                                creatorName={entry.authorName}
+                                height={feedPageHeight}
+                                immersive
+                                lowDataMode={lowDataMode}
+                                onDoubleTap={() => {
+                                  if (!entry.likedByMe) void likePost(entry);
+                                }}
+                                onLongPress={() => setActionPost(entry)}
+                                onTripleTap={() => setActionPost(entry)}
+                                type="image"
+                                uri={uri}
+                              />
+                            </View>
+                          ))}
+                        </ScrollView>
+                        <View
+                          accessibilityLabel={`Photo ${(carouselIndices[entry.id] ?? 0) + 1} sur ${entry.imageUrls.length}`}
+                          pointerEvents="none"
+                          style={styles.carouselDots}
+                        >
+                          {entry.imageUrls.map((_, mediaIndex) => (
+                            <View
+                              key={`${entry.id}:dot:${mediaIndex}`}
+                              style={[
+                                styles.carouselDot,
+                                mediaIndex === (carouselIndices[entry.id] ?? 0) &&
+                                  styles.carouselDotActive,
+                              ]}
+                            />
+                          ))}
+                        </View>
+                      </View>
+                    ) : entry.imageUrl ? (
                       <FeedMedia
                         active={option.id === scope && index === activeMediaIndex}
                         autoPlay={!wifiOnlyVideoAutoplay || isWifiConnected}
@@ -2168,6 +2344,32 @@ export default function FeedScreen() {
                         type={entry.mediaType ?? "image"}
                         uri={entry.imageUrl}
                       />
+                    ) : null}
+                    {!entry.imageUrl && entry.kind === "post" ? (
+                      <Svg
+                        height={feedPageHeight}
+                        style={StyleSheet.absoluteFill}
+                        width={pageWidth}
+                      >
+                        <Defs>
+                          <LinearGradient
+                            id={`feed-text-post-${option.id}-${entry.id}`}
+                            x1="0%"
+                            x2="100%"
+                            y1="0%"
+                            y2="100%"
+                          >
+                            <Stop offset="0%" stopColor="#0f766e" />
+                            <Stop offset="52%" stopColor="#1e3a8a" />
+                            <Stop offset="100%" stopColor="#312e81" />
+                          </LinearGradient>
+                        </Defs>
+                        <Rect
+                          fill={`url(#feed-text-post-${option.id}-${entry.id})`}
+                          height="100%"
+                          width="100%"
+                        />
+                      </Svg>
                     ) : null}
                     <View style={styles.immersiveHeader}>
                       {entry.kind === "post" ? (
@@ -2198,7 +2400,37 @@ export default function FeedScreen() {
                         <Text style={styles.immersiveTitle}>{entry.title}</Text>
                       ) : null}
                       {entry.body ? (
-                        <Text numberOfLines={4} style={styles.immersiveBody}>{entry.body}</Text>
+                        <Pressable
+                          accessibilityLabel={
+                            expandedCaptionPostId === entry.id
+                              ? "Réduire la légende"
+                              : "Déplier la légende"
+                          }
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            expanded: expandedCaptionPostId === entry.id,
+                          }}
+                          disabled={entry.body.length <= 160}
+                          onPress={() =>
+                            setExpandedCaptionPostId((current) =>
+                              current === entry.id ? null : entry.id,
+                            )
+                          }
+                        >
+                          <Text
+                            numberOfLines={
+                              expandedCaptionPostId === entry.id ? undefined : 4
+                            }
+                            style={styles.immersiveBody}
+                          >
+                            {entry.body}
+                          </Text>
+                          {entry.body.length > 160 ? (
+                            <Text style={styles.expandCaptionText}>
+                              {expandedCaptionPostId === entry.id ? "Réduire" : "Plus"}
+                            </Text>
+                          ) : null}
+                        </Pressable>
                       ) : null}
                       {entry.location ? (
                         <View style={styles.immersiveLocation}>
@@ -2236,6 +2468,23 @@ export default function FeedScreen() {
                         >
                           <Share2 color="#ffffff" size={24} />
                         </Pressable>
+                        {entry.imageUrl ? (
+                          <Pressable
+                            accessibilityLabel={`Télécharger ${entry.mediaType === "video" ? "la vidéo" : "la photo"}`}
+                            accessibilityRole="button"
+                            onPress={() =>
+                              void downloadMedia(
+                                entry,
+                                entry.imageUrls?.[
+                                  carouselIndices[entry.id] ?? 0
+                                ] ?? entry.imageUrl,
+                              )
+                            }
+                            style={styles.immersiveAction}
+                          >
+                            <Download color="#ffffff" size={23} />
+                          </Pressable>
+                        ) : null}
                         <Pressable
                           accessibilityLabel={savedPostIds.includes(entry.id) ? "Retirer des favoris" : "Enregistrer dans les favoris"}
                           accessibilityRole="button"
@@ -2253,7 +2502,11 @@ export default function FeedScreen() {
                         >
                           <MoreHorizontal color="#ffffff" size={25} />
                         </Pressable>
-                        {entry.authorId && entry.authorId !== user?.id ? (
+                        {entry.authorId === user?.id ? (
+                          <View accessibilityLabel="Votre publication" style={styles.immersiveRallyButton}>
+                            <Text style={styles.immersiveRallyText}>Vous</Text>
+                          </View>
+                        ) : entry.authorId ? (
                           <Pressable
                             accessibilityLabel={
                               entry.authorIsAlly
@@ -2373,6 +2626,27 @@ export default function FeedScreen() {
                     source={{ uri: draftMedia.uri }}
                     style={styles.photoPreview}
                   />
+                ) : null}
+                {additionalDraftMedia.length > 0 ? (
+                  <View style={styles.additionalPhotoPreview}>
+                    <Text style={styles.composerHelp}>
+                      {additionalDraftMedia.length + 1} photos · faites défiler pour les voir
+                    </Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.additionalPhotoList}
+                    >
+                      {additionalDraftMedia.map((photo, index) => (
+                        <Image
+                          accessibilityLabel={`Aperçu de la photo ${index + 2}`}
+                          key={`${photo.uri}:${index}`}
+                          source={{ uri: photo.uri }}
+                          style={styles.additionalPhotoThumbnail}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
                 ) : null}
                 {draftMedia?.resourceType === "video" ? (
                   <View style={styles.photoPreview}>
@@ -3138,6 +3412,32 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0,0,0,0.7)",
     textShadowRadius: 5,
   },
+  expandCaptionText: {
+    color: "#bfdbfe",
+    fontSize: 12,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  carouselDots: {
+    alignItems: "center",
+    bottom: 148,
+    flexDirection: "row",
+    gap: 5,
+    justifyContent: "center",
+    left: 0,
+    position: "absolute",
+    right: 0,
+  },
+  carouselDot: {
+    backgroundColor: "rgba(255,255,255,0.55)",
+    borderRadius: 4,
+    height: 6,
+    width: 6,
+  },
+  carouselDotActive: {
+    backgroundColor: "#ffffff",
+    width: 16,
+  },
   immersiveLocation: { alignItems: "center", flexDirection: "row", gap: 5 },
   immersiveLocationText: { color: "#ffffff", fontSize: 12, fontWeight: "600" },
   immersiveActions: {
@@ -3356,6 +3656,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     height: 210,
     width: "100%",
+  },
+  additionalPhotoPreview: { gap: 5 },
+  additionalPhotoList: { gap: 7, paddingVertical: 2 },
+  additionalPhotoThumbnail: {
+    borderRadius: 8,
+    height: 58,
+    width: 58,
   },
   captionInput: {
     borderColor: "#cbd5e1",

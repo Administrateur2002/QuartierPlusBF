@@ -249,6 +249,7 @@ export const createPost = async (request, response, next) => {
   const scope = request.body?.scope;
   const mediaType = request.body?.media_type;
   const hasMedia = mediaType !== null && mediaType !== undefined;
+  const additionalMediaIds = request.body?.additional_media ?? [];
   const caption =
     typeof request.body?.caption === "string" ? request.body.caption.trim() : "";
   const coordinates = parseCoordinates(
@@ -260,6 +261,29 @@ export const createPost = async (request, response, next) => {
   }
   if (hasMedia && mediaType !== "image" && mediaType !== "video") {
     return response.status(400).json({ error: "Type de média invalide." });
+  }
+  if (
+    !Array.isArray(additionalMediaIds) ||
+    additionalMediaIds.length > 9 ||
+    additionalMediaIds.some(
+      (mediaPublicId) =>
+        typeof mediaPublicId !== "string" || mediaPublicId.length > 255,
+    )
+  ) {
+    return response.status(400).json({ error: "Les photos supplémentaires sont invalides." });
+  }
+  if (additionalMediaIds.length > 0 && mediaType !== "image") {
+    return response.status(400).json({
+      error: "Un carrousel ne peut contenir que des photos.",
+    });
+  }
+  if (
+    new Set([request.body?.media_public_id, ...additionalMediaIds]).size !==
+    additionalMediaIds.length + 1
+  ) {
+    return response.status(400).json({
+      error: "Une même photo ne peut pas apparaître plusieurs fois.",
+    });
   }
   if (request.body?.trim_video === true && mediaType !== "video") {
     return response.status(400).json({ error: "Le découpage est réservé aux vidéos." });
@@ -298,6 +322,15 @@ export const createPost = async (request, response, next) => {
         )
       : null;
     if (media?.error) return response.status(400).json({ error: media.error });
+    const additionalMedia = await Promise.all(
+      additionalMediaIds.map((mediaPublicId) =>
+        getVerifiedAsset(user.id, mediaPublicId, "image"),
+      ),
+    );
+    const invalidAdditionalMedia = additionalMedia.find((item) => item.error);
+    if (invalidAdditionalMedia) {
+      return response.status(400).json({ error: invalidAdditionalMedia.error });
+    }
     const roundedPosition = coordinates
       ? roundCoordinatesTo200mGrid(coordinates)
       : null;
@@ -358,6 +391,22 @@ export const createPost = async (request, response, next) => {
           media?.duration ?? null,
         ],
       );
+      for (const [index, item] of additionalMedia.entries()) {
+        await client.query(
+          `INSERT INTO post_media_items (
+             post_id, position, media_public_id, media_url, media_format, media_bytes
+           )
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            result.rows[0].id,
+            index + 2,
+            item.asset.public_id,
+            item.asset.secure_url,
+            item.format,
+            item.asset.bytes,
+          ],
+        );
+      }
       await client.query("COMMIT");
       return response.status(201).json({ post: result.rows[0] });
     } catch (error) {
@@ -406,6 +455,11 @@ export const listFeed = async (request, response, next) => {
     const result = await pool.query(
       `SELECT post.id, post.caption, post.scope, post.media_url,
               post.media_type, post.created_at, post.author_id,
+              COALESCE((
+                SELECT json_agg(media.media_url ORDER BY media.position)
+                FROM post_media_items AS media
+                WHERE media.post_id = post.id
+              ), '[]'::json) AS additional_media,
               author.full_name AS author_name,
               author.profile_photo_url AS author_photo_url,
               author.badge AS author_badge,

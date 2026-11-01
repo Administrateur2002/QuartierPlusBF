@@ -73,6 +73,7 @@ export type RootStackParamList = {
       }
     | undefined;
   AlliancePlus: undefined;
+  AlliancePeople: undefined;
   MyActivity: { activity: "listings" | "services" | "alerts" };
   CommerceGrowth: undefined;
 };

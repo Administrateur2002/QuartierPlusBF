@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import { Image } from "expo-image";
 
 type Props = {
   name?: string | null;
@@ -52,6 +53,8 @@ export default function ProfileAvatar({
         >
           {photoUrl && !imageFailed ? (
             <Image
+              cachePolicy="memory-disk"
+              contentFit="cover"
               onError={() => setImageFailed(true)}
               source={{ uri: photoUrl }}
               style={{ height: imageSize, width: imageSize }}

@@ -9,7 +9,10 @@ process.env.DOTENV_CONFIG_PATH = "/dev/null";
 const {
   blockUser,
   createCommunityAlliance,
+  declineAlliance,
   getAllyCounter,
+  listAlliancePeople,
+  listAllianceRequests,
   listPostComments,
   requestAlliance,
   updateCommunityAllianceStatus,
@@ -77,6 +80,86 @@ test("ally counter returns unique allies and directional pending invitations", a
     counters: { allies: 3, received_invitations: 2, pending_invitations: 1 },
   });
   assert.deepEqual(queryValues, [userId]);
+});
+
+test("people search filters by neighborhood, name, or the exact phone number", async (context) => {
+  let queryValues;
+  let statement;
+  context.mock.method(pool, "query", async (sql, values) => {
+    statement = sql;
+    queryValues = values;
+    return { rowCount: 0, rows: [] };
+  });
+  const response = createResponse();
+  await listAlliancePeople(
+    { query: { query: "Awa" }, auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" } },
+    response,
+    (error) => { throw error; },
+  );
+  assert.equal(response.statusCode, 200);
+  assert.match(statement, /person\.neighborhood/);
+  assert.match(statement, /person\.full_name ILIKE/);
+  assert.match(statement, /person\.phone_e164 =/);
+  assert.equal(queryValues[1], "Awa");
+  assert.equal(queryValues[3], null);
+});
+
+test("received alliance requests can be listed and declined", async (context) => {
+  const statements = [];
+  context.mock.method(pool, "query", async (statement, values) => {
+    statements.push({ statement, values });
+    return { rowCount: 1, rows: [{ id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002", name: "Awa" }] };
+  });
+  const listResponse = createResponse();
+  await listAllianceRequests(
+    { auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" } },
+    listResponse,
+    (error) => { throw error; },
+  );
+  assert.equal(listResponse.payload.requests[0].name, "Awa");
+
+  const declineResponse = createResponse();
+  await declineAlliance(
+    {
+      params: { userId: "2b490a29-02dd-44ad-8c9f-81d9cadc0002" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+    },
+    declineResponse,
+    (error) => { throw error; },
+  );
+  assert.deepEqual(declineResponse.payload, { status: "DECLINED" });
+  assert.match(statements[1].statement, /status = 'PENDING'/);
+});
+
+test("new alliance requests notify the recipient's registered devices", async (context) => {
+  const statements = [];
+  context.mock.method(pool, "query", async (statement) => {
+    statements.push(statement);
+    if (statement.includes("SELECT id FROM users")) {
+      return { rowCount: 1, rows: [{ id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002" }] };
+    }
+    if (statement.includes("SELECT status FROM user_alliances")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (statement.includes("INSERT INTO user_alliances")) {
+      return { rowCount: 1, rows: [{ recipient_id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002" }] };
+    }
+    if (statement.includes("SELECT token FROM push_tokens")) {
+      return { rowCount: 0, rows: [] };
+    }
+    throw new Error("Unexpected query.");
+  });
+  const response = createResponse();
+  await requestAlliance(
+    {
+      params: { userId: "2b490a29-02dd-44ad-8c9f-81d9cadc0002" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+    },
+    response,
+    (error) => { throw error; },
+  );
+  assert.equal(response.statusCode, 201);
+  assert.ok(statements.some((statement) => statement.includes("push_tokens")));
 });
 
 test("blocking validates the account and stores an idempotent block", async (context) => {

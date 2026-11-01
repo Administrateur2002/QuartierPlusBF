@@ -7,6 +7,7 @@ import * as Sharing from "expo-sharing";
 import api, { API_BASE_URL, getStoredAuthToken } from "../../services/api";
 import { getApiErrorMessage } from "../../services/apiError";
 import type { VoyageStackParamList } from "../../navigation/types";
+import ProfileAvatar from "../../components/ProfileAvatar";
 
 const CITIES = [
   "Banfora",
@@ -37,7 +38,13 @@ type CompanyTrip = {
   tickets_pending: number;
   sales_total: number | string;
 };
-type Company = { id: string; name: string; logo_url: string | null };
+type Company = {
+  id: string;
+  name: string;
+  logo_url: string | null;
+  owner_photo_url: string | null;
+  owner_badge: string | null;
+};
 type CompanyResponse = {
   company: Company | null;
   routes: CompanyRoute[];
@@ -223,6 +230,12 @@ export default function VoyageCompanyScreen() {
         <>
           <View style={styles.card}>
             <View style={styles.companyHeader}>
+              <ProfileAvatar
+                name={company.name}
+                photoUrl={company.owner_photo_url}
+                size={54}
+                isProVerified={company.owner_badge === "Commerçant Certifié"}
+              />
               {company.logo_url ? <Image source={{ uri: company.logo_url }} style={styles.logo} /> : null}
               <View style={styles.companyInfo}>
                 <Text style={styles.heading}>{company.name}</Text>

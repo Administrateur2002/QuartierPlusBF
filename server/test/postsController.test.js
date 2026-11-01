@@ -315,6 +315,93 @@ test("photo publication stores the returned folder-prefixed public ID and secure
   assert.equal(insertValues[7], secureUrl);
 });
 
+test("photo publication verifies and stores additional carousel photos", async (context) => {
+  const primaryPublicId = `${USER_ID}_primary`;
+  const secondPublicId = `${USER_ID}_second`;
+  const insertedItems = [];
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async (input) => {
+    const publicId = decodeURIComponent(new URL(input).pathname.split("/").at(-1));
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          public_id: publicId,
+          secure_url: `https://res.cloudinary.com/quartierplus-test/image/upload/${publicId}.jpg`,
+          format: "jpg",
+          bytes: 120_000,
+          resource_type: "image",
+        };
+      },
+    };
+  });
+  const transaction = createTransactionClient({
+    query(statement, values) {
+      if (statement.includes("INSERT INTO post_media_items")) {
+        insertedItems.push(values);
+      }
+      return undefined;
+    },
+  });
+  context.mock.method(pool, "connect", async () => transaction);
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "image",
+        media_public_id: primaryPublicId,
+        additional_media: [secondPublicId],
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(insertedItems, [
+    [
+      POST_ID,
+      2,
+      secondPublicId,
+      `https://res.cloudinary.com/quartierplus-test/image/upload/${secondPublicId}.jpg`,
+      "jpg",
+      120_000,
+    ],
+  ]);
+});
+
+test("server rejects additional carousel photos on video posts", async () => {
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "video",
+        media_public_id: `${USER_ID}_video`,
+        additional_media: [`${USER_ID}_photo`],
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.payload.error, /carrousel/);
+});
+
 test("text-only publication stores null media fields when upload is unavailable", async (context) => {
   let insertValues;
   context.mock.method(pool, "query", async () => ({

@@ -203,7 +203,12 @@ export default function ProfileScreen() {
     getServerHealth,
   );
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-  const [allies, setAllies] = useState<{ id: string; name: string | null }[]>([]);
+  const [allies, setAllies] = useState<{
+    id: string;
+    name: string | null;
+    profile_photo_url: string | null;
+    badge: string | null;
+  }[]>([]);
   const [allyCounters, setAllyCounters] = useState<{
     allies: number;
     received_invitations: number;
@@ -293,10 +298,17 @@ export default function ProfileScreen() {
         }
         if (active) {
           setAllies(payload.allies.filter(
-            (ally): ally is { id: string; name: string | null } =>
-              isRecord(ally) &&
-              typeof ally.id === "string" &&
-              (ally.name === null || typeof ally.name === "string"),
+          (ally): ally is {
+            id: string;
+            name: string | null;
+            profile_photo_url: string | null;
+            badge: string | null;
+          } =>
+            isRecord(ally) &&
+            typeof ally.id === "string" &&
+            (ally.name === null || typeof ally.name === "string") &&
+            (ally.profile_photo_url === null || typeof ally.profile_photo_url === "string") &&
+            (ally.badge === null || typeof ally.badge === "string"),
           ));
         }
       })
@@ -1088,6 +1100,9 @@ export default function ProfileScreen() {
                 <Text style={styles.verifiedText}>
                   {profile.role === "relay" ? "Voisin Relais" : "Habitant"}
                 </Text>
+                {profile.isVerified && (
+                  <Text style={styles.verifiedText}>Vérifié</Text>
+                )}
               </View>
             )}
             {profile?.badge && (
@@ -1185,6 +1200,16 @@ export default function ProfileScreen() {
             </Text>
           </View>
           <ChevronRight color="#ffffff" size={19} />
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => navigation.navigate("AlliancePeople")}
+          style={[styles.menuRow, { marginTop: 12, padding: 14, backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}
+        >
+          <User color="#16834f" size={19} />
+          <Text style={[styles.menuLabel, { color: colors.text }]}>Personnes à rallier</Text>
+          <ChevronRight color="#94a3b8" size={18} />
         </Pressable>
 
         <Pressable
@@ -1301,7 +1326,13 @@ export default function ProfileScreen() {
           <View style={[styles.settingsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             {allies.length ? allies.map((ally) => (
               <View key={ally.id} style={styles.menuRow}>
-                <User color="#2563eb" size={19} />
+                <ProfileAvatar
+                  name={ally.name}
+                  photoUrl={ally.profile_photo_url}
+                  size={34}
+                  isAlly
+                  isProVerified={ally.badge === "Commerçant Certifié"}
+                />
                 <Text style={[styles.menuLabel, { color: colors.text }]}>{ally.name || "Voisin allié"}</Text>
                 <CheckCircle2 color="#15803d" size={18} />
               </View>

@@ -12,6 +12,7 @@ import { getQueuedProOrders, submitProOrder, syncQueuedProOrders } from "../../s
 import { requestProDeliveryPermissions, startProDeliveryTracking, stopProDeliveryTracking } from "../../services/proCommerceTracking";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
+import ProfileAvatar from "../../components/ProfileAvatar";
 import { uploadProProductPhoto } from "../../services/uploadProProductPhoto";
 
 type Tier = { min_quantity: number | string; unit_price: number | string };
@@ -34,6 +35,8 @@ type Wholesaler = {
   description: string;
   delivery_zone: string;
   catalog_slug: string;
+  profile_photo_url?: string | null;
+  owner_badge?: string | null;
   rccm_number?: string | null;
   ifu_number?: string | null;
   rccm_status?: string;
@@ -557,6 +560,12 @@ export default function ProCommerceScreen() {
           <>
             {wholesalers.map((wholesaler) => (
               <View key={wholesaler.id} style={[styles.wholesalerRow, { borderBottomColor: colors.border }]}>
+                <ProfileAvatar
+                  name={wholesaler.business_name}
+                  photoUrl={wholesaler.profile_photo_url}
+                  size={42}
+                  isProVerified={wholesaler.owner_badge === "Commerçant Certifié"}
+                />
                 <View style={styles.grow}>
                   <Text style={[styles.rowTitle, { color: colors.text }]}>{wholesaler.business_name}</Text>
                   <Text style={[styles.muted, { color: colors.secondaryText }]}>{wholesaler.delivery_zone}</Text>

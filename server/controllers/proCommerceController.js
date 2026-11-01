@@ -266,20 +266,28 @@ const createReceiptPdf = (order, items) => {
 
 export const getWholesalers = withError(async (_request, response) => {
   const result = await pool.query(
-    `SELECT id, business_name, description, delivery_zone, catalog_slug, created_at
-     FROM pro_wholesalers
-     WHERE is_active = TRUE AND rccm_status = 'VERIFIED' AND ifu_status = 'VERIFIED'
-     ORDER BY business_name`,
+    `SELECT wholesalers.id, wholesalers.business_name, wholesalers.description,
+            wholesalers.delivery_zone, wholesalers.catalog_slug, wholesalers.created_at,
+            users.profile_photo_url, users.badge AS owner_badge
+     FROM pro_wholesalers wholesalers
+     JOIN users ON users.id = wholesalers.user_id
+     WHERE wholesalers.is_active = TRUE AND wholesalers.rccm_status = 'VERIFIED'
+       AND wholesalers.ifu_status = 'VERIFIED'
+     ORDER BY wholesalers.business_name`,
   );
   return response.json({ wholesalers: result.rows });
 });
 
 export const getWholesaler = withError(async (request, response) => {
   const result = await pool.query(
-    `SELECT id, business_name, description, delivery_zone, catalog_slug, created_at
-     FROM pro_wholesalers
-     WHERE (id::text = $1 OR catalog_slug = $1)
-       AND is_active = TRUE AND rccm_status = 'VERIFIED' AND ifu_status = 'VERIFIED'`,
+    `SELECT wholesalers.id, wholesalers.business_name, wholesalers.description,
+            wholesalers.delivery_zone, wholesalers.catalog_slug, wholesalers.created_at,
+            users.profile_photo_url, users.badge AS owner_badge
+     FROM pro_wholesalers wholesalers
+     JOIN users ON users.id = wholesalers.user_id
+     WHERE (wholesalers.id::text = $1 OR wholesalers.catalog_slug = $1)
+       AND wholesalers.is_active = TRUE AND wholesalers.rccm_status = 'VERIFIED'
+       AND wholesalers.ifu_status = 'VERIFIED'`,
     [request.params.wholesalerId],
   );
   if (!result.rows[0]) throw httpError(404, "WHOLESALER_NOT_FOUND", "Grossiste vérifié introuvable.");

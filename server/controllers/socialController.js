@@ -1,4 +1,6 @@
 import { pool } from "../db/pool.js";
+import { sendExpoPushNotifications } from "../services/pushNotifications.js";
+import { normalizePhoneNumberE164 } from "../services/phoneNumber.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -29,6 +31,21 @@ const readJsonArray = (value) => {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+};
+
+const notifyAllianceUser = async (userId, notification) => {
+  try {
+    const tokens = await pool.query(
+      "SELECT token FROM push_tokens WHERE user_id = $1",
+      [userId],
+    );
+    await sendExpoPushNotifications(tokens.rows.map((row) => row.token), {
+      ...notification,
+      data: { type: "alliance", user_id: userId },
+    });
+  } catch (error) {
+    console.error("Unable to send alliance notification:", error);
   }
 };
 
@@ -65,14 +82,25 @@ export const requestAlliance = async (request, response, next) => {
             OR (requester_id = $2 AND recipient_id = $1)`,
         [requesterId, recipientId],
       );
+      await notifyAllianceUser(recipientId, {
+        title: "Nouvel allié",
+        body: "Votre demande d’alliance a été acceptée.",
+      });
       return response.status(200).json({ status: "ALLIED" });
     }
-    await pool.query(
+    const inserted = await pool.query(
       `INSERT INTO user_alliances (requester_id, recipient_id)
        VALUES ($1, $2)
-       ON CONFLICT (requester_id, recipient_id) DO NOTHING`,
+       ON CONFLICT (requester_id, recipient_id) DO NOTHING
+       RETURNING recipient_id`,
       [requesterId, recipientId],
     );
+    if (inserted.rowCount) {
+      await notifyAllianceUser(recipientId, {
+        title: "Demande d’alliance",
+        body: "Une personne souhaite se rallier à vous.",
+      });
+    }
     return response.status(201).json({ status: "PENDING" });
   } catch (error) {
     return next(error);
@@ -102,6 +130,10 @@ export const acceptAlliance = async (request, response, next) => {
        DO UPDATE SET status = 'ALLIED', updated_at = NOW()`,
       [recipientId, requesterId],
     );
+    await notifyAllianceUser(requesterId, {
+      title: "Nouvel allié",
+      body: "Votre demande d’alliance a été acceptée.",
+    });
     return response.status(200).json({ status: "ALLIED" });
   } catch (error) {
     return next(error);
@@ -125,6 +157,93 @@ export const listAllies = async (request, response, next) => {
       [request.auth.userId],
     );
     return response.status(200).json({ allies: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const listAllianceRequests = async (request, response, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT requester.id, requester.full_name AS name,
+              requester.profile_photo_url, requester.badge,
+              alliance.created_at
+       FROM user_alliances alliance
+       JOIN users requester ON requester.id = alliance.requester_id
+       WHERE alliance.recipient_id = $1 AND alliance.status = 'PENDING'
+       ORDER BY alliance.created_at DESC`,
+      [request.auth.userId],
+    );
+    return response.status(200).json({ requests: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const listAlliancePeople = async (request, response, next) => {
+  const query = typeof request.query.query === "string" ? request.query.query.trim() : "";
+  if (query.length > 100) {
+    return response.status(400).json({ error: "La recherche est trop longue." });
+  }
+  const phoneNumber = normalizePhoneNumberE164(query);
+  const searchPattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  try {
+    const result = await pool.query(
+      `SELECT person.id, person.full_name AS name, person.neighborhood,
+              person.profile_photo_url, person.badge,
+              CASE
+                WHEN outgoing.status = 'ALLIED' OR incoming.status = 'ALLIED' THEN 'ALLIED'
+                WHEN outgoing.status = 'PENDING' THEN 'PENDING'
+                WHEN incoming.status = 'PENDING' THEN 'RECEIVED'
+                ELSE NULL
+              END AS alliance_status
+       FROM users person
+       LEFT JOIN user_alliances outgoing
+         ON outgoing.requester_id = $1 AND outgoing.recipient_id = person.id
+       LEFT JOIN user_alliances incoming
+         ON incoming.requester_id = person.id AND incoming.recipient_id = $1
+       WHERE person.id <> $1
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks blocked
+           WHERE (blocked.blocker_id = $1 AND blocked.blocked_id = person.id)
+              OR (blocked.blocker_id = person.id AND blocked.blocked_id = $1)
+         )
+         AND (
+           ($2 = '' AND person.neighborhood IS NOT NULL AND person.neighborhood = (
+             SELECT self_user.neighborhood FROM users self_user WHERE self_user.id = $1
+           ))
+           OR ($2 <> '' AND (
+             person.full_name ILIKE $3 ESCAPE E'\\\\'
+             OR ($4::text IS NOT NULL AND person.phone_e164 = $4)
+           ))
+         )
+       ORDER BY CASE WHEN outgoing.status = 'PENDING' OR incoming.status = 'PENDING' THEN 1 ELSE 0 END,
+                person.full_name NULLS LAST
+       LIMIT 50`,
+      [request.auth.userId, query, searchPattern, phoneNumber],
+    );
+    return response.status(200).json({ people: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const declineAlliance = async (request, response, next) => {
+  const requesterId = request.params.userId;
+  if (!validId(requesterId) || requesterId === request.auth.userId) {
+    return response.status(400).json({ error: "Profil invalide." });
+  }
+  try {
+    const declined = await pool.query(
+      `DELETE FROM user_alliances
+       WHERE requester_id = $1 AND recipient_id = $2 AND status = 'PENDING'
+       RETURNING requester_id`,
+      [requesterId, request.auth.userId],
+    );
+    if (!declined.rowCount) {
+      return response.status(404).json({ error: "Demande d’alliance introuvable." });
+    }
+    return response.status(200).json({ status: "DECLINED" });
   } catch (error) {
     return next(error);
   }
