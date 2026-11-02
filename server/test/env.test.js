@@ -38,7 +38,7 @@ test("production environment accepts a complete valid configuration", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("video duration limit defaults to 180 seconds and can be configured", () => {
+test("video duration limit defaults to 420 seconds and can be configured", () => {
   const loadLimit = (value) =>
     spawnSync(
       process.execPath,
@@ -60,7 +60,7 @@ test("video duration limit defaults to 180 seconds and can be configured", () =>
 
   const defaultLimit = loadLimit("");
   assert.equal(defaultLimit.status, 0, defaultLimit.stderr);
-  assert.equal(defaultLimit.stdout.trim(), "180");
+  assert.equal(defaultLimit.stdout.trim(), "420");
 
   const configuredLimit = loadLimit("240");
   assert.equal(configuredLimit.status, 0, configuredLimit.stderr);

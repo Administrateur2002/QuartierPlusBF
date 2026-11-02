@@ -72,6 +72,40 @@ describe("Cloudinary signed uploads", () => {
     );
   });
 
+  it("chunks small videos and reports progress while each chunk uploads", async () => {
+    const signature = {
+      apiKey: "public-api-key",
+      cloudName: "test-cloud",
+      folder: "quartierplus/posts",
+      public_id: "user_video",
+      resource_type: "video",
+      signature: "signed-value",
+      timestamp: 123,
+    };
+    const onProgress = jest.fn();
+    axios.post.mockImplementation(async (_url, _formData, options) => {
+      options.onUploadProgress({ loaded: 3, total: 3 });
+      return { data: { public_id: "user_video" } };
+    });
+
+    await uploadCloudinaryMedia(
+      signature,
+      {
+        uri: "file:///small-video.mp4",
+        name: "small-video.mp4",
+        type: "video/mp4",
+        size: 3,
+      },
+      { onProgress },
+    );
+
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    expect(axios.post.mock.calls[0][2].headers["Content-Range"]).toBe(
+      "bytes 0-2/3",
+    );
+    expect(onProgress).toHaveBeenLastCalledWith(90);
+  });
+
   it("accepts and returns the public ID prefixed by the signed folder", async () => {
     const signature = {
       apiKey: "public-api-key",

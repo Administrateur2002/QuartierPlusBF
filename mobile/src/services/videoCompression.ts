@@ -9,7 +9,7 @@ export const compressVideoForUpload = (
     {
       compressionMethod: "manual",
       maxSize: 720,
-      bitrate: 1_000_000,
+      bitrate: 1_500_000,
     },
     onProgress,
   );

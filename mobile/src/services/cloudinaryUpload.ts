@@ -33,7 +33,6 @@ type UploadOptions = {
   onProgress?: (progress: number) => void;
 };
 
-const LARGE_VIDEO_THRESHOLD = 20 * 1024 * 1024;
 const VIDEO_CHUNK_SIZE = 5 * 1024 * 1024;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -122,10 +121,7 @@ export const uploadCloudinaryMedia = async (
   let result: { public_id?: string; secure_url?: string } | undefined;
   try {
     const size = file.size || new File(file.uri).size;
-    if (
-      signature.resource_type === "video" &&
-      size > LARGE_VIDEO_THRESHOLD
-    ) {
+    if (signature.resource_type === "video") {
       const source = new File(file.uri);
       for (let start = 0; start < size; start += VIDEO_CHUNK_SIZE) {
         const end = Math.min(start + VIDEO_CHUNK_SIZE, size);
@@ -143,6 +139,12 @@ export const uploadCloudinaryMedia = async (
             headers: {
               "Content-Range": `bytes ${start}-${end - 1}/${size}`,
               "X-Unique-Upload-Id": signature.public_id,
+            },
+            onUploadProgress(event) {
+              const loaded = Math.min(end - start, event.loaded);
+              options.onProgress?.(
+                Math.min(90, Math.round(((start + loaded) / size) * 90)),
+              );
             },
           },
         );

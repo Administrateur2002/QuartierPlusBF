@@ -148,6 +148,53 @@ type MediaSignature = CloudinaryUploadSignature & {
 
 class PublicationApiError extends Error {}
 
+const requestMediaSignature = async (
+  resourceType: CloudinaryMediaType,
+  trimVideo: boolean,
+  signal: AbortSignal,
+): Promise<MediaSignature> => {
+  const response = await apiFetch(`${API_BASE_URL}/v1/media/sign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      media_type: resourceType,
+      trim_video: trimVideo,
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json();
+    throw new PublicationApiError(
+      isRecord(payload) && typeof payload.reason === "string"
+        ? payload.reason
+        : isRecord(payload) && typeof payload.error === "string"
+          ? payload.error
+          : `Impossible de préparer le téléversement (HTTP ${response.status}).`,
+    );
+  }
+  const payload: unknown = await response.json();
+  if (
+    !isRecord(payload) ||
+    typeof payload.apiKey !== "string" ||
+    typeof payload.cloudName !== "string" ||
+    typeof payload.folder !== "string" ||
+    typeof payload.public_id !== "string" ||
+    typeof payload.signature !== "string" ||
+    typeof payload.timestamp !== "number" ||
+    typeof payload.max_bytes !== "number" ||
+    payload.resource_type !== resourceType ||
+    payload.trim_video !== trimVideo ||
+    (trimVideo && payload.context !== "trim_video=true") ||
+    !(
+      payload.max_duration_seconds === null ||
+      typeof payload.max_duration_seconds === "number"
+    )
+  ) {
+    throw new Error("La signature reçue est invalide.");
+  }
+  return payload as MediaSignature;
+};
+
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_PHOTO_DIMENSION = 1600;
 
@@ -1677,27 +1724,6 @@ export default function FeedScreen() {
       const asset = selectedAssets[0];
       const duration =
         typeof asset.duration === "number" ? asset.duration / 1000 : undefined;
-      let trimVideo = false;
-      if (resourceType === "video" && duration !== undefined && duration > 180) {
-        trimVideo = await new Promise<boolean>((resolve) => {
-          let settled = false;
-          const settle = (shouldTrim: boolean) => {
-            if (settled) return;
-            settled = true;
-            resolve(shouldTrim);
-          };
-          Alert.alert(
-            "Vidéo trop longue",
-            "La publication est limitée à 180 secondes. Voulez-vous utiliser les 180 premières secondes ?",
-            [
-              { text: "Choisir une autre vidéo", style: "cancel", onPress: () => settle(false) },
-              { text: "Utiliser ce segment", onPress: () => settle(true) },
-            ],
-            { cancelable: true, onDismiss: () => settle(false) },
-          );
-        });
-        if (!trimVideo) return;
-      }
       const preparedAssets: DraftMedia[] = [];
       for (const [index, selectedAsset] of selectedAssets.entries()) {
         let mediaUri = selectedAsset.uri;
@@ -1744,7 +1770,7 @@ export default function FeedScreen() {
           resourceType,
           size,
           duration: index === 0 ? duration : undefined,
-          trimVideo,
+          trimVideo: false,
         });
       }
       setDraftMedia(preparedAssets[0]);
@@ -1863,62 +1889,51 @@ export default function FeedScreen() {
     setUploadProgress(0);
     let postRequestStarted = false;
     try {
-      const signatureResponse = await apiFetch(
-        `${API_BASE_URL}/v1/media/sign`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            media_type: draftMedia.resourceType,
-            trim_video: draftMedia.trimVideo,
-          }),
-          signal: controller.signal,
-        },
+      let trimVideo = draftMedia.trimVideo;
+      let signature = await requestMediaSignature(
+        draftMedia.resourceType,
+        trimVideo,
+        controller.signal,
       );
-      if (!signatureResponse.ok) {
-        const payload: unknown = await signatureResponse.json();
-        throw new PublicationApiError(
-          isRecord(payload) && typeof payload.reason === "string"
-            ? payload.reason
-            : isRecord(payload) && typeof payload.error === "string"
-              ? payload.error
-              : `Impossible de préparer le téléversement (HTTP ${signatureResponse.status}).`,
-        );
-      }
-      const signaturePayload: unknown = await signatureResponse.json();
-      if (
-        !isRecord(signaturePayload) ||
-        typeof signaturePayload.apiKey !== "string" ||
-        typeof signaturePayload.cloudName !== "string" ||
-        typeof signaturePayload.folder !== "string" ||
-        typeof signaturePayload.public_id !== "string" ||
-        typeof signaturePayload.signature !== "string" ||
-        typeof signaturePayload.timestamp !== "number" ||
-        typeof signaturePayload.max_bytes !== "number" ||
-        signaturePayload.resource_type !== draftMedia.resourceType ||
-        signaturePayload.trim_video !== draftMedia.trimVideo ||
-        (draftMedia.trimVideo &&
-          signaturePayload.context !== "trim_video=true") ||
-        !(
-          signaturePayload.max_duration_seconds === null ||
-          typeof signaturePayload.max_duration_seconds === "number"
-        )
-      ) {
-        throw new Error("La signature reçue est invalide.");
-      }
-      const signature = signaturePayload as MediaSignature;
       if (
         draftMedia.resourceType === "video" &&
-        ((!draftMedia.trimVideo &&
-          (typeof signature.max_duration_seconds !== "number" ||
-            (draftMedia.duration !== undefined &&
-              draftMedia.duration > signature.max_duration_seconds))) ||
-          (draftMedia.trimVideo &&
-            signature.max_duration_seconds !== null))
+        !trimVideo &&
+        typeof signature.max_duration_seconds === "number" &&
+        draftMedia.duration !== undefined &&
+        draftMedia.duration > signature.max_duration_seconds
       ) {
-        throw new PublicationApiError(
-          `La vidéo doit durer au maximum ${signature.max_duration_seconds ?? 180} secondes.`,
+        const shouldTrim = await new Promise<boolean>((resolve) => {
+          let settled = false;
+          const settle = (value: boolean) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+          Alert.alert(
+            "Vidéo trop longue",
+            `La limite du serveur est de ${signature.max_duration_seconds} secondes. Voulez-vous utiliser les ${signature.max_duration_seconds} premières secondes ?`,
+            [
+              { text: "Choisir une autre vidéo", style: "cancel", onPress: () => settle(false) },
+              { text: "Utiliser ce segment", onPress: () => settle(true) },
+            ],
+            { cancelable: true, onDismiss: () => settle(false) },
+          );
+        });
+        if (!shouldTrim) return;
+        trimVideo = true;
+        signature = await requestMediaSignature(
+          draftMedia.resourceType,
+          trimVideo,
+          controller.signal,
         );
+      }
+      if (
+        draftMedia.resourceType === "video" &&
+        ((!trimVideo &&
+          typeof signature.max_duration_seconds !== "number") ||
+          (trimVideo && signature.max_duration_seconds !== null))
+      ) {
+        throw new Error("La limite de durée vidéo renvoyée par le serveur est invalide.");
       }
       let uploadMedia = draftMedia;
       if (draftMedia.resourceType === "video") {
@@ -1950,7 +1965,9 @@ export default function FeedScreen() {
           : signature.max_bytes;
       if (uploadMedia.size > maxAllowedBytes) {
         throw new PublicationApiError(
-          "Le média optimisé dépasse la limite de taille autorisée.",
+          uploadMedia.resourceType === "video"
+            ? `La vidéo compressée pèse ${(uploadMedia.size / (1024 * 1024)).toFixed(1)} Mo et dépasse la limite serveur de ${(maxAllowedBytes / (1024 * 1024)).toFixed(1)} Mo. Elle ne peut pas être envoyée.`
+            : "Le média optimisé dépasse la limite de taille autorisée.",
         );
       }
       const uploaded = await uploadCloudinaryMedia(
@@ -2051,7 +2068,7 @@ export default function FeedScreen() {
           scope: draftScope,
           media_type: draftMedia.resourceType,
           media_public_id: uploaded.publicId,
-          trim_video: draftMedia.trimVideo,
+          trim_video: trimVideo,
           ...(uploadedAdditionalMedia.length
             ? { additional_media: uploadedAdditionalMedia }
             : {}),

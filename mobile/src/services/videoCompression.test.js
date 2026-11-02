@@ -19,7 +19,7 @@ test("compresses videos to a maximum 720p before upload and reports progress", a
     {
       compressionMethod: "manual",
       maxSize: 720,
-      bitrate: 1_000_000,
+      bitrate: 1_500_000,
     },
     onProgress,
   );

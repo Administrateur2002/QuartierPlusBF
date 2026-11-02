@@ -46,6 +46,7 @@ import {
   type CloudinaryMediaType,
   type CloudinaryUploadSignature,
 } from "../services/cloudinaryUpload";
+import { compressVideoForUpload } from "../services/videoCompression";
 
 type ChannelId = "emergency" | "announcements";
 type Channel = {
@@ -270,6 +271,7 @@ export default function MessagesScreen() {
   const [draftMessage, setDraftMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [isCompressingMedia, setIsCompressingMedia] = useState(false);
   const [mediaUploadProgress, setMediaUploadProgress] = useState<number | null>(null);
   const [selectedReport, setSelectedReport] = useState<ChatMessage | null>(null);
   const [reportReason, setReportReason] = useState("");
@@ -793,6 +795,24 @@ export default function MessagesScreen() {
         uri = compressed.uri;
         filename = `message-${Date.now()}.webp`;
         mimeType = "image/webp";
+      } else {
+        setIsCompressingMedia(true);
+        try {
+          const compressedUri = await compressVideoForUpload(
+            asset.uri,
+            (progress) =>
+              setMediaUploadProgress(
+                Math.min(20, Math.max(0, Math.round(progress * 20))),
+              ),
+          );
+          if (!compressedUri) throw new Error("La compression vidéo a échoué.");
+          uri = compressedUri;
+          filename = `message-${Date.now()}.mp4`;
+          mimeType = "video/mp4";
+        } finally {
+          setIsCompressingMedia(false);
+        }
+        setMediaUploadProgress(20);
       }
       const size = new File(uri).size;
       const signatureResponse = await apiFetch(`${API_BASE_URL}/v1/posts/media/sign`, {
@@ -818,7 +838,11 @@ export default function MessagesScreen() {
         throw new Error("La signature de téléversement est invalide.");
       }
       if (size > signaturePayload.max_bytes) {
-        throw new Error("Le média dépasse la taille maximale autorisée.");
+        throw new Error(
+          mediaType === "video"
+            ? `La vidéo compressée pèse ${(size / (1024 * 1024)).toFixed(1)} Mo et dépasse la limite serveur de ${(signaturePayload.max_bytes / (1024 * 1024)).toFixed(1)} Mo. Elle ne peut pas être envoyée.`
+            : "Le média dépasse la taille maximale autorisée.",
+        );
       }
       if (
         mediaType === "video" &&
@@ -831,7 +855,14 @@ export default function MessagesScreen() {
       const upload = await uploadCloudinaryMedia(
         signaturePayload as unknown as CloudinaryUploadSignature,
         { uri, name: filename, type: mimeType, size },
-        { onProgress: setMediaUploadProgress },
+        {
+          onProgress: (progress) =>
+            setMediaUploadProgress(
+              mediaType === "video"
+                ? 20 + Math.round((progress / 90) * 80)
+                : progress,
+            ),
+        },
       );
       if (!upload.secureUrl) throw new Error("Cloudinary n’a pas confirmé l’adresse du média.");
       setMediaUploadProgress(100);
@@ -1376,7 +1407,9 @@ export default function MessagesScreen() {
         </Pressable>
         {mediaUploadProgress !== null ? (
           <Text accessibilityRole="text" style={styles.mediaUploadProgress}>
-            {`Téléversement ${mediaUploadProgress} %`}
+            {isCompressingMedia
+              ? `Compression 720p : ${mediaUploadProgress * 5} %`
+              : `Téléversement ${mediaUploadProgress} %`}
           </Text>
         ) : null}
         {activeTab === "Canaux" && selectedChannelId === "emergency" && (

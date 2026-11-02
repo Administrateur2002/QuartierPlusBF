@@ -485,7 +485,7 @@ test("server rejects oversized photos and videos that exceed the configured dura
     format: "mp4",
     bytes: 1000,
     resource_type: "video",
-    duration: 181,
+    duration: 421,
   };
   const videoResponse = createResponse();
   await createPost(
@@ -503,10 +503,10 @@ test("server rejects oversized photos and videos that exceed the configured dura
     },
   );
   assert.equal(videoResponse.statusCode, 400);
-  assert.match(videoResponse.payload.error, /180 secondes/);
+  assert.match(videoResponse.payload.error, /420 secondes/);
 });
 
-test("server publishes only the first 180 seconds when an overlong video has a signed trim request", async (context) => {
+test("server publishes only the first 420 seconds when an overlong video has a signed trim request", async (context) => {
   const asset = {
     public_id: `${USER_ID}_video`,
     secure_url:
@@ -514,7 +514,7 @@ test("server publishes only the first 180 seconds when an overlong video has a s
     format: "mp4",
     bytes: 1000,
     resource_type: "video",
-    duration: 181,
+    duration: 421,
     context: { custom: { trim_video: "true" } },
   };
   context.mock.method(pool, "query", async () => ({
@@ -569,8 +569,8 @@ test("server publishes only the first 180 seconds when an overlong video has a s
     statement.includes("INSERT INTO posts"),
   );
   assert.equal(response.statusCode, 201);
-  assert.match(insert.values[7], /\/video\/upload\/so_0,du_180\//);
-  assert.equal(insert.values[11], 180);
+  assert.match(insert.values[7], /\/video\/upload\/so_0,du_420\//);
+  assert.equal(insert.values[11], 420);
 });
 
 test("photo uploads with GPS metadata are deleted from Cloudinary and rejected", async (context) => {

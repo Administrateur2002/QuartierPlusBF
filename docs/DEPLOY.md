@@ -208,7 +208,7 @@ invaliderait les signatures des billets déjà émis.
 | `CLOUDINARY_API_KEY` | Clé API Cloudinary |
 | `CLOUDINARY_API_SECRET` | Secret API Cloudinary; reste uniquement sur Render |
 | `POST_MAX_PHOTO_BYTES` | Taille maximale d’une photo en octets; défaut `10485760` (10 Mo) |
-| `POST_MAX_VIDEO_SECONDS` | Durée maximale d’une vidéo; défaut `180` secondes |
+| `POST_MAX_VIDEO_SECONDS` | Durée maximale d’une vidéo; défaut `420` secondes |
 | `POST_MAX_VIDEO_BYTES` | Taille maximale d’une vidéo en octets; défaut `31457280` (30 Mo) |
 | `POST_DAILY_LIMIT` | Nombre maximal de publications par compte et par jour; défaut `10` |
 | `PRO_ENABLED` | `false` par défaut; `true` active les catalogues, commandes et livraisons grossistes |

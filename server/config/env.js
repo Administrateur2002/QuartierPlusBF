@@ -250,7 +250,7 @@ export const env = Object.freeze({
   cloudinaryApiKey,
   cloudinaryApiSecret,
   postMaxPhotoBytes: positiveInteger("POST_MAX_PHOTO_BYTES", 10 * 1024 * 1024),
-  postMaxVideoSeconds: positiveInteger("POST_MAX_VIDEO_SECONDS", 180),
+  postMaxVideoSeconds: positiveInteger("POST_MAX_VIDEO_SECONDS", 420),
   postMaxVideoBytes: positiveInteger("POST_MAX_VIDEO_BYTES", 30 * 1024 * 1024),
   postDailyLimit: positiveInteger("POST_DAILY_LIMIT", 10),
   isPromoFreeAccess: promoFreeAccessValue === "true",
