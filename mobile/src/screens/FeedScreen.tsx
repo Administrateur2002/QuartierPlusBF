@@ -76,6 +76,7 @@ import { MediaUploadError } from "../services/mediaUploadError";
 import { compressVideoForUpload } from "../services/videoCompression";
 import FeedMedia from "./FeedMedia";
 import ProfileAvatar from "../components/ProfileAvatar";
+import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
 import {
   FEED_SCOPES,
   feedScopeBarVisibilityOnScroll,
@@ -444,6 +445,7 @@ export default function FeedScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<FeedError | null>(null);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const [profilePhotoViewer, setProfilePhotoViewer] = useState<{ uri: string; name?: string } | null>(null);
   const [isServerRequestPending, setIsServerRequestPending] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [composerStage, setComposerStage] = useState<
@@ -2513,13 +2515,33 @@ export default function FeedScreen() {
                       <View style={[styles.authorFooter, { bottom: tabBarHeight + 10 }]}>
                         <View style={styles.avatarRing}>
                           {entry.kind === "post" ? (
-                            <ProfileAvatar
-                              name={entry.authorName}
-                              photoUrl={entry.authorPhotoUrl}
-                              size={38}
-                              isAlly={entry.authorIsAlly}
-                              isProVerified={entry.authorBadge === "Commerçant Certifié"}
-                            />
+                            <>
+                              <Pressable
+                                accessibilityLabel={`Agrandir la photo de ${entry.authorName || "profil"}`}
+                                accessibilityRole="button"
+                                disabled={!entry.authorPhotoUrl}
+                                onPress={() => {
+                                  if (entry.authorPhotoUrl) {
+                                    setProfilePhotoViewer({ uri: entry.authorPhotoUrl, name: entry.authorName });
+                                  }
+                                }}
+                              >
+                                <ProfileAvatar
+                                  name={entry.authorName}
+                                  photoUrl={entry.authorPhotoUrl}
+                                  size={38}
+                                  isAlly={entry.authorIsAlly}
+                                  isProVerified={entry.authorBadge === "Commerçant Certifié"}
+                                />
+                              </Pressable>
+                              {entry.authorPhotoUrl && profilePhotoViewer?.uri === entry.authorPhotoUrl && (
+                                <ProfilePhotoViewer
+                                  uri={entry.authorPhotoUrl}
+                                  visible={!!profilePhotoViewer}
+                                  onRequestClose={() => setProfilePhotoViewer(null)}
+                                />
+                              )}
+                            </>
                           ) : (
                             <View style={[styles.icon, styles.alertIcon]}>
                               <AlertTriangle color="#dc2626" size={19} />

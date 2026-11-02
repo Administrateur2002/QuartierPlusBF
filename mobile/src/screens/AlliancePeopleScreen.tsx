@@ -7,6 +7,7 @@ import api from "../services/api";
 import { getApiErrorMessage } from "../services/apiError";
 import { useTheme } from "../context/ThemeContext";
 import ProfileAvatar from "../components/ProfileAvatar";
+import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
 import type { RootStackParamList } from "../navigation/types";
 
 type Person = {
@@ -35,6 +36,7 @@ export default function AlliancePeopleScreen() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [workingId, setWorkingId] = useState<string | null>(null);
+  const [profilePhotoViewer, setProfilePhotoViewer] = useState<{ uri: string; name?: string } | null>(null);
 
   const load = useCallback(async (searchQuery: string) => {
     setIsLoading(true);
@@ -58,6 +60,11 @@ export default function AlliancePeopleScreen() {
   }, [load]));
 
   const search = () => void load(query.trim());
+
+  const openProfilePhoto = (photoUrl: string | null, name: string | null) => {
+    if (!photoUrl) return;
+    setProfilePhotoViewer({ uri: photoUrl, name: name ?? undefined });
+  };
 
   const requestAlliance = async (person: Person) => {
     setWorkingId(person.id);
@@ -148,13 +155,20 @@ export default function AlliancePeopleScreen() {
           <Text style={[styles.empty, { color: colors.secondaryText }]}>Aucune personne trouvée pour le moment.</Text>
         ) : people.map((person) => (
           <View key={person.id} style={[styles.personRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <ProfileAvatar
-              name={person.name}
-              photoUrl={person.profile_photo_url}
-              size={42}
-              isAlly={person.alliance_status === "ALLIED"}
-              isProVerified={person.badge === "Commerçant Certifié"}
-            />
+            <Pressable
+              accessibilityLabel={`Agrandir la photo de ${person.name || "profil"}`}
+              accessibilityRole="button"
+              disabled={!person.profile_photo_url}
+              onPress={() => openProfilePhoto(person.profile_photo_url, person.name)}
+            >
+              <ProfileAvatar
+                name={person.name}
+                photoUrl={person.profile_photo_url}
+                size={42}
+                isAlly={person.alliance_status === "ALLIED"}
+                isProVerified={person.badge === "Commerçant Certifié"}
+              />
+            </Pressable>
             <View style={styles.personInfo}>
               <Text style={[styles.personName, { color: colors.text }]}>{person.name || "Membre QuartierPlus"}</Text>
               <Text style={[styles.personNeighborhood, { color: colors.secondaryText }]}>{person.neighborhood || "Quartier non renseigné"}</Text>
@@ -181,12 +195,19 @@ export default function AlliancePeopleScreen() {
         ) : requests.map((request) => (
           <View key={request.id} style={[styles.requestCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.requestHeader}>
-              <ProfileAvatar
-                name={request.name}
-                photoUrl={request.profile_photo_url}
-                size={42}
-                isProVerified={request.badge === "Commerçant Certifié"}
-              />
+              <Pressable
+                accessibilityLabel={`Agrandir la photo de ${request.name || "profil"}`}
+                accessibilityRole="button"
+                disabled={!request.profile_photo_url}
+                onPress={() => openProfilePhoto(request.profile_photo_url, request.name)}
+              >
+                <ProfileAvatar
+                  name={request.name}
+                  photoUrl={request.profile_photo_url}
+                  size={42}
+                  isProVerified={request.badge === "Commerçant Certifié"}
+                />
+              </Pressable>
               <Text style={[styles.personName, styles.requestName, { color: colors.text }]}>{request.name || "Membre QuartierPlus"}</Text>
             </View>
             <View style={styles.requestActions}>
@@ -199,6 +220,13 @@ export default function AlliancePeopleScreen() {
             </View>
           </View>
         ))}
+        {profilePhotoViewer?.uri && (
+          <ProfilePhotoViewer
+            uri={profilePhotoViewer.uri}
+            visible={!!profilePhotoViewer}
+            onRequestClose={() => setProfilePhotoViewer(null)}
+          />
+        )}
       </ScrollView>
     </View>
   );

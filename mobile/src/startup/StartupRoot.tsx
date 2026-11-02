@@ -6,8 +6,10 @@ import {
   type ErrorInfo,
   type PropsWithChildren,
 } from "react";
+import * as Clipboard from "expo-clipboard";
+import * as Updates from "expo-updates";
 import OnboardingGate from "../components/OnboardingGate";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { captureError } from "../lib/crashReporting";
 import {
   setCrashlyticsAvailability,
@@ -65,9 +67,7 @@ const recordSanitizedError = (
 
 const sanitizeDiagnosticText = (value: string) =>
   maskSensitiveConfigurationValues(value)
-    .replace(/\b(?:https?|wss?):\/\/[^\s"'<>]+/gi, "[URL masquée]")
-    .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?/gi, "[URL masquée]")
-    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:\/[^\s]*)?/g, "[URL masquée]")
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[URL masquée]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [masqué]")
     .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, "[clé masquée]")
     .replace(/\b[A-Za-z0-9._-]+\.apps\.googleusercontent\.com\b/gi, "[identifiant masqué]")
@@ -102,6 +102,18 @@ const getDiagnostic = (error: unknown) => {
     code: sanitizeDiagnosticText(code).slice(0, 80),
     message: sanitizeDiagnosticText(rawMessage).slice(0, 300),
   };
+};
+
+const getDiagnosticReport = (error: unknown) => {
+  const diagnostic = getDiagnostic(error);
+  return [
+    "QuartierPlus - détails de démarrage",
+    `Nom : ${diagnostic.name}`,
+    `Code : ${diagnostic.code}`,
+    `Message : ${diagnostic.message}`,
+    `Version : ${appConfiguration.version}`,
+    `Package : ${appConfiguration.android.package}`,
+  ].join("\n");
 };
 
 class RootErrorBoundary extends Component<
@@ -154,8 +166,38 @@ function StartupError({
   error: unknown;
   message: string;
 }) {
+  const diagnosticReport = getDiagnosticReport(error);
+
+  const copyDetails = async () => {
+    try {
+      await Clipboard.setStringAsync(diagnosticReport);
+    } catch {
+      // Clipboard may be unavailable in some restricted environments.
+    }
+  };
+
+  const restartApp = async () => {
+    try {
+      await Updates.reloadAsync();
+    } catch {
+      // The reload action is best-effort when the app is already in a broken startup state.
+    }
+  };
+
+  const sendToSupport = async () => {
+    try {
+      const mailtoUrl = `mailto:?subject=${encodeURIComponent("QuartierPlus – incident au démarrage")}&body=${encodeURIComponent(diagnosticReport)}`;
+      const canOpen = await Linking.canOpenURL(mailtoUrl);
+      if (canOpen) {
+        await Linking.openURL(mailtoUrl);
+      }
+    } catch {
+      // Some devices do not have a configured mail client.
+    }
+  };
+
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       <Text accessibilityRole="header" style={styles.title}>
         QuartierPlus n'a pas pu démarrer
       </Text>
@@ -163,7 +205,18 @@ function StartupError({
         {message}
       </Text>
       <TechnicalDetails error={error} />
-    </View>
+      <View style={styles.actionRow}>
+        <Pressable accessibilityRole="button" onPress={() => void copyDetails()} style={[styles.actionButton, styles.primaryAction]}>
+          <Text style={styles.actionText}>Copier les détails</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" onPress={() => void restartApp()} style={[styles.actionButton, styles.secondaryAction]}>
+          <Text style={styles.actionText}>Redémarrer</Text>
+        </Pressable>
+      </View>
+      <Pressable accessibilityRole="button" onPress={() => void sendToSupport()} style={[styles.actionButton, styles.supportAction]}>
+        <Text style={styles.actionText}>Envoyer au support</Text>
+      </Pressable>
+    </ScrollView>
   );
 }
 
@@ -323,5 +376,34 @@ const styles = StyleSheet.create({
     color: "#334155",
     fontSize: 12,
     lineHeight: 18,
+  },
+  actionRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 20,
+    width: "100%",
+  },
+  actionButton: {
+    borderRadius: 10,
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  primaryAction: {
+    backgroundColor: "#1d4ed8",
+  },
+  secondaryAction: {
+    backgroundColor: "#0f172a",
+  },
+  supportAction: {
+    backgroundColor: "#0284c7",
+    marginTop: 12,
+    width: "100%",
+  },
+  actionText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "700",
+    textAlign: "center",
   },
 });

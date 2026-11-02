@@ -51,6 +51,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import VoiceTextInput from "../components/VoiceTextInput";
 import ProfileAvatar from "../components/ProfileAvatar";
+import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
 import {
   EMERGENCY_COUNTRIES,
@@ -1124,6 +1125,13 @@ export default function ProfileScreen() {
                 <CheckCircle2 color="#ffffff" size={15} />
               </View>
             )}
+            {profilePhotoVisible && profile?.photoUrl && (
+              <ProfilePhotoViewer
+                uri={profile.photoUrl}
+                visible={profilePhotoVisible}
+                onRequestClose={() => setProfilePhotoVisible(false)}
+              />
+            )}
           </View>
           <View style={styles.profileInfo}>
             <Text style={styles.name}>
@@ -1852,28 +1860,6 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
         </View>
-      </Modal>
-      <Modal
-        animationType="fade"
-        onRequestClose={() => setProfilePhotoVisible(false)}
-        statusBarTranslucent
-        transparent
-        visible={profilePhotoVisible && Boolean(profile?.photoUrl)}
-      >
-        <Pressable
-          accessibilityLabel="Fermer la photo de profil agrandie"
-          accessibilityRole="button"
-          onPress={() => setProfilePhotoVisible(false)}
-          style={styles.profilePhotoBackdrop}
-        >
-          <Image
-            accessibilityLabel={`Photo de profil de ${profile?.name || "l’utilisateur"}`}
-            resizeMode="contain"
-            source={{ uri: profile?.photoUrl ?? undefined }}
-            style={styles.profilePhotoPreview}
-          />
-          <Text style={styles.profilePhotoHint}>Toucher pour fermer</Text>
-        </Pressable>
       </Modal>
       <Modal
         animationType="slide"
