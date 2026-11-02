@@ -481,7 +481,7 @@ export const createOfficialNews = async (request, response, next) => {
 export const listActiveSos = async (_request, response, next) => {
   try {
     const result = await pool.query(
-      `SELECT id, emergency_type, created_at,
+      `SELECT id, emergency_type, emergency_image_url, emergency_audio_url, created_at,
               ST_Y(location) AS latitude, ST_X(location) AS longitude
        FROM sos_alerts
        WHERE status = 'ACTIVE'
@@ -510,24 +510,103 @@ export const getSecurityIntervention = async (request, response, next) => {
        FROM sos_alerts s
        LEFT JOIN emergency_profiles ep ON ep.user_id = s.user_id
        WHERE s.id = $1 AND s.status = 'ACTIVE'
-       ON CONFLICT (sos_id) DO UPDATE
-         SET updated_at = NOW()
+       ON CONFLICT (sos_id) DO NOTHING
        RETURNING id, sos_id, agent_id, patient_medical_summary, status,
                  route_coordinates, created_at, updated_at`,
       [sosId, request.auth.userId],
     );
-    if (!result.rowCount) {
-      return response.status(404).json({ error: "Aucune alerte SOS active trouvée." });
+    let intervention = result.rows[0];
+    if (!intervention) {
+      const existing = await pool.query(
+        `SELECT i.id, i.sos_id, i.agent_id, i.patient_medical_summary, i.status,
+                i.route_coordinates, i.created_at, i.updated_at,
+                s.id AS alert_id, s.emergency_type, s.emergency_image_url,
+                s.emergency_audio_url, s.created_at AS alert_created_at,
+                ST_Y(s.location) AS latitude, ST_X(s.location) AS longitude
+         FROM interventions i
+         JOIN sos_alerts s ON s.id = i.sos_id
+         WHERE i.sos_id = $1 AND s.status = 'ACTIVE'`,
+        [sosId],
+      );
+      if (!existing.rowCount) {
+        return response.status(404).json({ error: "Aucune alerte SOS active trouvée." });
+      }
+      if (existing.rows[0].agent_id !== request.auth.userId) {
+        return response.status(409).json({
+          error: "Cette alerte est déjà prise en charge par un autre agent.",
+        });
+      }
+      const row = existing.rows[0];
+      intervention = row;
+      return response.status(200).json({
+        intervention,
+        sos: {
+          id: row.alert_id,
+          emergency_type: row.emergency_type,
+          emergency_image_url: row.emergency_image_url,
+          emergency_audio_url: row.emergency_audio_url,
+          created_at: row.alert_created_at,
+          latitude: row.latitude,
+          longitude: row.longitude,
+        },
+      });
     }
     const alert = await pool.query(
-      `SELECT id, emergency_type, created_at,
+      `SELECT id, emergency_type, emergency_image_url, emergency_audio_url, created_at,
               ST_Y(location) AS latitude, ST_X(location) AS longitude
        FROM sos_alerts WHERE id = $1`,
       [sosId],
     );
     return response.status(200).json({
-      intervention: result.rows[0],
+      intervention,
       sos: alert.rows[0],
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const INTERVENTION_PREVIOUS_STATUS = {
+  EN_ROUTE: "ACCEPTED",
+  ON_SCENE: "EN_ROUTE",
+  COMPLETED: "ON_SCENE",
+};
+
+export const updateSecurityIntervention = async (request, response, next) => {
+  const sosId = request.params.sos_id;
+  const status = request.body?.status;
+  if (!validUuid(sosId)) {
+    return response.status(400).json({ error: "Identifiant SOS invalide." });
+  }
+  if (!Object.hasOwn(INTERVENTION_PREVIOUS_STATUS, status)) {
+    return response.status(400).json({ error: "Statut d’intervention invalide." });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE interventions
+       SET status = $2, updated_at = NOW()
+       WHERE sos_id = $1 AND agent_id = $3
+         AND (status = $2 OR status = $4)
+       RETURNING id, sos_id, agent_id, patient_medical_summary, status,
+                 route_coordinates, created_at, updated_at`,
+      [sosId, status, request.auth.userId, INTERVENTION_PREVIOUS_STATUS[status]],
+    );
+    if (result.rowCount) {
+      return response.status(200).json({ intervention: result.rows[0] });
+    }
+
+    const existing = await pool.query(
+      "SELECT status FROM interventions WHERE sos_id = $1 AND agent_id = $2",
+      [sosId, request.auth.userId],
+    );
+    if (!existing.rowCount) {
+      return response.status(404).json({
+        error: "Intervention introuvable pour cet agent.",
+      });
+    }
+    return response.status(409).json({
+      error: "Transition d’intervention invalide.",
+      current_status: existing.rows[0].status,
     });
   } catch (error) {
     return next(error);

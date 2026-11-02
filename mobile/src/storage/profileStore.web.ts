@@ -17,6 +17,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   quietHoursEnd: "07:00",
   defaultRadiusKm: 3,
   voiceAssistantFloatingButton: false,
+  rememberFeedLocation: true,
 };
 
 export const openProfileStore = async (): Promise<ProfileStore> => ({
@@ -87,6 +88,7 @@ export const openProfileStore = async (): Promise<ProfileStore> => ({
           : 3,
       voiceAssistantFloatingButton:
         value.voiceAssistantFloatingButton === true,
+      rememberFeedLocation: value.rememberFeedLocation !== false,
     };
   },
   async setPreferences(preferences: AppPreferences) {

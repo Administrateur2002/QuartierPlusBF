@@ -1,5 +1,5 @@
 import { pool } from "../db/pool.js";
-import { sendExpoPushNotifications } from "../services/pushNotifications.js";
+import { notifyNearbySosResponders } from "../services/sosNotifications.js";
 
 const ESCALATION_RADII_KM = new Map([
   [1, 3],
@@ -329,26 +329,14 @@ export const registerSosHandlers = (io, socket) => {
     const recipientIds = [
       ...new Set(recipients.map((recipient) => recipient.data.user.id)),
     ];
-    if (recipientIds.length > 0) {
-      void (async () => {
-        const pushTokens = await pool.query(
-          "SELECT token FROM push_tokens WHERE user_id = ANY($1::uuid[])",
-          [recipientIds],
-        );
-        await sendExpoPushNotifications(
-          pushTokens.rows.map((row) => row.token),
-          {
-            title: `SOS ${emergencyType.toLowerCase()}`,
-            body: `Une alerte est active dans un rayon de ${radiusKm} km.`,
-            priority: "high",
-            channelId: "sos",
-            data: { type: "sos", priority: "high", alertId: alert.id },
-          },
-        );
-      })().catch((error) => {
-        console.error("Unable to dispatch nearby SOS push notifications:", error);
-      });
-    }
+    void notifyNearbySosResponders({
+      alert,
+      radiusKm,
+      excludeUserId: userId,
+      nearbyUserIds: recipientIds,
+    }).catch((error) => {
+      console.error("Unable to dispatch nearby SOS push notifications:", error);
+    });
     if (typeof acknowledgement === "function") {
       acknowledgement({
         ok: true,

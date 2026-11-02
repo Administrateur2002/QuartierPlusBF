@@ -32,6 +32,7 @@ export type AppPreferences = {
   quietHoursEnd: string;
   defaultRadiusKm: 3 | 10 | 30;
   voiceAssistantFloatingButton: boolean;
+  rememberFeedLocation: boolean;
 };
 
 export type ProfileStore = {
@@ -60,6 +61,7 @@ const defaultPreferences = (): AppPreferences => ({
   quietHoursEnd: "07:00",
   defaultRadiusKm: 3,
   voiceAssistantFloatingButton: false,
+  rememberFeedLocation: true,
 });
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let memoryCountry: StoredCountry | null = null;
@@ -379,6 +381,8 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
         defaultRadiusKm: Number(values.get("default_radius_km")),
         voiceAssistantFloatingButton:
           values.get("voice_assistant_floating_button") === "true",
+        rememberFeedLocation:
+          values.get("remember_feed_location") !== "false",
       });
       return memoryPreferences;
     },
@@ -396,6 +400,7 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
           "voice_assistant_floating_button",
           String(preferences.voiceAssistantFloatingButton),
         ],
+        ["remember_feed_location", String(preferences.rememberFeedLocation)],
       ];
       try {
         await retryProfileOperation("preference write", () =>
@@ -469,5 +474,6 @@ const normalizePreferences = (value: unknown): AppPreferences => {
     defaultRadiusKm: radius === 10 || radius === 30 ? radius : 3,
     voiceAssistantFloatingButton:
       preferences.voiceAssistantFloatingButton === true,
+    rememberFeedLocation: preferences.rememberFeedLocation !== false,
   };
 };

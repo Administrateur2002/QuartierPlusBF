@@ -404,3 +404,20 @@ export const clearPersistedQueryClient = async (): Promise<void> => {
     memoryQueryClient = undefined;
   }
 };
+
+export const clearCachedContent = async (): Promise<void> => {
+  const database = await getDatabase();
+  await database.withExclusiveTransactionAsync(async (transaction) => {
+    await transaction.execAsync(
+      `DELETE FROM cached_posts;
+       DELETE FROM cached_alerts;
+       DELETE FROM cached_messages;
+       DELETE FROM api_cache;
+       DELETE FROM query_cache;`,
+    );
+  });
+  memoryCollections.clear();
+  memoryMessages.clear();
+  memoryApiCache.clear();
+  memoryQueryClient = undefined;
+};

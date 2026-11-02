@@ -51,6 +51,7 @@ CREATE TABLE sos_alerts (
         CHECK (emergency_type IN ('MEDICAL', 'SECURITY', 'FIRE', 'OTHER')),
     escalation_level INT DEFAULT 1,
     emergency_image_url TEXT,
+    emergency_audio_url TEXT,
     livekit_room_id VARCHAR(100),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

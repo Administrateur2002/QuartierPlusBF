@@ -791,11 +791,14 @@ type SosAlert = {
   latitude: number;
   longitude: number;
   created_at: string;
+  emergency_image_url?: string | null;
+  emergency_audio_url?: string | null;
 };
 type Intervention = {
   id: string;
+  sos_id: string;
   patient_medical_summary: Record<string, unknown>;
-  status: string;
+  status: "ACCEPTED" | "EN_ROUTE" | "ON_SCENE" | "COMPLETED";
 };
 
 function SecurityAgentView({ subscription }: { subscription: Subscription }) {
@@ -804,6 +807,7 @@ function SecurityAgentView({ subscription }: { subscription: Subscription }) {
   const [intervention, setIntervention] = useState<Intervention | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isAlerting, setIsAlerting] = useState(false);
+  const [isUpdatingIntervention, setIsUpdatingIntervention] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -825,16 +829,57 @@ function SecurityAgentView({ subscription }: { subscription: Subscription }) {
   const takeIntervention = async (alert: SosAlert) => {
     setError(null);
     try {
-      const response = await api.get<{
+      const response = await api.post<{
         intervention: Intervention;
         sos: SosAlert;
       }>(`/v1/pro/security/interventions/${encodeURIComponent(alert.id)}`, {
-        headers: { "Cache-Control": "no-cache" },
+        headers: { "Cache-Control": "no-store" },
       });
       setSelectedAlert(response.data.sos);
       setIntervention(response.data.intervention);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Prise en charge impossible.");
+    }
+  };
+
+  const updateInterventionStatus = async (
+    status: Exclude<Intervention["status"], "ACCEPTED">,
+  ) => {
+    if (!selectedAlert || !intervention || isUpdatingIntervention) return;
+    setIsUpdatingIntervention(true);
+    setError(null);
+    try {
+      const response = await api.patch<{ intervention: Intervention }>(
+        `/v1/pro/security/interventions/${encodeURIComponent(selectedAlert.id)}`,
+        { status },
+      );
+      setIntervention(response.data.intervention);
+    } catch (updateError) {
+      setError(
+        updateError instanceof Error
+          ? updateError.message
+          : "Impossible de mettre à jour le suivi de l’intervention.",
+      );
+    } finally {
+      setIsUpdatingIntervention(false);
+    }
+  };
+
+  const openEmergencyMedia = async (url: string | null | undefined) => {
+    if (!url) return;
+    try {
+      const mediaUrl = new URL(url);
+      if (mediaUrl.protocol !== "https:") {
+        throw new Error("Le média d’urgence doit utiliser une adresse HTTPS.");
+      }
+      await Linking.openURL(mediaUrl.href);
+    } catch (mediaError) {
+      Alert.alert(
+        "Média indisponible",
+        mediaError instanceof Error
+          ? mediaError.message
+          : "Impossible d’ouvrir le média d’urgence.",
+      );
     }
   };
 
@@ -902,12 +947,45 @@ function SecurityAgentView({ subscription }: { subscription: Subscription }) {
                   ? JSON.stringify(intervention.patient_medical_summary)
                   : "Aucune fiche renseignée"}
               </Text>
+              {selectedAlert.emergency_image_url ? (
+                <ActionButton
+                  label="Ouvrir la photo de l’alerte"
+                  onPress={() => void openEmergencyMedia(selectedAlert.emergency_image_url)}
+                />
+              ) : null}
+              {selectedAlert.emergency_audio_url ? (
+                <ActionButton
+                  label="Ouvrir l’audio de l’alerte"
+                  onPress={() => void openEmergencyMedia(selectedAlert.emergency_audio_url)}
+                />
+              ) : null}
               <ActionButton label="Lancer guidage GPS" onPress={() => void startGpsGuidance()} />
               <ActionButton
                 disabled={isAlerting}
                 label={isAlerting ? "Envoi en cours…" : "Alerter les secouristes voisins"}
                 onPress={() => void alertNeighbors()}
               />
+              {intervention.status === "ACCEPTED" ? (
+                <ActionButton
+                  disabled={isUpdatingIntervention}
+                  label={isUpdatingIntervention ? "Mise à jour…" : "Confirmer le départ"}
+                  onPress={() => void updateInterventionStatus("EN_ROUTE")}
+                />
+              ) : null}
+              {intervention.status === "EN_ROUTE" ? (
+                <ActionButton
+                  disabled={isUpdatingIntervention}
+                  label={isUpdatingIntervention ? "Mise à jour…" : "Confirmer l’arrivée sur place"}
+                  onPress={() => void updateInterventionStatus("ON_SCENE")}
+                />
+              ) : null}
+              {intervention.status === "ON_SCENE" ? (
+                <ActionButton
+                  disabled={isUpdatingIntervention}
+                  label={isUpdatingIntervention ? "Mise à jour…" : "Clôturer l’intervention"}
+                  onPress={() => void updateInterventionStatus("COMPLETED")}
+                />
+              ) : null}
             </View>
           )}
         </>

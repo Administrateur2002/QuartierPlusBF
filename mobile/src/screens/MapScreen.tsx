@@ -58,10 +58,12 @@ import MapView, {
 } from "react-native-maps";
 import { io, type Socket } from "socket.io-client";
 import SosButton from "../components/SosButton";
+import type { EmergencyType } from "../components/SosButton";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import ProfileAvatar from "../components/ProfileAvatar";
 import { API_BASE_URL, apiFetch, getStoredAuthToken } from "../services/api";
+import { uploadEmergencyMedia } from "../services/uploadEmergencyMedia";
 import type { MainTabParamList } from "../navigation/types";
 
 type Coordinates = {
@@ -438,10 +440,12 @@ export default function MapScreen() {
   const [sosPhase, setSosPhase] = useState<SosPhase>("closed");
   const [cameraReady, setCameraReady] = useState(false);
   const [emergencyImageUri, setEmergencyImageUri] = useState<string | null>(null);
-  const [captureCountdown, setCaptureCountdown] = useState(3);
+  const [emergencyAudioUri, setEmergencyAudioUri] = useState<string | null>(null);
+  const [selectedEmergencyType, setSelectedEmergencyType] =
+    useState<EmergencyType | null>(null);
+  const [captureCountdown, setCaptureCountdown] = useState(10);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
-  const [isCaptureAudioReady, setIsCaptureAudioReady] = useState(false);
   const [isReporting, setIsReporting] = useState(false);
 
   const mapRef = useRef<MapView>(null);
@@ -955,7 +959,7 @@ export default function MapScreen() {
 
   useEffect(() => {
     if (sosPhase !== "preview") return;
-    if (!isCaptureAudioReady) return;
+    if (captureError) return;
     if (captureCountdown === 0) {
       void submitSos();
       return;
@@ -967,7 +971,7 @@ export default function MapScreen() {
     return () => {
       if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
     };
-  }, [captureCountdown, isCaptureAudioReady, sosPhase]);
+  }, [captureCountdown, captureError, sosPhase]);
 
   useEffect(
     () => () => {
@@ -1028,17 +1032,18 @@ export default function MapScreen() {
     }
   };
 
-  const openSosCamera = async () => {
+  const openSosCamera = async (emergencyType: EmergencyType) => {
     if (authStatus !== "connected") {
       requestAuthentication();
       return;
     }
+    setSelectedEmergencyType(emergencyType);
     setCaptureError(null);
     setEmergencyImageUri(null);
-    setIsCaptureAudioReady(false);
+    setEmergencyAudioUri(null);
     setIsRecordingAudio(false);
     setCameraReady(false);
-    setCaptureCountdown(3);
+    setCaptureCountdown(10);
     setSosPhase("camera");
 
     try {
@@ -1049,18 +1054,11 @@ export default function MapScreen() {
         setCaptureError("L'accès à la caméra est nécessaire pour l'alerte SOS.");
         return;
       }
-
-      const audioPermission = await requestRecordingPermissionsAsync();
-      if (!audioPermission.granted) {
-        setCaptureError(
-          "L'accès au microphone est requis pour joindre les 3 secondes d'audio ambiant.",
-        );
-      }
     } catch (error) {
       setCaptureError(
         error instanceof Error
-          ? `Impossible d'ouvrir la caméra ou le microphone : ${error.message}`
-          : "Impossible d'ouvrir la caméra ou le microphone.",
+          ? `Impossible d'ouvrir la caméra : ${error.message}`
+          : "Impossible d'ouvrir la caméra.",
       );
     }
   };
@@ -1086,7 +1084,6 @@ export default function MapScreen() {
         return;
       }
       setIsRecordingAudio(true);
-      setIsCaptureAudioReady(true);
     } catch (error) {
       if (recordingRef.current === recording) recordingRef.current = null;
       setIsRecordingAudio(false);
@@ -1113,18 +1110,11 @@ export default function MapScreen() {
       }
 
       setEmergencyImageUri(picture.uri);
-      setCaptureCountdown(3);
+      setEmergencyAudioUri(null);
+      setCaptureCountdown(10);
       setSosPhase("preview");
       locationPromiseRef.current = currentLocation;
-      audioStartPromiseRef.current = recordAmbientAudio();
-      void audioStartPromiseRef.current.catch((error: unknown) => {
-        if (abortControllerRef.current?.signal.aborted) return;
-        setCaptureError(
-          error instanceof Error
-            ? `Échec de l'enregistrement audio : ${error.message}`
-            : "Échec de l'enregistrement audio. L'alerte ne sera pas envoyée.",
-        );
-      });
+      audioStartPromiseRef.current = null;
     } catch (error) {
       setCaptureError(
         error instanceof Error
@@ -1148,6 +1138,54 @@ export default function MapScreen() {
     return uri;
   };
 
+  const toggleOptionalAudio = async () => {
+    if (isRecordingAudio) {
+      try {
+        const uri = await stopRecording();
+        if (uri) setEmergencyAudioUri(uri);
+      } catch (error) {
+        Alert.alert(
+          "Audio non joint",
+          error instanceof Error ? error.message : "L’enregistrement audio a échoué.",
+        );
+      }
+      return;
+    }
+
+    try {
+      const permission = await requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error("L’accès au microphone n’a pas été autorisé.");
+      }
+      setEmergencyAudioUri(null);
+      const startPromise = recordAmbientAudio();
+      audioStartPromiseRef.current = startPromise;
+      await startPromise;
+      const captureController = abortControllerRef.current;
+      setTimeout(() => {
+        if (captureController?.signal.aborted) return;
+        void stopRecording()
+          .then((uri) => {
+            if (uri) setEmergencyAudioUri(uri);
+          })
+          .catch((error: unknown) => {
+            Alert.alert(
+              "Audio non joint",
+              error instanceof Error
+                ? error.message
+                : "L’enregistrement audio a échoué.",
+            );
+          });
+      }, 3000);
+    } catch (error) {
+      audioStartPromiseRef.current = null;
+      Alert.alert(
+        "Audio facultatif indisponible",
+        `${error instanceof Error ? error.message : "L’enregistrement audio a échoué."} L’alerte photo peut toujours être envoyée.`,
+      );
+    }
+  };
+
   const dismissSosFlow = () => {
     if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current);
     abortControllerRef.current?.abort();
@@ -1156,9 +1194,9 @@ export default function MapScreen() {
     locationPromiseRef.current = null;
     audioStartPromiseRef.current = null;
     setIsRecordingAudio(false);
-    setIsCaptureAudioReady(false);
     setCaptureError(null);
     setEmergencyImageUri(null);
+    setEmergencyAudioUri(null);
     setSosPhase("closed");
   };
 
@@ -1172,8 +1210,8 @@ export default function MapScreen() {
     captureSubmittedRef.current = false;
     setCaptureError(null);
     setEmergencyImageUri(null);
-    setCaptureCountdown(3);
-    setIsCaptureAudioReady(false);
+    setEmergencyAudioUri(null);
+    setCaptureCountdown(10);
     setCameraReady(false);
     setSosPhase("camera");
   };
@@ -1184,15 +1222,11 @@ export default function MapScreen() {
     setSosPhase("sending");
 
     try {
-      if (!API_BASE_URL) {
-        throw new Error(
-          "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
-        );
+      const positionPromise = locationPromiseRef.current;
+      if (!positionPromise) {
+        throw new Error("La position GPS actuelle est indisponible.");
       }
-      const [position] = await Promise.all([
-        locationPromiseRef.current,
-        audioStartPromiseRef.current,
-      ]);
+      const position = await positionPromise;
       if (!position) {
         throw new Error("La position GPS actuelle est indisponible.");
       }
@@ -1202,10 +1236,21 @@ export default function MapScreen() {
       if (isFromMockProvider) {
         throw new Error("Position GPS non sécurisée");
       }
+      if (
+        position.coords.accuracy === null ||
+        !Number.isFinite(position.coords.accuracy) ||
+        position.coords.accuracy > 200
+      ) {
+        throw new Error(
+          "La précision GPS doit être de 200 m ou meilleure. Attendez quelques instants puis réessayez.",
+        );
+      }
 
-      const audioUri = await stopRecording();
-      if (!audioUri) {
-        throw new Error("Aucun audio ambiant n'a pu être enregistré.");
+      const audioStartPromise = audioStartPromiseRef.current;
+      if (audioStartPromise) await audioStartPromise;
+      const audioUri = (await stopRecording()) ?? emergencyAudioUri;
+      if (!selectedEmergencyType) {
+        throw new Error("Choisissez le type d’urgence avant d’envoyer le SOS.");
       }
       const controller = abortControllerRef.current;
       if (!controller || controller.signal.aborted) return;
@@ -1215,21 +1260,25 @@ export default function MapScreen() {
           Paths.document,
           `sos-offline-${Date.now()}.jpg`,
         );
-        const persistentAudio = new File(
-          Paths.document,
-          `sos-offline-${Date.now()}.m4a`,
-        );
         await new File(emergencyImageUri).copy(persistentImage);
-        await new File(audioUri).copy(persistentAudio);
-        await queueOfflineAction("trigger_sos", {
+        const payload: Record<string, unknown> = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
-          emergency_type: "OTHER",
+          emergency_type: selectedEmergencyType,
+          escalation_level: 1,
           accuracy_m: position.coords.accuracy,
           mocked: position.mocked === true,
           emergency_image_uri: persistentImage.uri,
-          ambient_audio_uri: persistentAudio.uri,
-        });
+        };
+        if (audioUri) {
+          const persistentAudio = new File(
+            Paths.document,
+            `sos-offline-${Date.now()}.m4a`,
+          );
+          await new File(audioUri).copy(persistentAudio);
+          payload.ambient_audio_uri = persistentAudio.uri;
+        }
+        await queueOfflineAction("trigger_sos", payload);
         dismissSosFlow();
         Alert.alert(
           "SOS en attente de connexion",
@@ -1237,6 +1286,42 @@ export default function MapScreen() {
         );
         return;
       }
+      if (!API_BASE_URL) {
+        throw new Error(
+          "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
+        );
+      }
+
+      const mediaWarnings: string[] = [];
+      let emergencyImageUrl: string | undefined;
+      let emergencyAudioUrl: string | undefined;
+      try {
+        emergencyImageUrl = await uploadEmergencyMedia(
+          emergencyImageUri,
+          `sos-${Date.now()}.jpg`,
+          "image/jpeg",
+          "image",
+        );
+      } catch (error) {
+        mediaWarnings.push(
+          error instanceof Error ? error.message : "La photo n’a pas été téléversée.",
+        );
+      }
+      if (audioUri) {
+        try {
+          emergencyAudioUrl = await uploadEmergencyMedia(
+            audioUri,
+            `sos-${Date.now()}.m4a`,
+            "audio/mp4",
+            "video",
+          );
+        } catch (error) {
+          mediaWarnings.push(
+            error instanceof Error ? error.message : "L’audio n’a pas été téléversé.",
+          );
+        }
+      }
+      if (controller.signal.aborted) return;
 
       const activeSocket = socketRef.current;
       if (!activeSocket?.connected) {
@@ -1248,7 +1333,12 @@ export default function MapScreen() {
           {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
-            emergency_type: "OTHER",
+            emergency_type: selectedEmergencyType,
+            escalation_level: 1,
+            accuracy_m: position.coords.accuracy,
+            mocked: position.mocked === true,
+            emergency_image_url: emergencyImageUrl,
+            emergency_audio_url: emergencyAudioUrl,
           },
           (timeoutError: Error | null, payload: unknown) => {
             if (timeoutError) {
@@ -1273,7 +1363,12 @@ export default function MapScreen() {
       if (isRecord(result) && result.alert) handleSosAlert(result.alert);
 
       dismissSosFlow();
-      Alert.alert("Alerte SOS envoyée", "Votre alerte a été transmise au réseau.");
+      Alert.alert(
+        "Alerte SOS envoyée",
+        mediaWarnings.length
+          ? `Votre alerte a été transmise au réseau, mais sans média : ${mediaWarnings.join(" ")}`
+          : "Votre alerte et les médias disponibles ont été transmis au réseau.",
+      );
     } catch (error) {
       if (abortControllerRef.current?.signal.aborted) return;
       let errorMessage =
@@ -1289,7 +1384,6 @@ export default function MapScreen() {
             : "erreur inconnue";
         errorMessage += ` Impossible d'arrêter l'enregistrement audio : ${recordingMessage}`;
       }
-      setIsCaptureAudioReady(false);
       setSosPhase("preview");
       setCaptureError(errorMessage);
     }
@@ -1475,7 +1569,22 @@ export default function MapScreen() {
       { text: "Eau potable", onPress: () => void createMapReport("WATER_OUTAGE") },
       { text: "Travaux ou danger routier", onPress: () => void createMapReport("ROAD_HAZARD") },
       { text: "Objet perdu", onPress: () => void createMapReport("LOST_ITEM") },
-      { text: "SOS avec photo ou audio", onPress: () => void openSosCamera() },
+      {
+        text: "SOS avec photo ou audio",
+        onPress: () =>
+          Alert.alert("Type d’urgence", "Choisissez le service à prévenir.", [
+            {
+              text: "Urgences médicales",
+              onPress: () => void openSosCamera("MEDICAL"),
+            },
+            { text: "Incendie", onPress: () => void openSosCamera("FIRE") },
+            {
+              text: "Menace à la sécurité",
+              onPress: () => void openSosCamera("SECURITY"),
+            },
+            { text: "Annuler", style: "cancel" },
+          ]),
+      },
       { text: "Annuler", style: "cancel" },
     ]);
   };
@@ -2295,7 +2404,9 @@ export default function MapScreen() {
                   <X color="#ffffff" size={21} />
                 </Pressable>
                 <Text style={styles.previewHeader}>
-                  {sosPhase === "sending" ? "ENVOI DE L'ALERTE" : "APERÇU DE L'ALERTE"}
+                  {sosPhase === "sending"
+                    ? "ENVOI DE L'ALERTE"
+                    : `SOS ${selectedEmergencyType ?? ""} · APERÇU`}
                 </Text>
                 <View style={styles.previewHeaderSpacer} />
               </View>
@@ -2343,20 +2454,21 @@ export default function MapScreen() {
                       </Pressable>
                     </>
                   ) : (
-                    <View style={styles.recordingStatus}>
-                      <View
-                        style={[
-                          styles.liveCaptureDot,
-                          !isRecordingAudio && styles.recordingDotPending,
-                        ]}
-                      />
-                      <Mic color="#ffffff" size={16} />
-                      <Text style={styles.recordingStatusText}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={sosPhase === "sending"}
+                      onPress={() => void toggleOptionalAudio()}
+                      style={styles.optionalAudioButton}
+                    >
+                      <Mic color={isRecordingAudio ? "#fca5a5" : "#ffffff"} size={16} />
+                      <Text style={styles.optionalAudioText}>
                         {isRecordingAudio
-                          ? "Audio ambiant · 3 secondes"
-                          : "Préparation de l'enregistrement audio…"}
+                          ? "Arrêter l’audio"
+                          : emergencyAudioUri
+                            ? "Audio joint · refaire"
+                            : "Ajouter un audio (facultatif, 3 s)"}
                       </Text>
-                    </View>
+                    </Pressable>
                   )}
                   <View style={styles.countdownPanel}>
                     <Text style={styles.countdownLabel}>ENVOI DANS</Text>
@@ -3200,6 +3312,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "600",
   },
+  optionalAudioButton: {
+    alignItems: "center",
+    alignSelf: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderColor: "rgba(255,255,255,0.28)",
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+    minHeight: 40,
+    paddingHorizontal: 14,
+  },
+  optionalAudioText: { color: "#ffffff", fontSize: 12, fontWeight: "700" },
   countdownPanel: {
     alignItems: "center",
     alignSelf: "center",

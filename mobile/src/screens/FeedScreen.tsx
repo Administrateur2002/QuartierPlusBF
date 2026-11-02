@@ -307,6 +307,7 @@ export default function FeedScreen() {
   });
   const [countryCode, setCountryCode] = useState<string | null>(null);
   const [coordinates, setCoordinates] = useState<FeedCoordinates | null>(null);
+  const [rememberFeedLocation, setRememberFeedLocation] = useState(true);
   const [scopeReady, setScopeReady] = useState(false);
   const [locationInvitation, setLocationInvitation] = useState(false);
   const [entries, setEntries] = useState<FeedEntry[]>([]);
@@ -340,9 +341,9 @@ export default function FeedScreen() {
   const [carouselIndices, setCarouselIndices] = useState<Record<string, number>>({});
   const [expandedCaptionPostId, setExpandedCaptionPostId] = useState<string | null>(null);
   const [feedPageHeight, setFeedPageHeight] = useState(
-    Math.max(320, windowHeight - insets.top),
+    Math.max(320, windowHeight * 0.5),
   );
-  const cardLayoutsRef = useRef<Array<{ left: number; width: number }>>([]);
+  const cardLayoutsRef = useRef<Array<{ top: number; height: number }>>([]);
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [interfaceVisible, setInterfaceVisible] = useState(true);
@@ -545,9 +546,15 @@ export default function FeedScreen() {
     let cancelled = false;
     void (async () => {
       let configuredCountryCode: string | null = null;
+      let shouldRememberLocation = true;
       try {
-        configuredCountryCode = (await (await openProfileStore()).getCountry())
-          ?.code ?? null;
+        const store = await openProfileStore();
+        const [country, preferences] = await Promise.all([
+          store.getCountry(),
+          store.getPreferences(),
+        ]);
+        configuredCountryCode = country?.code ?? null;
+        shouldRememberLocation = preferences.rememberFeedLocation;
       } catch (loadError) {
         console.warn("Unable to read the configured feed country:", loadError);
       }
@@ -560,12 +567,14 @@ export default function FeedScreen() {
       let knownPosition: FeedCoordinates | null = null;
       if (authStatus !== "guest") {
         try {
-          const savedPosition = await SecureStore.getItemAsync(
-            "quartierplus.feed.last-position",
-          );
-          if (savedPosition) {
-            const parsed: unknown = JSON.parse(savedPosition);
-            if (isFeedCoordinates(parsed)) knownPosition = parsed;
+          if (shouldRememberLocation) {
+            const savedPosition = await SecureStore.getItemAsync(
+              "quartierplus.feed.last-position",
+            );
+            if (savedPosition) {
+              const parsed: unknown = JSON.parse(savedPosition);
+              if (isFeedCoordinates(parsed)) knownPosition = parsed;
+            }
           }
           const permission = await Location.getForegroundPermissionsAsync();
           if (permission.granted) {
@@ -592,6 +601,7 @@ export default function FeedScreen() {
       if (cancelled) return;
       setCountryCode(inferredCountryCode);
       setCoordinates(knownPosition);
+      setRememberFeedLocation(shouldRememberLocation);
       setScope(knownPosition && authStatus !== "guest" ? "neighborhood" : "country");
       setLocationInvitation(!knownPosition);
       setScopeReady(true);
@@ -600,6 +610,22 @@ export default function FeedScreen() {
       cancelled = true;
     };
   }, [authStatus, user?.country_code, user?.phone_number]);
+
+  useEffect(() => {
+    if (!isFocused) return undefined;
+    let active = true;
+    void openProfileStore()
+      .then((store) => store.getPreferences())
+      .then((preferences) => {
+        if (active) setRememberFeedLocation(preferences.rememberFeedLocation);
+      })
+      .catch((error: unknown) => {
+        console.warn("Unable to refresh feed location privacy settings:", error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isFocused]);
 
   const loadCachedFeed = useCallback(async () => {
     const [posts, alerts] = await Promise.all([
@@ -619,9 +645,9 @@ export default function FeedScreen() {
   const movePagerTo = useCallback(
     (nextScope: FeedScope) => {
       const index = FEED_SCOPES.findIndex((option) => option.id === nextScope);
-      pagerRef.current?.scrollTo({ y: index * feedPageHeight, animated: true });
+      pagerRef.current?.scrollTo({ x: index * pageWidth, animated: true });
     },
-    [feedPageHeight],
+    [pageWidth],
   );
 
   const chooseScope = useCallback(
@@ -651,10 +677,12 @@ export default function FeedScreen() {
               latitude: position.coords.latitude,
               longitude: position.coords.longitude,
             };
-            await SecureStore.setItemAsync(
-              "quartierplus.feed.last-position",
-              JSON.stringify(nextCoordinates),
-            );
+            if (rememberFeedLocation) {
+              await SecureStore.setItemAsync(
+                "quartierplus.feed.last-position",
+                JSON.stringify(nextCoordinates),
+              );
+            }
             setCoordinates(nextCoordinates);
           } catch (locationError) {
             console.warn("Unable to activate location-based feed scope:", locationError);
@@ -680,6 +708,7 @@ export default function FeedScreen() {
       authStatus,
       coordinates,
       movePagerTo,
+      rememberFeedLocation,
       requestAuthentication,
       scope,
     ],
@@ -688,8 +717,8 @@ export default function FeedScreen() {
   useEffect(() => {
     if (!scopeReady) return;
     const index = FEED_SCOPES.findIndex((option) => option.id === scope);
-    pagerRef.current?.scrollTo({ y: index * feedPageHeight, animated: false });
-  }, [feedPageHeight, scope, scopeReady]);
+    pagerRef.current?.scrollTo({ x: index * pageWidth, animated: false });
+  }, [pageWidth, scope, scopeReady]);
 
   useEffect(() => {
     setActiveMediaIndex(0);
@@ -2138,15 +2167,10 @@ export default function FeedScreen() {
         style={[styles.topEdgeTouch, { top: insets.top }]}
       />
       <ScrollView
-        onLayout={(event) => {
-          const nextHeight = event.nativeEvent.layout.height;
-          if (nextHeight > 0) setFeedPageHeight((current) =>
-            Math.abs(current - nextHeight) > 1 ? nextHeight : current,
-          );
-        }}
+        horizontal
         onMomentumScrollEnd={(event) => {
           const index = Math.round(
-            event.nativeEvent.contentOffset.y / feedPageHeight,
+            event.nativeEvent.contentOffset.x / pageWidth,
           );
           const nextScope = FEED_SCOPES[index]?.id;
           if (nextScope && nextScope !== scope) {
@@ -2155,13 +2179,19 @@ export default function FeedScreen() {
         }}
         pagingEnabled
         ref={pagerRef}
-        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
         style={styles.pager}
       >
         {FEED_SCOPES.map((option) => (
           <View
             key={option.id}
-            style={[styles.pagerPage, { height: feedPageHeight, width: pageWidth }]}
+            onLayout={(event) => {
+              const nextHeight = event.nativeEvent.layout.height;
+              if (nextHeight > 0) setFeedPageHeight((current) =>
+                Math.abs(current - nextHeight) > 1 ? nextHeight : current,
+              );
+            }}
+            style={[styles.pagerPage, { width: pageWidth }]}
           >
             {isLoading && entries.length === 0 ? (
               <View style={styles.skeletonList}>
@@ -2191,7 +2221,6 @@ export default function FeedScreen() {
                 drawDistance={Math.min(800, windowHeight * 1.5)}
                 contentContainerStyle={styles.immersiveList}
                 extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}:${searchQuery}:${interfaceVisible}:${quickActionsPost?.id ?? ""}:${JSON.stringify(carouselIndices)}:${expandedCaptionPostId}`}
-                horizontal
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
                 onEndReached={() => void loadMore()}
@@ -2199,19 +2228,19 @@ export default function FeedScreen() {
                 pagingEnabled
                 onScroll={(event) => {
                   const { contentOffset, layoutMeasurement } = event.nativeEvent;
-                  const viewportLeft = contentOffset.x;
-                  const viewportRight = viewportLeft + layoutMeasurement.width;
+                  const viewportTop = contentOffset.y;
+                  const viewportBottom = viewportTop + layoutMeasurement.height;
                   const previousOffset = scopeScrollOffsets.current[option.id];
                   if (option.id === scope) {
                     const nextScopeBarVisibility = feedScopeBarVisibilityOnScroll(
-                      viewportLeft,
+                      viewportTop,
                       previousOffset,
                     );
                     if (nextScopeBarVisibility !== null) {
                       setTabBarVisible(nextScopeBarVisibility);
                     }
                   }
-                  scopeScrollOffsets.current[option.id] = viewportLeft;
+                  scopeScrollOffsets.current[option.id] = viewportTop;
                   let nextActiveMedia = -1;
                   let greatestVisibility = 0;
                   visibleEntries.forEach((entry, entryIndex) => {
@@ -2219,8 +2248,8 @@ export default function FeedScreen() {
                     if (!layout) return;
                     const visibleHeight = Math.max(
                       0,
-                      Math.min(layout.left + layout.width, viewportRight) -
-                        Math.max(layout.left, viewportLeft),
+                      Math.min(layout.top + layout.height, viewportBottom) -
+                        Math.max(layout.top, viewportTop),
                     );
                     if (visibleHeight > greatestVisibility) {
                       greatestVisibility = visibleHeight;
@@ -2237,8 +2266,8 @@ export default function FeedScreen() {
                   <View
                     onLayout={(event) => {
                       cardLayoutsRef.current[index] = {
-                        left: event.nativeEvent.layout.x,
-                        width: event.nativeEvent.layout.width,
+                        top: event.nativeEvent.layout.y,
+                        height: event.nativeEvent.layout.height,
                       };
                     }}
                     style={[

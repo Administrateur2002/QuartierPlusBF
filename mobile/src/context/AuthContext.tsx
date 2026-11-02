@@ -33,6 +33,7 @@ import {
   unregisterPushNotifications,
 } from "../services/notifications";
 import { uploadMarketplaceImage } from "../services/uploadMarketplaceImage";
+import { uploadEmergencyMedia } from "../services/uploadEmergencyMedia";
 
 export type AuthUser = {
   id: string;
@@ -150,6 +151,49 @@ const buildQueuedRequestBody = async (action: SyncAction) => {
       location,
       ...(mediaPublicId ? { media_public_id: mediaPublicId } : {}),
     };
+  }
+  if (action.actionType === "trigger_sos") {
+    const body: Record<string, unknown> = {
+      latitude: Number(action.payload.latitude),
+      longitude: Number(action.payload.longitude),
+      emergency_type: String(action.payload.emergency_type ?? "OTHER"),
+      escalation_level: Number(action.payload.escalation_level ?? 1),
+      accuracy_m: Number(action.payload.accuracy_m),
+      mocked: action.payload.mocked === true,
+    };
+    const imageUri =
+      typeof action.payload.emergency_image_uri === "string"
+        ? action.payload.emergency_image_uri
+        : null;
+    if (imageUri) {
+      try {
+        body.emergency_image_url = await uploadEmergencyMedia(
+          imageUri,
+          `sos-offline-${action.id}.jpg`,
+          "image/jpeg",
+          "image",
+        );
+      } catch (error) {
+        console.error(`Offline SOS photo ${action.id} could not be uploaded:`, error);
+      }
+    }
+    const audioUri =
+      typeof action.payload.ambient_audio_uri === "string"
+        ? action.payload.ambient_audio_uri
+        : null;
+    if (audioUri) {
+      try {
+        body.emergency_audio_url = await uploadEmergencyMedia(
+          audioUri,
+          `sos-offline-${action.id}.m4a`,
+          "audio/mp4",
+          "video",
+        );
+      } catch (error) {
+        console.error(`Offline SOS audio ${action.id} could not be uploaded:`, error);
+      }
+    }
+    return body;
   }
   return {
     latitude: Number(action.payload.latitude),

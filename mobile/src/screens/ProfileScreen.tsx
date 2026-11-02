@@ -24,6 +24,7 @@ import { useEffect, useRef, useState } from "react";
 import * as Updates from "expo-updates";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import * as SecureStore from "expo-secure-store";
 import { useNavigation, type NavigationProp } from "@react-navigation/native";
 import {
   openProfileStore,
@@ -35,6 +36,7 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Linking,
   Modal,
   Pressable,
@@ -56,6 +58,7 @@ import {
 } from "../services/emergencyServices";
 import { API_BASE_URL, apiFetch } from "../services/api";
 import { uploadProfilePhoto } from "../services/uploadProfilePhoto";
+import { clearCachedContent } from "../services/db";
 import {
   checkServerContract,
   getServerHealth,
@@ -161,6 +164,7 @@ export default function ProfileScreen() {
     quietHoursEnd: "07:00",
     defaultRadiusKm: 3,
     voiceAssistantFloatingButton: false,
+    rememberFeedLocation: true,
   });
   const [profileError, setProfileError] = useState<string | null>(null);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -185,6 +189,8 @@ export default function ProfileScreen() {
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [privacyVisible, setPrivacyVisible] = useState(false);
+  const [profilePhotoVisible, setProfilePhotoVisible] = useState(false);
+  const [isClearingLocalData, setIsClearingLocalData] = useState(false);
   const [termsVisible, setTermsVisible] = useState(false);
   const [technicalStatus, setTechnicalStatus] = useState(getTechnicalAvailability);
   const [serverHealth, setServerHealth] = useState<ServerHealth | null>(
@@ -726,6 +732,71 @@ export default function ProfileScreen() {
     }
   };
 
+  const updateLocationRetention = async (enabled: boolean) => {
+    await updatePreferences({
+      ...preferences,
+      rememberFeedLocation: enabled,
+    });
+    if (!enabled) {
+      try {
+        await SecureStore.deleteItemAsync("quartierplus.feed.last-position");
+      } catch (error) {
+        Alert.alert(
+          "Position non supprimée",
+          error instanceof Error
+            ? error.message
+            : "Impossible d’effacer la dernière position enregistrée.",
+        );
+      }
+    }
+  };
+
+  const openDeviceNotificationSettings = async () => {
+    try {
+      await Linking.openSettings();
+    } catch (error) {
+      Alert.alert(
+        "Réglages indisponibles",
+        error instanceof Error
+          ? error.message
+          : "Impossible d’ouvrir les réglages de l’appareil.",
+      );
+    }
+  };
+
+  const confirmClearCachedContent = () => {
+    Alert.alert(
+      "Effacer le contenu local",
+      "Les publications, alertes, messages et réponses API mis en cache sur cet appareil seront supprimés. Les contacts SOS et la file d’actions hors ligne seront conservés.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Effacer",
+          style: "destructive",
+          onPress: () => {
+            setIsClearingLocalData(true);
+            void clearCachedContent()
+              .then(() =>
+                Alert.alert(
+                  "Contenu effacé",
+                  "Le contenu mis en cache sur cet appareil a été supprimé.",
+                ),
+              )
+              .catch((error: unknown) =>
+                Alert.alert(
+                  "Suppression impossible",
+                  error instanceof Error
+                    ? error.message
+                    : "Impossible d’effacer le contenu local.",
+                ),
+              )
+              .finally(() => setIsClearingLocalData(false));
+          },
+        },
+      ],
+    );
+  };
+
   const requestPhoneOtp = async () => {
     const phoneNumber = draftPhoneNumber.trim().replace(/[\s()-]/g, "");
     if (!/^\+[1-9]\d{7,14}$/.test(phoneNumber)) {
@@ -1035,12 +1106,19 @@ export default function ProfileScreen() {
       >
         <View style={styles.profileHeader}>
           <View style={styles.avatarWrapper}>
-            <ProfileAvatar
-              name={profile?.name}
-              photoUrl={profile?.photoUrl}
-              size={72}
-              isProVerified={profile?.badge === "Commerçant Certifié"}
-            />
+            <Pressable
+              accessibilityLabel={`Agrandir la photo de ${profile?.name || "profil"}`}
+              accessibilityRole="button"
+              disabled={!profile?.photoUrl}
+              onPress={() => setProfilePhotoVisible(true)}
+            >
+              <ProfileAvatar
+                name={profile?.name}
+                photoUrl={profile?.photoUrl}
+                size={72}
+                isProVerified={profile?.badge === "Commerçant Certifié"}
+              />
+            </Pressable>
             {profile?.isVerified && (
               <View style={styles.verifiedBadge}>
                 <CheckCircle2 color="#ffffff" size={15} />
@@ -1674,27 +1752,97 @@ export default function ProfileScreen() {
         visible={privacyVisible}
       >
         <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={[styles.modalCard, styles.privacyModalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Text accessibilityRole="header" style={[styles.modalTitle, { color: colors.text }]}>
               Confidentialité
             </Text>
-            <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
-              Vos préférences restent enregistrées sur cet appareil. Les réglages
-              de notifications SOS et de localisation peuvent être modifiés ici.
-            </Text>
-            <View style={styles.privacySetting}>
-              <Text style={[styles.menuLabel, { color: colors.text }]}>Notifications SOS</Text>
-              <Switch
-                accessibilityLabel="Notifications SOS"
-                onValueChange={(enabled) =>
-                  void updatePreferences({
-                    ...preferences,
-                    sosNotificationsEnabled: enabled,
-                  })
-                }
-                value={preferences.sosNotificationsEnabled}
-              />
-            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
+                Contrôlez les données conservées sur cet appareil et les alertes
+                d’urgence. Le partage de position reste privé tant que vous ne
+                l’activez pas explicitement sur la carte.
+              </Text>
+              <View style={styles.privacySetting}>
+                <View style={styles.privacyCopy}>
+                  <Text style={[styles.menuLabel, { color: colors.text }]}>
+                    Mémoriser ma dernière position
+                  </Text>
+                  <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
+                    Stockée localement pour accélérer le fil de quartier. Le SOS
+                    demande toujours une position actuelle.
+                  </Text>
+                </View>
+                <Switch
+                  accessibilityLabel="Mémoriser la dernière position sur cet appareil"
+                  onValueChange={(enabled) => void updateLocationRetention(enabled)}
+                  value={preferences.rememberFeedLocation}
+                />
+              </View>
+              <View style={styles.privacySetting}>
+                <View style={styles.privacyCopy}>
+                  <Text style={[styles.menuLabel, { color: colors.text }]}>Notifications SOS</Text>
+                  <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
+                    Autoriser les alertes d’urgence reçues sur cet appareil.
+                  </Text>
+                </View>
+                <Switch
+                  accessibilityLabel="Notifications SOS"
+                  onValueChange={(enabled) =>
+                    void updatePreferences({
+                      ...preferences,
+                      sosNotificationsEnabled: enabled,
+                    })
+                  }
+                  value={preferences.sosNotificationsEnabled}
+                />
+              </View>
+              <View style={styles.privacySetting}>
+                <View style={styles.privacyCopy}>
+                  <Text style={[styles.menuLabel, { color: colors.text }]}>
+                    Priorité SOS pendant les heures calmes
+                  </Text>
+                  <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>
+                    Les alertes SOS peuvent contourner les heures calmes.
+                  </Text>
+                </View>
+                <Switch
+                  accessibilityLabel="Priorité des notifications SOS pendant les heures calmes"
+                  onValueChange={(enabled) =>
+                    void updatePreferences({
+                      ...preferences,
+                      sosNotificationsPriority: enabled,
+                    })
+                  }
+                  value={preferences.sosNotificationsPriority}
+                />
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void openDeviceNotificationSettings()}
+                style={styles.privacyAction}
+              >
+                <Bell color={colors.primary} size={18} />
+                <Text style={[styles.privacyActionText, { color: colors.text }]}>
+                  Réglages des notifications et autorisations
+                </Text>
+                <ChevronRight color={colors.secondaryText} size={18} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isClearingLocalData}
+                onPress={confirmClearCachedContent}
+                style={styles.privacyAction}
+              >
+                {isClearingLocalData ? (
+                  <ActivityIndicator color={colors.danger} size="small" />
+                ) : (
+                  <Trash2 color={colors.danger} size={18} />
+                )}
+                <Text style={[styles.privacyActionText, { color: colors.text }]}>
+                  {isClearingLocalData ? "Suppression en cours…" : "Effacer le contenu local en cache"}
+                </Text>
+              </Pressable>
+            </ScrollView>
             <Pressable
               accessibilityRole="button"
               onPress={() => setPrivacyVisible(false)}
@@ -1704,6 +1852,28 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
         </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setProfilePhotoVisible(false)}
+        statusBarTranslucent
+        transparent
+        visible={profilePhotoVisible && Boolean(profile?.photoUrl)}
+      >
+        <Pressable
+          accessibilityLabel="Fermer la photo de profil agrandie"
+          accessibilityRole="button"
+          onPress={() => setProfilePhotoVisible(false)}
+          style={styles.profilePhotoBackdrop}
+        >
+          <Image
+            accessibilityLabel={`Photo de profil de ${profile?.name || "l’utilisateur"}`}
+            resizeMode="contain"
+            source={{ uri: profile?.photoUrl ?? undefined }}
+            style={styles.profilePhotoPreview}
+          />
+          <Text style={styles.profilePhotoHint}>Toucher pour fermer</Text>
+        </Pressable>
       </Modal>
       <Modal
         animationType="slide"
@@ -2343,11 +2513,26 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 20,
   },
+  profilePhotoBackdrop: {
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.92)",
+    flex: 1,
+    justifyContent: "center",
+    padding: 20,
+  },
+  profilePhotoPreview: { height: "82%", width: "100%" },
+  profilePhotoHint: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 16,
+  },
   modalCard: {
     backgroundColor: "#ffffff",
     borderRadius: 16,
     padding: 20,
   },
+  privacyModalCard: { maxHeight: "90%" },
   modalTitle: {
     color: "#172b4d",
     fontSize: 18,
@@ -2457,11 +2642,22 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   privacySetting: {
-    alignItems: "center",
+    alignItems: "flex-start",
     flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 14,
   },
+  privacyCopy: { flex: 1, paddingRight: 10 },
+  privacyAction: {
+    alignItems: "center",
+    borderTopColor: "#e2e8f0",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 48,
+    paddingVertical: 8,
+  },
+  privacyActionText: { flex: 1, fontSize: 12, fontWeight: "600" },
   menuRowBorder: {
     borderBottomColor: "#f1f5f9",
     borderBottomWidth: 1,
@@ -2501,6 +2697,7 @@ const styles = StyleSheet.create({
   settingDescription: {
     color: "#94a3b8",
     fontSize: 10,
+    lineHeight: 15,
     marginTop: 2,
   },
   logoutButton: {

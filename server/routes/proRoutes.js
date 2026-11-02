@@ -8,6 +8,7 @@ import {
   createSyndicWallPost,
   createTownHallConsultation,
   getSecurityIntervention,
+  updateSecurityIntervention,
   getSyndicCraftsmen,
   getSyndicVotes,
   getSyndicWall,
@@ -97,10 +98,15 @@ router.get(
   proRoleGuard("SECURITY_AGENT"),
   listActiveSos,
 );
-router.get(
+router.post(
   "/security/interventions/:sos_id",
   proRoleGuard("SECURITY_AGENT"),
   getSecurityIntervention,
+);
+router.patch(
+  "/security/interventions/:sos_id",
+  proRoleGuard("SECURITY_AGENT"),
+  updateSecurityIntervention,
 );
 router.post(
   "/security/alert-neighbors",

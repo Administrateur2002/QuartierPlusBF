@@ -13,7 +13,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Linking,
   Modal,
   Pressable,
   StyleSheet,
@@ -24,6 +23,7 @@ import {
 import type { Socket } from "socket.io-client";
 import { openProfileStore } from "../storage/profileStore";
 import { uploadEmergencyMedia } from "../services/uploadEmergencyMedia";
+import { callOfficialEmergencyService } from "../services/emergencyServices";
 import { useTheme } from "../context/ThemeContext";
 
 export type SosCoordinates = {
@@ -31,7 +31,7 @@ export type SosCoordinates = {
   longitude: number;
 };
 
-type EmergencyType = "MEDICAL" | "SECURITY" | "FIRE";
+export type EmergencyType = "MEDICAL" | "SECURITY" | "FIRE";
 
 type SosButtonProps = {
   location: SosCoordinates | null;
@@ -58,6 +58,15 @@ const EMERGENCY_TYPES: { id: EmergencyType; label: string; emoji: string }[] = [
   { id: "SECURITY", label: "Sécurité", emoji: "🛡" },
   { id: "FIRE", label: "Incendie", emoji: "🔥" },
 ];
+
+const EMERGENCY_GUIDANCE: Record<EmergencyType, string> = {
+  MEDICAL:
+    "Appelez les urgences médicales. Donnez votre position et suivez les instructions du régulateur; n’intervenez que si vous pouvez le faire sans danger.",
+  FIRE:
+    "Éloignez-vous du feu, utilisez les sorties sans ascenseur et n’entrez pas dans le bâtiment. Appelez les pompiers depuis un lieu sûr.",
+  SECURITY:
+    "Mettez-vous à l’abri, évitez toute confrontation et appelez la police ou la gendarmerie depuis un lieu sûr.",
+};
 
 const ESCALATION_LEVELS = [
   { level: 1, label: "3 km" },
@@ -143,17 +152,45 @@ export default function SosButton({
     }
   }, [emergencyAudioUri, emergencyPhoto, emergencyType]);
 
-  const chooseEmergencyPhoto = async () => {
+  const chooseEmergencyPhoto = () => {
+    Alert.alert("Ajouter une photo", "Choisissez une source.", [
+      {
+        text: "Prendre une photo",
+        onPress: () => void selectEmergencyPhoto("camera"),
+      },
+      {
+        text: "Choisir dans la galerie",
+        onPress: () => void selectEmergencyPhoto("library"),
+      },
+      { text: "Annuler", style: "cancel" },
+    ]);
+  };
+
+  const selectEmergencyPhoto = async (source: "camera" | "library") => {
     try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const permission =
+        source === "camera"
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        throw new Error("L'accès à la photothèque est nécessaire pour joindre une photo.");
+        throw new Error(
+          source === "camera"
+            ? "L’accès à la caméra est nécessaire pour prendre une photo."
+            : "L’accès à la photothèque est nécessaire pour joindre une photo.",
+        );
       }
-      const selection = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
-        allowsEditing: false,
-        quality: 0.8,
-      });
+      const selection =
+        source === "camera"
+          ? await ImagePicker.launchCameraAsync({
+              mediaTypes: ["images"],
+              allowsEditing: false,
+              quality: 0.8,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              allowsEditing: false,
+              quality: 0.8,
+            });
       if (selection.canceled) return;
       const asset = selection.assets[0];
       if (!asset?.uri) throw new Error("La photo sélectionnée est indisponible.");
@@ -499,8 +536,18 @@ export default function SosButton({
   }, [cancelSeconds, socket, trackingAlert]);
 
   const openEmergencyCall = async () => {
+    if (!emergencyType) {
+      Alert.alert("Type d’urgence requis", "Choisissez le service à contacter.");
+      return;
+    }
     try {
-      await Linking.openURL("tel:112");
+      await callOfficialEmergencyService(
+        emergencyType === "MEDICAL"
+          ? "medical"
+          : emergencyType === "FIRE"
+            ? "fire"
+            : "police",
+      );
     } catch (error) {
       Alert.alert(
         "Appel indisponible",
@@ -632,6 +679,14 @@ export default function SosButton({
                     );
                   })}
                 </View>
+                {emergencyType ? (
+                  <Text
+                    accessibilityLiveRegion="polite"
+                    style={styles.guidance}
+                  >
+                    {EMERGENCY_GUIDANCE[emergencyType]}
+                  </Text>
+                ) : null}
                 <Text style={styles.sectionLabel}>Rayon d'alerte</Text>
                 <View style={styles.radiusOptions}>
                   {ESCALATION_LEVELS.map((option) => {
@@ -660,7 +715,7 @@ export default function SosButton({
                 <View style={styles.mediaActions}>
                   <Pressable
                     accessibilityRole="button"
-                    onPress={() => void chooseEmergencyPhoto()}
+                    onPress={chooseEmergencyPhoto}
                     style={styles.mediaButton}
                   >
                     <Camera color="#1d4ed8" size={17} />
@@ -808,7 +863,7 @@ export default function SosButton({
               onPress={() => void openEmergencyCall()}
               style={styles.callButton}
             >
-              <Text style={styles.callButtonText}>Appeler les secours · 112</Text>
+              <Text style={styles.callButtonText}>Appeler le service concerné</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -869,6 +924,7 @@ const styles = StyleSheet.create({
   optionEmoji: { fontSize: 20, marginBottom: 5 },
   optionText: { color: "#475569", fontSize: 12, fontWeight: "600" },
   optionTextSelected: { color: "#b91c1c" },
+  guidance: { backgroundColor: "#fff7ed", borderRadius: 10, color: "#7c2d12", fontSize: 12, lineHeight: 18, marginTop: 10, padding: 11 },
   radiusOptions: { flexDirection: "row", gap: 8 },
   radiusOption: { alignItems: "center", backgroundColor: "#f8fafc", borderColor: "#e2e8f0", borderRadius: 10, borderWidth: 1, flex: 1, padding: 11 },
   radiusOptionSelected: { backgroundColor: "#fff7ed", borderColor: "#f97316" },
