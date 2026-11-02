@@ -79,7 +79,14 @@ const loadCollection = async <T>(
   return rows.map((row) => JSON.parse(row.payload) as T);
 };
 
-export const initializeDatabase = initializeSharedDatabase;
+export const initializeDatabase = async (): Promise<void> => {
+  try {
+    await initializeSharedDatabase();
+  } catch (error) {
+    logCacheFailure(error);
+    logMemoryFallback("le stockage local", error);
+  }
+};
 
 export const cachePosts = (posts: unknown[]) =>
   saveCollection("cached_posts", posts).catch((error: unknown) => {

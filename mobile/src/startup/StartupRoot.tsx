@@ -262,11 +262,20 @@ export default function StartupRoot({
 
     try {
       const App = require("../../App").default as ComponentType;
-      if (!startupApiBaseUrl) {
-        setStartup({ status: "ready", App });
-      } else {
-        setStartup({ status: "waking", App });
-        void (async () => {
+      void (async () => {
+        try {
+          await require("../services/db").initializeDatabase();
+        } catch (error) {
+          console.error(
+            "SQLite initialization failed; continuing with in-memory storage:",
+            error,
+          );
+        }
+        if (!mounted) return;
+        if (!startupApiBaseUrl) {
+          setStartup({ status: "ready", App });
+        } else {
+          setStartup({ status: "waking", App });
           const deadline = Date.now() + 60_000;
           while (mounted && Date.now() < deadline) {
             const controller = new AbortController();
@@ -286,8 +295,8 @@ export default function StartupRoot({
             await new Promise((resolve) => setTimeout(resolve, 2_000));
           }
           if (mounted) setStartup({ status: "ready", App });
-        })();
-      }
+        }
+      })();
     } catch (error) {
       recordSanitizedError(
         "A required application or native module failed to load",

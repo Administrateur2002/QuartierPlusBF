@@ -9,6 +9,7 @@ const {
   enqueueOfflineAction,
   getCachedPosts,
   getPendingActions,
+  initializeDatabase,
   removeSyncAction,
   updateSyncAction,
 } = require("./db");
@@ -22,6 +23,13 @@ describe("in-memory offline storage fallback", () => {
   it("keeps cached data and queued actions usable when SQLite initialization fails", async () => {
     const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
+      await expect(initializeDatabase()).resolves.toBeUndefined();
+      expect(warning).toHaveBeenCalledWith(
+        "Cache SQLite indisponible.",
+        expect.objectContaining({
+          message: "Native module ExpoSQLite is missing",
+        }),
+      );
       await cachePosts([{ id: "post-1", caption: "en ligne" }]);
       await expect(getCachedPosts()).resolves.toEqual([
         { id: "post-1", caption: "en ligne" },
