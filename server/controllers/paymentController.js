@@ -8,6 +8,7 @@ import {
 import { issueTicket } from "../services/tickets.service.js";
 import { getCloudinaryAsset } from "../services/cloudinary.js";
 import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
+import { normalizeProPublication } from "../services/proPublication.js";
 
 const OFFERS = {
   ALLIANCE_PRO: {
@@ -66,7 +67,12 @@ const validatePin = (value) => {
   if (
     !/^[0-9a-f-]{36}$/i.test(merchantItemId) ||
     !caption ||
-    caption.length > 300
+    caption.length > 300 ||
+    (value.sponsored_pin_id !== undefined &&
+      (typeof value.sponsored_pin_id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          value.sponsored_pin_id,
+        )))
   ) {
     return null;
   }
@@ -75,18 +81,10 @@ const validatePin = (value) => {
     caption,
     media_public_id:
       typeof value.media_public_id === "string" ? value.media_public_id : null,
+    ...(typeof value.sponsored_pin_id === "string"
+      ? { sponsored_pin_id: value.sponsored_pin_id }
+      : {}),
   };
-};
-
-const validatePublication = (value) => {
-  if (!value || typeof value !== "object") return null;
-  const title = typeof value.title === "string" ? value.title.trim() : "";
-  const description =
-    typeof value.description === "string" ? value.description.trim() : "";
-  if (!title || title.length > 150 || !description || description.length > 500) {
-    return null;
-  }
-  return { title, description };
 };
 
 export const createTransaction = async (request, response, next) => {
@@ -106,7 +104,7 @@ export const createTransaction = async (request, response, next) => {
   const publication =
     paymentType === "SPONSORED_PIN"
       ? null
-      : validatePublication(request.body?.publication);
+      : normalizeProPublication(request.body?.publication);
   if (paymentType === "SPONSORED_PIN" && !pin) {
     return response.status(400).json({
       error: "Choisissez un commerce et saisissez un texte court pour l'épingle.",
@@ -129,6 +127,18 @@ export const createTransaction = async (request, response, next) => {
         return response.status(400).json({
           error: "Le commerce sélectionné ne vous appartient pas.",
         });
+      }
+      if (pin.sponsored_pin_id) {
+        const ownedPin = await pool.query(
+          `SELECT id FROM sponsored_pins
+           WHERE id = $1 AND user_id = $2 AND marketplace_item_id = $3`,
+          [pin.sponsored_pin_id, request.auth.userId, pin.merchant_item_id],
+        );
+        if (!ownedPin.rowCount) {
+          return response.status(400).json({
+            error: "La campagne à renouveler ne vous appartient pas ou est liée à un autre commerce.",
+          });
+        }
       }
       if (pin.media_public_id) {
         const publicId = pin.media_public_id;
@@ -236,11 +246,11 @@ export const listSponsoredPins = async (request, response, next) => {
   const latitude = Number(request.query.latitude);
   const longitude = Number(request.query.longitude);
   const radius = Number(request.query.radius_m ?? 30_000);
-  const hasLocation =
-    request.query.latitude !== undefined &&
+  const hasCoordinates =
+    request.query.latitude !== undefined ||
     request.query.longitude !== undefined;
   if (
-    (hasLocation &&
+    (hasCoordinates &&
       (!Number.isFinite(latitude) ||
         !Number.isFinite(longitude) ||
         Math.abs(latitude) > 90 ||
@@ -254,19 +264,43 @@ export const listSponsoredPins = async (request, response, next) => {
 
   try {
     const result = await pool.query(
-      `SELECT id, title, icon_url, expires_at,
-              ST_Y(location::geometry) AS latitude,
-              ST_X(location::geometry) AS longitude
-       FROM sponsored_pins
-       WHERE is_active = TRUE AND expires_at > NOW()
-         AND ($1::boolean = FALSE OR ST_DWithin(
-           location,
-           ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
-           $4
-         ))
-       ORDER BY starts_at DESC
-       LIMIT 500`,
-      [hasLocation, longitude, latitude, radius],
+      `WITH visible_pins AS MATERIALIZED (
+         SELECT pin.id, pin.user_id, pin.title, pin.icon_url, pin.caption,
+                pin.marketplace_item_id, pin.expires_at,
+                pin.starts_at, pin.location
+         FROM sponsored_pins pin
+         WHERE pin.is_active = TRUE AND pin.expires_at > NOW()
+           AND ($1::boolean = FALSE OR ST_DWithin(
+             pin.location,
+             ST_SetSRID(ST_MakePoint($3, $2), 4326)::geography,
+             $4
+           ))
+         ORDER BY pin.starts_at DESC
+         LIMIT 500
+       ), record_impressions AS (
+         INSERT INTO sponsored_pin_impressions (pin_id, viewer_id)
+         SELECT pin.id, $5
+         FROM visible_pins pin
+         WHERE pin.user_id <> $5
+           AND $1::boolean = TRUE
+         ON CONFLICT DO NOTHING
+         RETURNING pin_id
+       )
+       SELECT pin.id, pin.user_id AS owner_id, pin.title, pin.icon_url, pin.caption,
+              pin.marketplace_item_id, pin.expires_at,
+              ST_Y(pin.location::geometry) AS latitude,
+              ST_X(pin.location::geometry) AS longitude,
+              (SELECT COUNT(*)::int FROM sponsored_pin_impressions impression
+               WHERE impression.pin_id = pin.id) AS views_count
+       FROM visible_pins pin
+       ORDER BY pin.starts_at DESC`,
+      [
+        hasCoordinates,
+        hasCoordinates ? latitude : null,
+        hasCoordinates ? longitude : null,
+        radius,
+        request.auth.userId,
+      ],
     );
     return response.status(200).json({
       pins: result.rows.map((pin) => ({
@@ -278,6 +312,10 @@ export const listSponsoredPins = async (request, response, next) => {
         },
         status: "ACTIVE",
         is_sponsored: true,
+        views_count: pin.views_count,
+        owner_id: pin.owner_id,
+        marketplace_item_id: pin.marketplace_item_id,
+        description: pin.caption,
       })),
     });
   } catch (error) {
@@ -449,16 +487,48 @@ export const handleFedaPayWebhook = async (request, response, next) => {
             if (!pin) {
               throw new Error("Les données de l'épingle payée sont absentes.");
             }
-            await connection.query(
-              `INSERT INTO sponsored_pins
-                 (user_id, title, location, icon_url, caption, marketplace_item_id,
-                  starts_at, expires_at, is_active)
-               SELECT $1, item.title, item.location::geography, $2, $3, item.id,
+            if (pin.sponsored_pin_id) {
+              const renewedPin = await connection.query(
+                `UPDATE sponsored_pins AS campaign
+                 SET title = item.title,
+                     location = item.location::geography,
+                     icon_url = COALESCE($2, campaign.icon_url),
+                     caption = $3,
+                     starts_at = CASE
+                       WHEN campaign.expires_at <= NOW() THEN NOW()
+                       ELSE campaign.starts_at
+                     END,
+                     expires_at = GREATEST(campaign.expires_at, NOW())
+                       + INTERVAL '7 days',
+                     is_active = TRUE
+                 FROM marketplace_items AS item
+                 WHERE campaign.id = $1 AND campaign.user_id = $4
+                   AND campaign.marketplace_item_id = item.id
+                   AND item.id = $5 AND item.seller_id = $4
+                 RETURNING campaign.id`,
+                [
+                  pin.sponsored_pin_id,
+                  pin.icon_url ?? null,
+                  pin.caption,
+                  payment.user_id,
+                  pin.merchant_item_id,
+                ],
+              );
+              if (!renewedPin.rowCount) {
+                throw new Error("La campagne à renouveler est introuvable.");
+              }
+            } else {
+              await connection.query(
+                `INSERT INTO sponsored_pins
+                   (user_id, title, location, icon_url, caption, marketplace_item_id,
+                    starts_at, expires_at, is_active)
+                 SELECT $1, item.title, item.location::geography, $2, $3, item.id,
                       NOW(), NOW() + INTERVAL '7 days', TRUE
-               FROM marketplace_items AS item
-               WHERE item.id = $4 AND item.seller_id = $1`,
-              [payment.user_id, pin.icon_url ?? null, pin.caption, pin.merchant_item_id],
-            );
+                 FROM marketplace_items AS item
+                 WHERE item.id = $4 AND item.seller_id = $1`,
+                [payment.user_id, pin.icon_url ?? null, pin.caption, pin.merchant_item_id],
+              );
+            }
           }
         }
       } else {

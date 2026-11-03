@@ -1,5 +1,9 @@
 import { Router } from "express";
-import { getMySubscription, getProDashboard } from "../controllers/proController.js";
+import {
+  getMySubscription,
+  getProDashboard,
+  reviewProfessional,
+} from "../controllers/proController.js";
 import {
   alertNeighborResponders,
   createFlashSale,
@@ -32,6 +36,7 @@ router.use((_request, response, next) => {
 router.use(authMiddleware);
 router.post("/offers/activate", activateFreeOffer);
 router.get("/me/subscription", getMySubscription);
+router.post("/reviews/:ownerId", reviewProfessional);
 router.get(
   "/merchant/dashboard",
   proRoleGuard("ALLIANCE_PRO"),

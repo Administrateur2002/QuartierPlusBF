@@ -79,6 +79,10 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 31. `migrations/027_wholesaler_optional_registration_fields.sql`
 32. `migrations/028_voyage_station_reservations.sql`
 33. `migrations/029_post_media_carousel.sql`
+34. `migrations/030_internal_post_shares.sql`
+35. `migrations/031_pro_map_impressions.sql`
+36. `migrations/032_pro_reviews.sql`
+37. `migrations/033_sponsored_pin_impressions.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -127,6 +131,11 @@ elle est nécessaire avant de déployer les routes de profil, d’alliances, de
 messagerie et de fil qui lisent `users.profile_photo_url`. La migration 029
 crée `post_media_items`, lue par le fil. Appliquez ces migrations dans l’ordre
 avant de déployer cette version de l’API.
+La migration 030 stocke les partages internes de publications et vérifie les
+alliances, les groupes et les canaux autorisés. Les migrations 031 et 033
+enregistrent une vue par utilisateur et par jour pour les vitrines Pro et les
+épingles sponsorisées. La migration 032 ajoute les avis clients. Appliquez ces
+quatre migrations avant de déployer les nouvelles routes de partage et de carte.
 
 ## 2. Créer le service web Render
 

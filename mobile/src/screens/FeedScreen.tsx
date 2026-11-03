@@ -100,6 +100,7 @@ type FeedEntry = {
   mediaType?: CloudinaryMediaType;
   authorId?: string;
   authorName?: string;
+  sharedByName?: string;
   authorPhotoUrl?: string;
   authorBadge?: string | null;
   likesCount: number;
@@ -109,6 +110,9 @@ type FeedEntry = {
   authorIsAlly: boolean;
   allianceStatus?: "PENDING" | "ALLIED" | null;
 };
+
+type ShareTargetKind = "ALLY" | "GROUP" | "CHANNEL";
+type ShareTarget = { id: string; name: string };
 
 type FeedComment = {
   id: string;
@@ -265,6 +269,8 @@ const normalizePost = (value: unknown): FeedEntry | null => {
     authorId: typeof value.author_id === "string" ? value.author_id : undefined,
     authorName:
       typeof value.author_name === "string" ? value.author_name : undefined,
+    sharedByName:
+      typeof value.shared_by_name === "string" ? value.shared_by_name : undefined,
     authorPhotoUrl:
       typeof value.author_photo_url === "string" ? value.author_photo_url : undefined,
     authorBadge:
@@ -507,6 +513,11 @@ export default function FeedScreen() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedPost, setSelectedPost] = useState<FeedEntry | null>(null);
   const [actionPost, setActionPost] = useState<FeedEntry | null>(null);
+  const [shareTargetKind, setShareTargetKind] = useState<ShareTargetKind | null>(null);
+  const [shareTargets, setShareTargets] = useState<ShareTarget[]>([]);
+  const [shareTargetPost, setShareTargetPost] = useState<FeedEntry | null>(null);
+  const [shareTargetsLoading, setShareTargetsLoading] = useState(false);
+  const [isSharingPost, setIsSharingPost] = useState(false);
   const [reportTarget, setReportTarget] = useState<{
     type: "post" | "comment" | "profile";
     id: string;
@@ -872,7 +883,7 @@ export default function FeedScreen() {
         }
 
         setIsServerRequestPending(true);
-        const [postsResponse, alertsResponse, feedResponse] = await Promise.all([
+        const [postsResponse, alertsResponse, feedResponse, sharedResponse] = await Promise.all([
           apiFetch(
             `${API_BASE_URL}/v1/public/marketplace?${query.toString()}`,
             { signal: controller.signal, timeoutMs: 60_000 },
@@ -885,6 +896,12 @@ export default function FeedScreen() {
             signal: controller.signal,
             timeoutMs: 60_000,
           }),
+          authStatus === "connected"
+            ? apiFetch(`${API_BASE_URL}/v1/posts/shared`, {
+                signal: controller.signal,
+                timeoutMs: 60_000,
+              })
+            : Promise.resolve(null),
         ]);
         if (!cancelled) setIsServerRequestPending(false);
         if (!postsResponse.ok) {
@@ -902,18 +919,26 @@ export default function FeedScreen() {
         if (!feedResponse.ok) {
           throw new FeedHttpError("/v1/feed", feedResponse.status);
         }
+        if (sharedResponse && !sharedResponse.ok) {
+          throw new FeedHttpError("/v1/posts/shared", sharedResponse.status);
+        }
 
-        const [postsPayload, alertsPayload, feedPayload] = await Promise.all([
+        const [postsPayload, alertsPayload, feedPayload, sharedPayload] = await Promise.all([
           postsResponse.json(),
           alertsResponse.json(),
           feedResponse.json(),
+          sharedResponse ? sharedResponse.json() : Promise.resolve({ posts: [] }),
         ]);
         const rawPosts = recordsFrom(postsPayload, "items");
         const rawAlerts = recordsFrom(alertsPayload, "alerts");
         const rawFeedPosts = recordsFrom(feedPayload, "posts");
-        const posts = [...rawPosts, ...rawFeedPosts].map(normalizePost).filter(
+        const rawSharedPosts = recordsFrom(sharedPayload, "posts");
+        const normalizedPosts = [...rawPosts, ...rawFeedPosts, ...rawSharedPosts].map(normalizePost).filter(
           (entry): entry is FeedEntry => entry !== null,
         );
+        const posts = [
+          ...new Map(normalizedPosts.map((entry) => [entry.id, entry] as const)).values(),
+        ];
         const alerts = rawAlerts.map(normalizeAlert).filter(
           (entry): entry is FeedEntry => entry !== null,
         );
@@ -1418,6 +1443,101 @@ export default function FeedScreen() {
         "Partage impossible",
         shareError instanceof Error ? shareError.message : "Réessayez.",
       );
+    }
+  };
+
+  const openInternalShare = async (
+    entry: FeedEntry,
+    destination: ShareTargetKind,
+  ) => {
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) {
+      Alert.alert("Partage indisponible", "L'adresse du serveur n'est pas configurée.");
+      return;
+    }
+    setShareTargetPost(entry);
+    setShareTargetKind(destination);
+    setShareTargets([]);
+    setShareTargetsLoading(true);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/posts/share-targets`);
+      if (!response.ok) {
+        throw new Error(`Impossible de charger les destinations (HTTP ${response.status}).`);
+      }
+      const payload: unknown = await response.json();
+      if (!isRecord(payload)) throw new Error("La liste des destinations est invalide.");
+      const values = payload[destination === "ALLY" ? "allies" : destination === "GROUP" ? "groups" : "channels"];
+      if (!Array.isArray(values)) throw new Error("La liste des destinations est invalide.");
+      const targets = values.flatMap((item): ShareTarget[] =>
+        isRecord(item) && typeof item.id === "string"
+          ? [{ id: item.id, name: typeof item.name === "string" ? item.name : "Destination" }]
+          : [],
+      );
+      setShareTargets(targets);
+    } catch (error) {
+      setShareTargetPost(null);
+      setShareTargetKind(null);
+      Alert.alert(
+        "Destinations indisponibles",
+        error instanceof Error ? error.message : "Réessayez.",
+      );
+    } finally {
+      setShareTargetsLoading(false);
+    }
+  };
+
+  const sharePostInternally = async (target: ShareTarget) => {
+    if (!shareTargetPost || !shareTargetKind || !API_BASE_URL || isSharingPost) return;
+    setIsSharingPost(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/posts/${encodeURIComponent(shareTargetPost.id)}/share`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            destination_type: shareTargetKind,
+            destination_id: target.id,
+          }),
+        },
+      );
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `Le partage a échoué (HTTP ${response.status}).`,
+        );
+      }
+      if (!isRecord(payload) || payload.shared !== true) {
+        throw new Error("La confirmation du partage est invalide.");
+      }
+      if (payload.already_shared !== true) {
+        setEntries((current) =>
+          current.map((entry) =>
+            entry.id === shareTargetPost.id
+              ? { ...entry, sharesCount: entry.sharesCount + 1 }
+              : entry,
+          ),
+        );
+      }
+      setShareTargetPost(null);
+      setShareTargetKind(null);
+      setActionPost(null);
+      Alert.alert(
+        "Publication partagée",
+        `La publication a été envoyée à ${target.name}.`,
+      );
+    } catch (error) {
+      Alert.alert(
+        "Partage impossible",
+        error instanceof Error ? error.message : "Réessayez.",
+      );
+    } finally {
+      setIsSharingPost(false);
     }
   };
 
@@ -2572,6 +2692,11 @@ export default function FeedScreen() {
                           <Text numberOfLines={1} style={styles.immersiveMeta}>
                             Annonce · {formatDate(entry.createdAt)}
                           </Text>
+                          {entry.sharedByName ? (
+                            <Text numberOfLines={1} style={styles.immersiveMeta}>
+                              Partagé par {entry.sharedByName}
+                            </Text>
+                          ) : null}
                         </View>
                         {entry.authorId === user?.id ? (
                           <View accessibilityLabel="Votre publication" style={styles.immersiveRallyButton}>
@@ -3312,21 +3437,24 @@ export default function FeedScreen() {
                 <Text style={[styles.actionOptionText, { color: colors.text }]}>Envoyer à un ami</Text>
                 <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Ouvrir les options de partage de l’appareil</Text>
               </Pressable>
-              {(["une alliance", "un groupe"] as const).map((destination) => (
+              {([
+                { kind: "ALLY", label: "un allié", description: "Envoyer à une personne de votre alliance" },
+                { kind: "GROUP", label: "un groupe Alliance+", description: "Partager avec les membres de votre groupe" },
+                { kind: "CHANNEL", label: "un canal public", description: "Partager dans le canal de votre pays" },
+              ] as const).map(({ kind, label, description }) => (
                 <Pressable
                   accessibilityRole="button"
-                  key={destination}
+                  key={kind}
                   onPress={() => {
+                    if (!actionPost) return;
+                    const post = actionPost;
                     setActionPost(null);
-                    Alert.alert(
-                      `Partager dans ${destination}`,
-                      "Cette destination n’est pas encore reliée à une route de partage sur le serveur.",
-                    );
+                    void openInternalShare(post, kind);
                   }}
                   style={styles.actionOption}
                 >
-                  <Text style={[styles.actionOptionText, { color: colors.text }]}>Partager dans {destination}</Text>
-                  <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Destination interne indisponible</Text>
+                  <Text style={[styles.actionOptionText, { color: colors.text }]}>Partager avec {label}</Text>
+                  <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>{description}</Text>
                 </Pressable>
               ))}
               <Pressable
@@ -3397,6 +3525,71 @@ export default function FeedScreen() {
                 <Text style={[styles.actionOptionText, { color: colors.text }]}>Masquer la publication</Text>
               </Pressable>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="slide"
+        onRequestClose={() => {
+          if (isSharingPost) return;
+          setShareTargetKind(null);
+          setShareTargetPost(null);
+        }}
+        transparent
+        visible={shareTargetKind !== null}
+      >
+        <View style={styles.commentBackdrop}>
+          <View style={[styles.actionSheet, { backgroundColor: colors.card }]}>
+            <View style={styles.commentHeader}>
+              <Text style={[styles.composerTitle, { color: colors.text }]}>
+                {shareTargetKind === "ALLY"
+                  ? "Choisir un allié"
+                  : shareTargetKind === "GROUP"
+                    ? "Choisir un groupe"
+                    : "Choisir un canal"}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isSharingPost}
+                onPress={() => {
+                  setShareTargetKind(null);
+                  setShareTargetPost(null);
+                }}
+                style={styles.preferenceClose}
+              >
+                <Text style={[styles.actionText, { color: colors.text }]}>Fermer</Text>
+              </Pressable>
+            </View>
+            {shareTargetsLoading ? (
+              <ActivityIndicator color={colors.primary} style={styles.shareLoading} />
+            ) : shareTargets.length ? (
+              <ScrollView keyboardShouldPersistTaps="handled" style={styles.actionOptions}>
+                {shareTargets.map((target) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={isSharingPost}
+                    key={target.id}
+                    onPress={() => void sharePostInternally(target)}
+                    style={styles.actionOption}
+                  >
+                    <Text style={[styles.actionOptionText, { color: colors.text }]}>
+                      {target.name}
+                    </Text>
+                    <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>
+                      {isSharingPost ? "Envoi en cours…" : "Partager cette publication"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : (
+              <Text style={[styles.actionOptionDescription, styles.shareEmpty, { color: colors.secondaryText }]}>
+                {shareTargetKind === "ALLY"
+                  ? "Vous n’avez pas encore d’allié avec qui partager."
+                  : shareTargetKind === "GROUP"
+                    ? "Vous n’êtes membre d’aucun groupe actif."
+                    : "Aucun canal de partage n’est disponible pour votre pays."}
+              </Text>
+            )}
           </View>
         </View>
       </Modal>
@@ -3994,6 +4187,8 @@ const styles = StyleSheet.create({
   },
   actionOptionText: { fontSize: 14, fontWeight: "700" },
   actionOptionDescription: { fontSize: 12, lineHeight: 17, marginTop: 3 },
+  shareLoading: { marginVertical: 28 },
+  shareEmpty: { paddingHorizontal: 4, paddingVertical: 22 },
   destructiveAction: { color: "#b91c1c" },
   repostSheet: {
     borderTopLeftRadius: 22,

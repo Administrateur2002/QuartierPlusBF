@@ -10,6 +10,8 @@ import {
 } from "../services/cloudinary.js";
 
 const SCOPES = new Set(["neighborhood", "region", "country", "international"]);
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMAGE_FORMATS = new Set(["jpg", "jpeg", "png", "webp"]);
 const VIDEO_FORMATS = new Set(["mp4"]);
 const GEO_CELL_LATITUDE_DEGREES = 200 / 111_320;
@@ -467,6 +469,8 @@ export const listFeed = async (request, response, next) => {
                WHERE like_row.post_id = post.id) AS likes_count,
               (SELECT COUNT(*)::int FROM post_comments comment_row
                WHERE comment_row.post_id = post.id) AS comments_count,
+              (SELECT COUNT(*)::int FROM post_shares share_row
+               WHERE share_row.post_id = post.id) AS shares_count,
               CASE WHEN $5::uuid IS NULL THEN FALSE ELSE EXISTS (
                 SELECT 1 FROM post_likes like_row
                 WHERE like_row.post_id = post.id AND like_row.user_id = $5
@@ -530,6 +534,313 @@ export const listFeed = async (request, response, next) => {
         request.auth?.userId ?? null,
         offset,
       ],
+    );
+    return response.status(200).json({ posts: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const listPostShareTargets = async (request, response, next) => {
+  try {
+    const [allies, groups, channels] = await Promise.all([
+      pool.query(
+        `SELECT person.id, person.full_name AS name, person.profile_photo_url
+         FROM user_alliances alliance
+         JOIN users person ON person.id = CASE
+           WHEN alliance.requester_id = $1 THEN alliance.recipient_id
+           ELSE alliance.requester_id END
+         WHERE (alliance.requester_id = $1 OR alliance.recipient_id = $1)
+           AND alliance.status = 'ALLIED'
+           AND NOT EXISTS (
+             SELECT 1 FROM user_blocks blocked
+             WHERE (blocked.blocker_id = $1 AND blocked.blocked_id = person.id)
+                OR (blocked.blocker_id = person.id AND blocked.blocked_id = $1)
+           )
+         GROUP BY person.id, person.full_name, person.profile_photo_url
+         ORDER BY person.full_name NULLS LAST`,
+        [request.auth.userId],
+      ),
+      pool.query(
+        `SELECT alliance.id, alliance.title AS name
+         FROM community_alliance_members member
+         JOIN community_alliances alliance ON alliance.id = member.alliance_id
+         WHERE member.user_id = $1
+           AND alliance.status IN ('PENDING', 'ACCEPTED', 'IN_PROGRESS')
+         ORDER BY alliance.title`,
+        [request.auth.userId],
+      ),
+      pool.query(
+        `SELECT channel.id, channel.name, channel.kind
+         FROM channels channel
+         WHERE UPPER(channel.kind) IN ('EMERGENCY', 'ANNOUNCEMENTS')
+           AND (channel.country_code IS NULL OR channel.country_code = (
+             SELECT country_code FROM users WHERE id = $1
+           ))
+         ORDER BY channel.name`,
+        [request.auth.userId],
+      ),
+    ]);
+    return response.status(200).json({
+      allies: allies.rows,
+      groups: groups.rows,
+      channels: channels.rows,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const sharePost = async (request, response, next) => {
+  const { id: postId } = request.params;
+  const type = typeof request.body?.destination_type === "string"
+    ? request.body.destination_type.toUpperCase()
+    : "";
+  const destinationId = request.body?.destination_id;
+  if (
+    !UUID_PATTERN.test(postId) ||
+    !["ALLY", "GROUP", "CHANNEL"].includes(type) ||
+    typeof destinationId !== "string" ||
+    !UUID_PATTERN.test(destinationId)
+  ) {
+    return response.status(400).json({ error: "La destination de partage est invalide." });
+  }
+
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const post = await client.query(
+        `SELECT id, scope, country_code,
+                ST_Y(location) AS latitude, ST_X(location) AS longitude
+         FROM posts WHERE id = $1 AND status = 'ACTIVE' FOR SHARE`,
+        [postId],
+      );
+      if (!post.rowCount) {
+        await client.query("ROLLBACK");
+        return response.status(404).json({ error: "Publication introuvable." });
+      }
+
+      let destinationColumn;
+      let visibilityCheck;
+      if (type === "ALLY") {
+        destinationColumn = "recipient_id";
+        visibilityCheck = await client.query(
+          `SELECT recipient.id
+           FROM users recipient
+           WHERE recipient.id = $1
+             AND EXISTS (
+               SELECT 1 FROM user_alliances alliance
+               WHERE alliance.status = 'ALLIED'
+                 AND ((alliance.requester_id = $2 AND alliance.recipient_id = recipient.id)
+                   OR (alliance.recipient_id = $2 AND alliance.requester_id = recipient.id))
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM user_blocks blocked
+               WHERE (blocked.blocker_id = $2 AND blocked.blocked_id = recipient.id)
+                  OR (blocked.blocker_id = recipient.id AND blocked.blocked_id = $2)
+             )
+             AND (
+               $3 = 'international'
+               OR ($3 = 'country' AND recipient.country_code = $4)
+               OR ($3 IN ('neighborhood', 'region') AND recipient.last_location IS NOT NULL
+                 AND ST_DWithin(
+                   recipient.last_location::geography,
+                   ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                   CASE WHEN $3 = 'region' THEN 100000 ELSE COALESCE(
+                     (SELECT default_radius_m FROM country_config WHERE code = recipient.country_code),
+                     5000
+                   ) END
+                 ))
+             )`,
+          [
+            destinationId,
+            request.auth.userId,
+            post.rows[0].scope,
+            post.rows[0].country_code,
+            post.rows[0].longitude,
+            post.rows[0].latitude,
+          ],
+        );
+      } else if (type === "GROUP") {
+        destinationColumn = "community_alliance_id";
+        visibilityCheck = await client.query(
+          `SELECT alliance.id
+           FROM community_alliances alliance
+           JOIN community_alliance_members sender_member
+             ON sender_member.alliance_id = alliance.id AND sender_member.user_id = $2
+           WHERE alliance.id = $1
+             AND alliance.status IN ('PENDING', 'ACCEPTED', 'IN_PROGRESS')
+             AND NOT EXISTS (
+               SELECT 1 FROM community_alliance_members member
+               JOIN users recipient ON recipient.id = member.user_id
+               WHERE member.alliance_id = alliance.id
+                 AND NOT (
+                   $3 = 'international'
+                   OR ($3 = 'country' AND recipient.country_code = $4)
+                   OR ($3 IN ('neighborhood', 'region') AND recipient.last_location IS NOT NULL
+                     AND ST_DWithin(
+                       recipient.last_location::geography,
+                       ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                       CASE WHEN $3 = 'region' THEN 100000 ELSE COALESCE(
+                         (SELECT default_radius_m FROM country_config WHERE code = recipient.country_code),
+                         5000
+                       ) END
+                     ))
+                 )
+             )`,
+          [
+            destinationId,
+            request.auth.userId,
+            post.rows[0].scope,
+            post.rows[0].country_code,
+            post.rows[0].longitude,
+            post.rows[0].latitude,
+          ],
+        );
+      } else {
+        destinationColumn = "channel_id";
+        visibilityCheck = await client.query(
+          `SELECT channel.id
+           FROM channels channel
+           JOIN users sender ON sender.id = $2
+           WHERE channel.id = $1
+             AND UPPER(channel.kind) IN ('EMERGENCY', 'ANNOUNCEMENTS')
+             AND (channel.country_code IS NULL OR channel.country_code = sender.country_code)
+             AND (
+               $3 = 'international'
+               OR ($3 = 'country' AND
+                 channel.country_code = $4)
+             )`,
+          [
+            destinationId,
+            request.auth.userId,
+            post.rows[0].scope,
+            post.rows[0].country_code,
+          ],
+        );
+      }
+
+      if (!visibilityCheck.rowCount) {
+        await client.query("ROLLBACK");
+        return response.status(403).json({
+          error: "La destination n’est pas autorisée ou ne peut pas voir cette publication.",
+        });
+      }
+      const inserted = await client.query(
+        `INSERT INTO post_shares
+           (post_id, sender_id, destination_type, ${destinationColumn})
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING
+         RETURNING id, created_at`,
+        [postId, request.auth.userId, type, destinationId],
+      );
+      await client.query("COMMIT");
+      return response.status(inserted.rowCount ? 201 : 200).json({
+        shared: true,
+        already_shared: !inserted.rowCount,
+        share: inserted.rows[0] ?? null,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const listSharedPosts = async (request, response, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM (
+       SELECT DISTINCT ON (post.id)
+              post.id, post.caption, post.scope, post.media_url, post.media_type,
+              post.created_at, post.author_id,
+              COALESCE((
+                SELECT json_agg(media.media_url ORDER BY media.position)
+                FROM post_media_items media WHERE media.post_id = post.id
+              ), '[]'::json) AS additional_media,
+              author.full_name AS author_name,
+              author.profile_photo_url AS author_photo_url,
+              author.badge AS author_badge,
+              (SELECT COUNT(*)::int FROM post_likes item
+               WHERE item.post_id = post.id) AS likes_count,
+              (SELECT COUNT(*)::int FROM post_comments item
+               WHERE item.post_id = post.id) AS comments_count,
+              (SELECT COUNT(*)::int FROM post_shares item
+               WHERE item.post_id = post.id) AS shares_count,
+              FALSE AS liked_by_me,
+              EXISTS (
+                SELECT 1 FROM user_alliances alliance
+                WHERE alliance.status = 'ALLIED'
+                  AND ((alliance.requester_id = $1 AND alliance.recipient_id = post.author_id)
+                    OR (alliance.recipient_id = $1 AND alliance.requester_id = post.author_id))
+              ) AS author_is_ally,
+              sender.full_name AS shared_by_name,
+              share.created_at AS shared_at
+       FROM post_shares share
+       JOIN posts post ON post.id = share.post_id AND post.status = 'ACTIVE'
+       JOIN users author ON author.id = post.author_id
+       JOIN users sender ON sender.id = share.sender_id
+       WHERE (
+         (share.destination_type = 'ALLY' AND share.recipient_id = $1
+           AND EXISTS (
+             SELECT 1 FROM user_alliances relation
+             WHERE relation.status = 'ALLIED'
+               AND ((relation.requester_id = $1 AND relation.recipient_id = share.sender_id)
+                 OR (relation.recipient_id = $1 AND relation.requester_id = share.sender_id))
+           ))
+         OR (share.destination_type = 'GROUP' AND EXISTS (
+           SELECT 1 FROM community_alliance_members member
+           JOIN community_alliances alliance ON alliance.id = member.alliance_id
+           WHERE member.user_id = $1 AND member.alliance_id = share.community_alliance_id
+             AND alliance.status IN ('PENDING', 'ACCEPTED', 'IN_PROGRESS')
+         ))
+         OR (share.destination_type = 'CHANNEL' AND EXISTS (
+           SELECT 1 FROM channels channel
+           JOIN users recipient_user ON recipient_user.id = $1
+           WHERE channel.id = share.channel_id
+             AND UPPER(channel.kind) IN ('EMERGENCY', 'ANNOUNCEMENTS')
+             AND (channel.country_code IS NULL OR channel.country_code = recipient_user.country_code)
+         ))
+       )
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks blocked
+           WHERE (blocked.blocker_id = $1 AND blocked.blocked_id = share.sender_id)
+              OR (blocked.blocker_id = share.sender_id AND blocked.blocked_id = $1)
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM user_blocks blocked
+           WHERE (blocked.blocker_id = $1 AND blocked.blocked_id = post.author_id)
+              OR (blocked.blocker_id = post.author_id AND blocked.blocked_id = $1)
+         )
+         AND (
+           post.scope = 'international'
+           OR (post.scope = 'country' AND post.country_code = (
+             SELECT country_code FROM users WHERE id = $1
+           ))
+           OR (post.scope IN ('neighborhood', 'region')
+             AND post.location IS NOT NULL
+             AND (SELECT last_location FROM users WHERE id = $1) IS NOT NULL
+             AND ST_DWithin(
+               post.location::geography,
+               (SELECT last_location::geography FROM users WHERE id = $1),
+               CASE WHEN post.scope = 'region' THEN 100000 ELSE COALESCE(
+                 (SELECT default_radius_m FROM country_config
+                  WHERE code = (SELECT country_code FROM users WHERE id = $1)),
+                 5000
+               ) END
+             ))
+         )
+       ORDER BY post.id, share.created_at DESC
+         LIMIT 100
+         ) shared_posts
+         ORDER BY shared_at DESC
+         LIMIT 100`,
+      [request.auth.userId],
     );
     return response.status(200).json({ posts: result.rows });
   } catch (error) {

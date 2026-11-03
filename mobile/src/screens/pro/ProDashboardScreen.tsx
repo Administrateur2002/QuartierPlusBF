@@ -14,36 +14,52 @@ import {
 } from "react-native";
 import api from "../../services/api";
 
-type PlanType = "ALLIANCE_PRO" | "SYNDIC" | "TOWN_HALL" | "SECURITY_AGENT";
+type PlanType =
+  | "ALLIANCE_PRO"
+  | "SYNDIC"
+  | "TOWN_HALL"
+  | "SECURITY_AGENT"
+  | "WHOLESALER"
+  | "TRANSPORT_COMPANY";
+type DashboardPlanType = Exclude<PlanType, "WHOLESALER" | "TRANSPORT_COMPANY">;
 
 type Subscription = {
   plan_type: PlanType;
   expires_at: string;
 };
+type DashboardSubscription = {
+  plan_type: DashboardPlanType;
+  expires_at: string;
+};
 
 type DashboardData = {
-  plan_type: PlanType;
+  plan_type: DashboardPlanType;
   expires_at: string;
   sections: string[];
   metrics: Record<string, number>;
 };
 
-const DASHBOARD_ENDPOINTS: Record<PlanType, string> = {
+const DASHBOARD_ENDPOINTS: Record<DashboardPlanType, string> = {
   ALLIANCE_PRO: "/v1/pro/merchant/dashboard",
   SYNDIC: "/v1/pro/syndic/dashboard",
   TOWN_HALL: "/v1/pro/townhall/dashboard",
   SECURITY_AGENT: "/v1/pro/security-agent/dashboard",
 };
 
-const PLAN_TITLES: Record<PlanType, string> = {
+const PLAN_TITLES: Record<DashboardPlanType, string> = {
   ALLIANCE_PRO: "Espace Alliance Pro",
   SYNDIC: "Espace Syndic",
   TOWN_HALL: "Espace Mairie",
   SECURITY_AGENT: "Console Agent de sécurité",
 };
 
-const REQUIRED_METRICS: Record<PlanType, string[]> = {
-  ALLIANCE_PRO: ["offers_count", "active_pins_count"],
+const REQUIRED_METRICS: Record<DashboardPlanType, string[]> = {
+  ALLIANCE_PRO: [
+    "offers_count",
+    "active_pins_count",
+    "pin_views_count",
+    "profile_views_count",
+  ],
   SYNDIC: [],
   TOWN_HALL: ["reports_count"],
   SECURITY_AGENT: ["active_sos_count"],
@@ -54,7 +70,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const readDashboardData = (
   value: unknown,
-  expectedPlan: PlanType,
+  expectedPlan: DashboardPlanType,
 ): DashboardData => {
   if (
     !isRecord(value) ||
@@ -89,19 +105,47 @@ export default function ProDashboardScreen({
 }) {
   switch (subscription.plan_type) {
     case "ALLIANCE_PRO":
-      return <MerchantView subscription={subscription} />;
+      return (
+        <MerchantView
+          subscription={{
+            plan_type: subscription.plan_type,
+            expires_at: subscription.expires_at,
+          }}
+        />
+      );
     case "SYNDIC":
-      return <SyndicView subscription={subscription} />;
+      return (
+        <SyndicView
+          subscription={{
+            plan_type: subscription.plan_type,
+            expires_at: subscription.expires_at,
+          }}
+        />
+      );
     case "TOWN_HALL":
-      return <TownHallView subscription={subscription} />;
+      return (
+        <TownHallView
+          subscription={{
+            plan_type: subscription.plan_type,
+            expires_at: subscription.expires_at,
+          }}
+        />
+      );
     case "SECURITY_AGENT":
-      return <SecurityAgentView subscription={subscription} />;
+      return (
+        <SecurityAgentView
+          subscription={{
+            plan_type: subscription.plan_type,
+            expires_at: subscription.expires_at,
+          }}
+        />
+      );
     default:
       return null;
   }
 }
 
-function useDashboardData(subscription: Subscription) {
+function useDashboardData(subscription: DashboardSubscription) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -140,7 +184,7 @@ function DashboardFrame({
   subscription,
   children,
 }: {
-  subscription: Subscription;
+  subscription: DashboardSubscription;
   children: (data: DashboardData) => React.ReactNode;
 }) {
   const { data, error } = useDashboardData(subscription);
@@ -185,7 +229,7 @@ function FeatureCard({
   );
 }
 
-function MerchantView({ subscription }: { subscription: Subscription }) {
+function MerchantView({ subscription }: { subscription: DashboardSubscription }) {
   const [title, setTitle] = useState("");
   const [discount, setDiscount] = useState("");
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(
@@ -251,6 +295,11 @@ function MerchantView({ subscription }: { subscription: Subscription }) {
             value={data.metrics.offers_count}
           />
           <FeatureCard
+            title="Vues de la vitrine"
+            description="Professionnels découverts sur la carte"
+            value={data.metrics.profile_views_count}
+          />
+          <FeatureCard
             title="Offres"
             description="Gérez vos annonces et services professionnels."
           />
@@ -258,6 +307,11 @@ function MerchantView({ subscription }: { subscription: Subscription }) {
             title="Épingle sponsorisée"
             description="Épingles actuellement actives sur la carte radar"
             value={data.metrics.active_pins_count}
+          />
+          <FeatureCard
+            title="Vues des épingles"
+            description="Visibilité cumulée de vos campagnes"
+            value={data.metrics.pin_views_count}
           />
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Lancer une Vente Flash</Text>
@@ -314,7 +368,7 @@ type ResidenceVote = {
 type Craftsman = { id: string; name: string; trade: string; phone: string; rating: number };
 type SyndicTab = "wall" | "votes" | "craftsmen";
 
-function SyndicView({ subscription }: { subscription: Subscription }) {
+function SyndicView({ subscription }: { subscription: DashboardSubscription }) {
   const [tab, setTab] = useState<SyndicTab>("wall");
   const [residences, setResidences] = useState<Residence[]>([]);
   const [residenceId, setResidenceId] = useState("");
@@ -550,7 +604,7 @@ type Consultation = { id: string; question: string; ends_at: string };
 type OfficialNews = { id: string; title: string; body: string; is_certified: boolean };
 type TownHallTab = "map" | "consultations" | "news";
 
-function TownHallView({ subscription }: { subscription: Subscription }) {
+function TownHallView({ subscription }: { subscription: DashboardSubscription }) {
   const [tab, setTab] = useState<TownHallTab>("map");
   const [municipalities, setMunicipalities] = useState<Municipality[]>([]);
   const [municipalityId, setMunicipalityId] = useState("");
@@ -801,7 +855,7 @@ type Intervention = {
   status: "ACCEPTED" | "EN_ROUTE" | "ON_SCENE" | "COMPLETED";
 };
 
-function SecurityAgentView({ subscription }: { subscription: Subscription }) {
+function SecurityAgentView({ subscription }: { subscription: DashboardSubscription }) {
   const [alerts, setAlerts] = useState<SosAlert[]>([]);
   const [selectedAlert, setSelectedAlert] = useState<SosAlert | null>(null);
   const [intervention, setIntervention] = useState<Intervention | null>(null);

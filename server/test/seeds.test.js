@@ -28,6 +28,22 @@ const voyageMigration = readFileSync(
   new URL("../../migrations/028_voyage_station_reservations.sql", import.meta.url),
   "utf8",
 );
+const internalPostSharesMigration = readFileSync(
+  new URL("../../migrations/030_internal_post_shares.sql", import.meta.url),
+  "utf8",
+);
+const proMapImpressionsMigration = readFileSync(
+  new URL("../../migrations/031_pro_map_impressions.sql", import.meta.url),
+  "utf8",
+);
+const proReviewsMigration = readFileSync(
+  new URL("../../migrations/032_pro_reviews.sql", import.meta.url),
+  "utf8",
+);
+const sponsoredPinImpressionsMigration = readFileSync(
+  new URL("../../migrations/033_sponsored_pin_impressions.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -117,6 +133,10 @@ test("profile photos and feed carousel migrations are additive and documented fo
     [wholesalerMigration, "027_wholesaler_optional_registration_fields.sql"],
     [voyageMigration, "028_voyage_station_reservations.sql"],
     [postMediaMigration, "029_post_media_carousel.sql"],
+    [internalPostSharesMigration, "030_internal_post_shares.sql"],
+    [proMapImpressionsMigration, "031_pro_map_impressions.sql"],
+    [proReviewsMigration, "032_pro_reviews.sql"],
+    [sponsoredPinImpressionsMigration, "033_sponsored_pin_impressions.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -128,8 +148,17 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "027_wholesaler_optional_registration_fields.sql",
     "028_voyage_station_reservations.sql",
     "029_post_media_carousel.sql",
+    "030_internal_post_shares.sql",
+    "031_pro_map_impressions.sql",
+    "032_pro_reviews.sql",
+    "033_sponsored_pin_impressions.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+  assert.match(internalPostSharesMigration, /CHECK \([\s\S]*destination_type = 'ALLY'/);
+  assert.match(internalPostSharesMigration, /destination_type = 'GROUP'/);
+  assert.match(internalPostSharesMigration, /destination_type = 'CHANNEL'/);
+  assert.match(proReviewsMigration, /rating BETWEEN 1 AND 5/);
+  assert.match(sponsoredPinImpressionsMigration, /PRIMARY KEY \(pin_id, viewer_id, viewed_on\)/);
 });

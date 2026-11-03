@@ -114,3 +114,38 @@ test("free sponsored pin requires a user-owned commerce and short publication te
   assert.equal(result.payload.pin.id, "pin-id");
   assert.equal(callCount, 2);
 });
+
+test("free sponsored campaign renewal extends the owned pin instead of creating a duplicate", async (context) => {
+  const statements = [];
+  context.mock.method(pool, "query", async (sql) => {
+    statements.push(sql);
+    if (statements.length === 1) return { rowCount: 1, rows: [{ id: "item-id" }] };
+    assert.match(sql, /UPDATE sponsored_pins AS campaign/);
+    return {
+      rowCount: 1,
+      rows: [{ id: "pin-id", title: "Commerce", starts_at: "2026-10-01", expires_at: "2026-11-10" }],
+    };
+  });
+  const result = response();
+
+  await activateFreeOffer(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        payment_type: "SPONSORED_PIN",
+        pin: {
+          merchant_item_id: "item-id",
+          sponsored_pin_id: "00000000-0000-4000-8000-000000000001",
+          caption: "Prolongation de campagne",
+        },
+      },
+    },
+    result,
+    (error) => { throw error; },
+  );
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.payload.renewed, true);
+  assert.equal(statements.length, 2);
+  assert.match(statements[1], /INTERVAL '7 days'/);
+});

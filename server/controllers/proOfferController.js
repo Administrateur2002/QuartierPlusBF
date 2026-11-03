@@ -2,6 +2,7 @@ import { env } from "../config/env.js";
 import { IS_PROMO_FREE_ACCESS } from "../config/monetization.js";
 import { pool } from "../db/pool.js";
 import { getCloudinaryAsset } from "../services/cloudinary.js";
+import { normalizeProPublication } from "../services/proPublication.js";
 
 const PLANS = new Set([
   "ALLIANCE_PRO",
@@ -11,6 +12,8 @@ const PLANS = new Set([
   "WHOLESALER",
   "TRANSPORT_COMPANY",
 ]);
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const isValidPin = (pin) =>
   pin &&
@@ -18,18 +21,10 @@ const isValidPin = (pin) =>
   typeof pin.merchant_item_id === "string" &&
   typeof pin.caption === "string" &&
   pin.caption.trim().length > 0 &&
-  pin.caption.trim().length <= 300;
-
-const normalizePublication = (value) => {
-  if (!value || typeof value !== "object") return null;
-  const title = typeof value.title === "string" ? value.title.trim() : "";
-  const description =
-    typeof value.description === "string" ? value.description.trim() : "";
-  if (!title || title.length > 150 || !description || description.length > 500) {
-    return null;
-  }
-  return { title, description };
-};
+  pin.caption.trim().length <= 300 &&
+  (pin.sponsored_pin_id === undefined ||
+    (typeof pin.sponsored_pin_id === "string" &&
+      UUID_PATTERN.test(pin.sponsored_pin_id)));
 
 const getPinImageUrl = async (userId, publicId) => {
   if (publicId === undefined || publicId === null || publicId === "") return null;
@@ -62,7 +57,7 @@ export const activateFreeOffer = async (request, response, next) => {
   }
   const offer = request.body?.payment_type;
   const pin = request.body?.pin;
-  const publication = normalizePublication(request.body?.publication);
+  const publication = normalizeProPublication(request.body?.publication);
   if (
     offer === "SPONSORED_PIN" &&
     !isValidPin(pin)
@@ -98,6 +93,43 @@ export const activateFreeOffer = async (request, response, next) => {
       );
       if (image?.error) {
         return response.status(400).json({ error: image.error });
+      }
+      if (pin.sponsored_pin_id) {
+        const renewed = await pool.query(
+          `UPDATE sponsored_pins AS campaign
+           SET title = item.title,
+               location = item.location::geography,
+               icon_url = COALESCE($3, campaign.icon_url),
+               caption = $4,
+               starts_at = CASE
+                 WHEN campaign.expires_at <= NOW() THEN NOW()
+                 ELSE campaign.starts_at
+               END,
+               expires_at = GREATEST(campaign.expires_at, NOW()) + INTERVAL '7 days',
+               is_active = TRUE
+           FROM marketplace_items AS item
+           WHERE campaign.id = $1 AND campaign.user_id = $2
+             AND item.id = $5 AND item.seller_id = $2
+             AND campaign.marketplace_item_id = item.id
+           RETURNING campaign.id, campaign.title, campaign.starts_at, campaign.expires_at`,
+          [
+            pin.sponsored_pin_id,
+            request.auth.userId,
+            image?.url ?? null,
+            pin.caption.trim(),
+            pin.merchant_item_id,
+          ],
+        );
+        if (!renewed.rowCount) {
+          return response.status(404).json({
+            error: "La campagne à renouveler est introuvable ou ne vous appartient pas.",
+          });
+        }
+        return response.status(200).json({
+          activated: true,
+          renewed: true,
+          pin: renewed.rows[0],
+        });
       }
       const result = await pool.query(
         `INSERT INTO sponsored_pins

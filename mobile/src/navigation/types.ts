@@ -70,6 +70,8 @@ export type RootStackParamList = {
           | "SECURITY_AGENT"
           | "WHOLESALER"
           | "TRANSPORT_COMPANY";
+        sponsoredPinId?: string;
+        merchantItemId?: string;
       }
     | undefined;
   AlliancePlus: undefined;

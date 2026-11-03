@@ -5,6 +5,7 @@ import {
   type RouteProp,
 } from "@react-navigation/native";
 import { ArrowLeft, CheckCircle2, ImagePlus, MapPin, ShieldCheck } from "lucide-react-native";
+import * as Location from "expo-location";
 import * as WebBrowser from "expo-web-browser";
 import { useEffect, useState } from "react";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -18,6 +19,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -115,6 +117,16 @@ export default function CheckoutScreen() {
   const [pinCaption, setPinCaption] = useState("");
   const [publicationTitle, setPublicationTitle] = useState("");
   const [publicationDescription, setPublicationDescription] = useState("");
+  const [publicationServices, setPublicationServices] = useState("");
+  const [publicationHours, setPublicationHours] = useState("");
+  const [publicationPhone, setPublicationPhone] = useState("");
+  const [publicationWhatsApp, setPublicationWhatsApp] = useState("");
+  const [publicationOffers, setPublicationOffers] = useState("");
+  const [visibleOnMap, setVisibleOnMap] = useState(false);
+  const [businessLocation, setBusinessLocation] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   const [pinPhoto, setPinPhoto] = useState<{ uri: string; size: number } | null>(null);
   const [billingEnabled, setBillingEnabled] = useState(true);
   const [promoFreeAccess, setPromoFreeAccess] = useState(false);
@@ -127,6 +139,12 @@ export default function CheckoutScreen() {
   useEffect(() => {
     setOffer(route.params?.offer ?? "ALLIANCE_PRO");
   }, [route.params?.offer]);
+
+  useEffect(() => {
+    if (route.params?.merchantItemId) {
+      setMerchantId(route.params.merchantItemId);
+    }
+  }, [route.params?.merchantItemId]);
 
   useEffect(() => {
     let active = true;
@@ -169,7 +187,13 @@ export default function CheckoutScreen() {
           );
           if (active) {
             setMerchantItems(normalized);
-            setMerchantId((current) => current || normalized[0]?.id || "");
+            setMerchantId(
+              (current) =>
+                current ||
+                route.params?.merchantItemId ||
+                normalized[0]?.id ||
+                "",
+            );
           }
         }
       } catch {
@@ -221,6 +245,27 @@ export default function CheckoutScreen() {
     }
   };
 
+  const captureBusinessLocation = async () => {
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        throw new Error("Autorisez l’accès à la position pour placer votre commerce sur la carte.");
+      }
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      setBusinessLocation({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      });
+    } catch (error) {
+      Alert.alert(
+        "Position indisponible",
+        error instanceof Error ? error.message : "Impossible de déterminer votre position.",
+      );
+    }
+  };
+
   const startPayment = async () => {
     if (!API_BASE_URL || isPaying) {
       if (!API_BASE_URL) {
@@ -233,6 +278,17 @@ export default function CheckoutScreen() {
     }
     if (!billingConfigLoaded) {
       Alert.alert("Offre indisponible", "La configuration des offres est en cours de vérification.");
+      return;
+    }
+    if (
+      offer !== "SPONSORED_PIN" &&
+      visibleOnMap &&
+      (!businessLocation || (!publicationPhone.trim() && !publicationWhatsApp.trim()))
+    ) {
+      Alert.alert(
+        "Vitrine incomplète",
+        "Indiquez une position et un numéro de téléphone ou WhatsApp pour activer la visibilité sur la carte.",
+      );
       return;
     }
     if (offer === "SPONSORED_PIN" && (!merchantId || !pinCaption.trim())) {
@@ -268,6 +324,9 @@ export default function CheckoutScreen() {
         ? {
             merchant_item_id: merchantId,
             caption: pinCaption.trim(),
+            ...(route.params?.sponsoredPinId
+              ? { sponsored_pin_id: route.params.sponsoredPinId }
+              : {}),
             ...(mediaPublicId ? { media_public_id: mediaPublicId } : {}),
           }
         : undefined;
@@ -276,6 +335,19 @@ export default function CheckoutScreen() {
         : {
             title: publicationTitle.trim(),
             description: publicationDescription.trim(),
+            services: publicationServices.trim(),
+            opening_hours: publicationHours.trim(),
+            phone: publicationPhone.trim(),
+            whatsapp: publicationWhatsApp.trim(),
+            offers: publicationOffers
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean)
+              .slice(0, 8),
+            visible_on_map: visibleOnMap,
+            ...(visibleOnMap && businessLocation
+              ? businessLocation
+              : {}),
           };
       if (!billingEnabled || promoFreeAccess) {
         const activation = await apiFetch(`${API_BASE_URL}/v1/pro/offers/activate`, {
@@ -366,7 +438,9 @@ export default function CheckoutScreen() {
         </Text>
         <Text style={styles.subtitle}>
           {offer === "SPONSORED_PIN"
-            ? "Votre épingle sponsorisée est visible sur la carte pour 7 jours."
+            ? route.params?.sponsoredPinId
+              ? "Votre campagne a été renouvelée et reste visible sur la carte pour 7 jours supplémentaires."
+              : "Votre épingle sponsorisée est visible sur la carte pour 7 jours."
             : `Votre abonnement ${OFFERS.find(({ id }) => id === offer)?.title} est activé pour 30 jours.`}
         </Text>
         <Pressable
@@ -452,6 +526,91 @@ export default function CheckoutScreen() {
             style={[styles.input, styles.multilineInput]}
             value={publicationDescription}
           />
+          <Text style={[styles.inputLabel, styles.formLabelSpacing]}>
+            Services proposés
+          </Text>
+          <TextInput
+            accessibilityLabel="Services proposés"
+            maxLength={500}
+            multiline
+            onChangeText={setPublicationServices}
+            placeholder="Ex. coiffure, dépannage, livraison"
+            style={[styles.input, styles.multilineInput]}
+            value={publicationServices}
+          />
+          <Text style={[styles.inputLabel, styles.formLabelSpacing]}>
+            Horaires
+          </Text>
+          <TextInput
+            accessibilityLabel="Horaires d’ouverture"
+            maxLength={160}
+            onChangeText={setPublicationHours}
+            placeholder="Ex. Lun-Sam, 08:00-18:00"
+            style={styles.input}
+            value={publicationHours}
+          />
+          <Text style={[styles.inputLabel, styles.formLabelSpacing]}>
+            Téléphone
+          </Text>
+          <TextInput
+            accessibilityLabel="Téléphone professionnel"
+            keyboardType="phone-pad"
+            maxLength={30}
+            onChangeText={setPublicationPhone}
+            placeholder="+225 ..."
+            style={styles.input}
+            value={publicationPhone}
+          />
+          <Text style={[styles.inputLabel, styles.formLabelSpacing]}>
+            WhatsApp
+          </Text>
+          <TextInput
+            accessibilityLabel="WhatsApp professionnel"
+            keyboardType="phone-pad"
+            maxLength={30}
+            onChangeText={setPublicationWhatsApp}
+            placeholder="+225 ..."
+            style={styles.input}
+            value={publicationWhatsApp}
+          />
+          <Text style={[styles.inputLabel, styles.formLabelSpacing]}>
+            Offres et promotions (séparées par des virgules)
+          </Text>
+          <TextInput
+            accessibilityLabel="Offres et promotions"
+            maxLength={500}
+            onChangeText={setPublicationOffers}
+            placeholder="Ex. -10% ce mois-ci, livraison offerte"
+            style={styles.input}
+            value={publicationOffers}
+          />
+          <View style={styles.visibilityRow}>
+            <View style={styles.visibilityCopy}>
+              <Text style={styles.inputLabel}>Afficher ma vitrine sur la carte</Text>
+              <Text style={styles.locationHint}>
+                Votre position et vos coordonnées ne seront publiées qu’avec votre accord.
+              </Text>
+            </View>
+            <Switch
+              accessibilityLabel="Afficher ma vitrine sur la carte"
+              onValueChange={setVisibleOnMap}
+              value={visibleOnMap}
+            />
+          </View>
+          {visibleOnMap ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void captureBusinessLocation()}
+              style={styles.locationButton}
+            >
+              <MapPin color="#1d4ed8" size={18} />
+              <Text style={styles.locationButtonText}>
+                {businessLocation
+                  ? `Position enregistrée · ${businessLocation.latitude.toFixed(4)}, ${businessLocation.longitude.toFixed(4)}`
+                  : "Utiliser ma position actuelle"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       )}
 
@@ -495,6 +654,11 @@ export default function CheckoutScreen() {
             <Text style={styles.locationHint}>{pinPhoto ? "Changer la photo" : "Ajouter une photo"}</Text>
           </Pressable>
           <Text style={styles.locationHint}>Durée : 7 jours</Text>
+          {route.params?.sponsoredPinId ? (
+            <Text style={styles.locationHint}>
+              Renouvellement de votre campagne existante : 7 jours supplémentaires.
+            </Text>
+          ) : null}
         </View>
       )}
 
@@ -541,8 +705,12 @@ export default function CheckoutScreen() {
           <>
             <Text style={styles.primaryButtonText}>
               {billingEnabled && !promoFreeAccess
-                ? "Payer avec FedaPay (Mobile Money / Carte Visa)"
-                : "Publier gratuitement"}
+                ? route.params?.sponsoredPinId
+                  ? "Renouveler avec FedaPay"
+                  : "Payer avec FedaPay (Mobile Money / Carte Visa)"
+                : route.params?.sponsoredPinId
+                  ? "Renouveler gratuitement"
+                  : "Publier gratuitement"}
             </Text>
           </>
         )}
@@ -584,6 +752,10 @@ const styles = StyleSheet.create({
   pinForm: { marginTop: 18 },
   inputLabel: { color: "#334155", fontSize: 13, fontWeight: "600", marginBottom: 7 },
   formLabelSpacing: { marginTop: 14 },
+  visibilityRow: { alignItems: "center", flexDirection: "row", gap: 12, marginTop: 18 },
+  visibilityCopy: { flex: 1 },
+  locationButton: { alignItems: "center", backgroundColor: "#eff6ff", borderRadius: 10, flexDirection: "row", gap: 8, marginTop: 12, minHeight: 46, paddingHorizontal: 12 },
+  locationButtonText: { color: "#1d4ed8", flex: 1, fontSize: 13, fontWeight: "700" },
   multilineInput: { minHeight: 92, paddingTop: 10, textAlignVertical: "top" },
   input: {
     backgroundColor: "#ffffff",
