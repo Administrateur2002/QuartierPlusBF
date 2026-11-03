@@ -38,6 +38,41 @@ test("production environment accepts a complete valid configuration", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("live Grin moderation requires a strong webhook secret when enabled", () => {
+  const enabled = loadProductionConfig({
+    GRIN_MODERATION_ENABLED: "true",
+    GRIN_MODERATION_WEBHOOK_SECRET:
+      "production-grin-moderation-webhook-secret-over-32-characters",
+    GRIN_MODERATOR_IDS: "7b490a29-02dd-44ad-8c9f-81d9cadc0007",
+  });
+  assert.equal(enabled.status, 0, enabled.stderr);
+
+  const weakSecret = loadProductionConfig({
+    GRIN_MODERATION_ENABLED: "true",
+    GRIN_MODERATION_WEBHOOK_SECRET: "short",
+  });
+  assert.notEqual(weakSecret.status, 0);
+  assert.match(weakSecret.stderr, /GRIN_MODERATION_WEBHOOK_SECRET/);
+});
+
+test("live Grin moderation requires at least one valid moderator UUID", () => {
+  const enabled = {
+    GRIN_MODERATION_ENABLED: "true",
+    GRIN_MODERATION_WEBHOOK_SECRET:
+      "production-grin-moderation-webhook-secret-over-32-characters",
+  };
+  const missing = loadProductionConfig(enabled);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /GRIN_MODERATOR_IDS/);
+
+  const malformed = loadProductionConfig({
+    ...enabled,
+    GRIN_MODERATOR_IDS: "not-a-uuid",
+  });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /GRIN_MODERATOR_IDS/);
+});
+
 test("video duration limit defaults to 420 seconds and can be configured", () => {
   const loadLimit = (value) =>
     spawnSync(

@@ -28,6 +28,10 @@ const voyageMigration = readFileSync(
   new URL("../../migrations/028_voyage_station_reservations.sql", import.meta.url),
   "utf8",
 );
+const grinModerationMigration = readFileSync(
+  new URL("../../migrations/034_grin_live_moderation.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -111,12 +115,20 @@ test("profile photos and feed carousel migrations are additive and documented fo
   assert.match(schema, /profile_photo_public_id TEXT/);
   assert.match(schema, /profile_photo_url TEXT/);
   assert.match(postMediaMigration, /CREATE TABLE IF NOT EXISTS post_media_items/);
+  assert.match(grinModerationMigration, /CREATE TABLE IF NOT EXISTS grin_moderation_events/);
+  assert.match(grinModerationMigration, /PAUSED_PENDING_REVIEW/);
+  assert.match(grinModerationMigration, /APPEALED/);
+  assert.doesNotMatch(
+    grinModerationMigration,
+    /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
+  );
   for (const [migration, version] of [
     [commerceGrowthMigration, "025_commerce_growth_offers.sql"],
     [profilePhotoMigration, "026_user_profile_photos.sql"],
     [wholesalerMigration, "027_wholesaler_optional_registration_fields.sql"],
     [voyageMigration, "028_voyage_station_reservations.sql"],
     [postMediaMigration, "029_post_media_carousel.sql"],
+    [grinModerationMigration, "034_grin_live_moderation.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -128,6 +140,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "027_wholesaler_optional_registration_fields.sql",
     "028_voyage_station_reservations.sql",
     "029_post_media_carousel.sql",
+    "034_grin_live_moderation.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));

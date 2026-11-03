@@ -62,6 +62,16 @@ type GrinChair = {
   isMicrophoneEnabled: boolean;
 };
 
+type ModerationReviewEvent = {
+  id: string;
+  participant_id: string;
+  media_type: "AUDIO" | "VIDEO";
+  category: string;
+  confidence: number;
+  status: string;
+  appeal_reason: string | null;
+};
+
 const MAX_CHAIRS = 6;
 const RULES_ACCEPTED_KEY = "quartierplus.grin.rules.v1";
 const REPORT_REASONS = [
@@ -130,6 +140,29 @@ const readChairs = (room: Room): GrinChair[] => {
   });
 };
 
+const isModerationReviewEvent = (
+  value: unknown,
+): value is ModerationReviewEvent =>
+  Boolean(
+    value &&
+      typeof value === "object" &&
+      "id" in value &&
+      typeof value.id === "string" &&
+      "participant_id" in value &&
+      typeof value.participant_id === "string" &&
+      "media_type" in value &&
+      (value.media_type === "AUDIO" || value.media_type === "VIDEO") &&
+      "category" in value &&
+      typeof value.category === "string" &&
+      "confidence" in value &&
+      typeof value.confidence === "number" &&
+      "status" in value &&
+      typeof value.status === "string" &&
+      "appeal_reason" in value &&
+      (typeof value.appeal_reason === "string" ||
+        value.appeal_reason === null),
+  );
+
 const requestAndroidAvPermissions = async () => {
   if (Platform.OS !== "android") return;
   const result = await PermissionsAndroid.requestMultiple([
@@ -164,10 +197,21 @@ export default function GrinScreen() {
   const [pipIdentity, setPipIdentity] = useState<string | null>(null);
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesAccepted, setRulesAccepted] = useState(false);
+  const [moderationConsent, setModerationConsent] = useState<boolean | null>(null);
   const [lowDataMode, setLowDataMode] = useState(false);
   const [reportTarget, setReportTarget] = useState<GrinChair | null>(null);
   const [isReportPickerOpen, setIsReportPickerOpen] = useState(false);
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
+  const [moderationNotice, setModerationNotice] = useState<{
+    eventId: string;
+    status: string;
+    message: string;
+  } | null>(null);
+  const [isAppealing, setIsAppealing] = useState(false);
+  const [moderationQueue, setModerationQueue] = useState<
+    ModerationReviewEvent[] | null
+  >(null);
+  const [isReviewQueueOpen, setIsReviewQueueOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   lowDataModeRef.current = lowDataMode;
 
@@ -194,6 +238,49 @@ export default function GrinScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!API_BASE_URL) return;
+    let active = true;
+    const loadQueue = async () => {
+      try {
+        const response = await apiFetch(
+          `${API_BASE_URL}/v1/livekit/moderation/review-queue`,
+          { method: "GET", headers: { "Cache-Control": "no-cache" } },
+        );
+        if (response.status === 403) {
+          if (active) setModerationQueue(null);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`La file de modération a répondu HTTP ${response.status}.`);
+        }
+        const payload: unknown = await response.json();
+        if (
+          !payload ||
+          typeof payload !== "object" ||
+          !("events" in payload) ||
+          !Array.isArray(payload.events)
+        ) {
+          throw new Error("La réponse de la file de modération est invalide.");
+        }
+        if (!payload.events.every(isModerationReviewEvent)) {
+          throw new Error("Un élément de la file de modération est invalide.");
+        }
+        if (active) setModerationQueue(payload.events);
+      } catch (queueError) {
+        if (active) {
+          console.error("Unable to load Grin moderation review queue:", queueError);
+        }
+      }
+    };
+    void loadQueue();
+    const interval = setInterval(() => void loadQueue(), 20_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   const applyLowDataMode = useCallback((room: Room, enabled: boolean) => {
     for (const participant of room.remoteParticipants.values()) {
       for (const publication of participant.trackPublications.values()) {
@@ -207,7 +294,7 @@ export default function GrinScreen() {
   const connect = useCallback(async (): Promise<Room> => {
     if (roomRef.current?.state === "connected") return roomRef.current;
     if (connectionRef.current) return connectionRef.current;
-    if (!rulesAccepted) {
+    if (!rulesAccepted || moderationConsent === null) {
       throw new Error("Acceptez les règles du quartier avant de rejoindre le live.");
     }
     if (!API_BASE_URL) {
@@ -230,7 +317,10 @@ export default function GrinScreen() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ roomName: "grin" }),
+          body: JSON.stringify({
+            roomName: "grin",
+            moderationConsent,
+          }),
         });
         if (!response.ok) {
           throw new Error(await readServerReason(response));
@@ -273,6 +363,30 @@ export default function GrinScreen() {
             refreshChairs();
           });
         }
+        room.on(RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
+          if (topic !== "grin-moderation") return;
+          try {
+            const notice: unknown = JSON.parse(String.fromCharCode(...payload));
+            if (
+              notice &&
+              typeof notice === "object" &&
+              "eventId" in notice &&
+              typeof notice.eventId === "string" &&
+              "status" in notice &&
+              typeof notice.status === "string" &&
+              "message" in notice &&
+              typeof notice.message === "string"
+            ) {
+              setModerationNotice({
+                eventId: notice.eventId,
+                status: notice.status,
+                message: notice.message,
+              });
+            }
+          } catch (noticeError) {
+            console.error("Unable to read Grin moderation notice:", noticeError);
+          }
+        });
         room.on(RoomEvent.Disconnected, () => {
           roomRef.current = null;
           if (!mountedRef.current) return;
@@ -308,11 +422,11 @@ export default function GrinScreen() {
     } finally {
       connectionRef.current = null;
     }
-  }, [applyLowDataMode, isOffline, rulesAccepted]);
+  }, [applyLowDataMode, isOffline, moderationConsent, rulesAccepted]);
 
   useEffect(() => {
     mountedRef.current = true;
-    if (!rulesLoaded || !rulesAccepted) {
+    if (!rulesLoaded || !rulesAccepted || moderationConsent === null) {
       return () => {
         mountedRef.current = false;
       };
@@ -336,7 +450,7 @@ export default function GrinScreen() {
         console.error("Unable to stop Grin audio session:", audioError);
       });
     };
-  }, [connect, isOffline, rulesAccepted, rulesLoaded]);
+  }, [connect, isOffline, moderationConsent, rulesAccepted, rulesLoaded]);
 
   useEffect(() => {
     if (roomRef.current) applyLowDataMode(roomRef.current, lowDataMode);
@@ -389,7 +503,75 @@ export default function GrinScreen() {
     }
   };
 
+  const appealModerationEvent = async () => {
+    if (!moderationNotice || isAppealing || !API_BASE_URL) return;
+    setIsAppealing(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/livekit/moderation/events/${moderationNotice.eventId}/appeal`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reason: "Je conteste cette détection et demande une vérification humaine.",
+          }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`Le recours a échoué (HTTP ${response.status}).`);
+      }
+      setModerationNotice({
+        ...moderationNotice,
+        status: "APPEALED",
+        message: "Votre recours est transmis à un modérateur humain.",
+      });
+    } catch (appealError) {
+      Alert.alert(
+        "Recours impossible",
+        appealError instanceof Error
+          ? appealError.message
+          : "Une erreur est survenue pendant le recours.",
+      );
+    } finally {
+      setIsAppealing(false);
+    }
+  };
+
+  const resolveModerationEvent = async (
+    eventId: string,
+    outcome: "clear" | "confirm",
+  ) => {
+    if (!API_BASE_URL) return;
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/livekit/moderation/events/${eventId}/resolve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ outcome }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`La décision a échoué (HTTP ${response.status}).`);
+      }
+      setModerationQueue((events) =>
+        events ? events.filter((event) => event.id !== eventId) : events,
+      );
+    } catch (reviewError) {
+      Alert.alert(
+        "Décision impossible",
+        reviewError instanceof Error
+          ? reviewError.message
+          : "Une erreur est survenue pendant la revue.",
+      );
+    }
+  };
+
   const joinChair = async () => {
+    if (moderationConsent !== true) {
+      setModerationConsent(null);
+      return;
+    }
     try {
       const room = await connect();
       if (
@@ -413,6 +595,11 @@ export default function GrinScreen() {
     } catch (joinError) {
       setError(formatLiveKitError(joinError));
     }
+  };
+
+  const revokeModerationConsent = async () => {
+    await leaveChair();
+    setModerationConsent(false);
   };
 
   const leaveChair = async () => {
@@ -545,6 +732,25 @@ export default function GrinScreen() {
           Caméra et micro restent coupés jusqu’à votre prise de parole.
         </Text>
       </View>
+      {moderationNotice && (
+        <View style={[styles.moderationNotice, { backgroundColor: colors.card, borderColor: colors.danger }]}>
+          <Text style={[styles.moderationNoticeText, { color: colors.text }]}>
+            {moderationNotice.message}
+          </Text>
+          {moderationNotice.status !== "APPEALED" && (
+            <Pressable
+              accessibilityRole="button"
+              disabled={isAppealing}
+              onPress={() => void appealModerationEvent()}
+              style={[styles.appealButton, { backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.acceptRulesText}>
+                {isAppealing ? "Envoi du recours..." : "Contester et demander une revue"}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      )}
 
       <ScrollView
         contentContainerStyle={[
@@ -674,7 +880,9 @@ export default function GrinScreen() {
             >
               <Camera color="#ffffff" size={18} />
               <Text style={styles.joinButtonText}>
-                {chairs.length >= MAX_CHAIRS
+                {moderationConsent !== true
+                  ? "Accepter l’analyse pour prendre une chaise"
+                  : chairs.length >= MAX_CHAIRS
                   ? "Toutes les chaises sont prises"
                   : "Prendre une chaise"}
               </Text>
@@ -714,7 +922,30 @@ export default function GrinScreen() {
             <Flag color={colors.danger} size={18} />
             <Text style={[styles.secondaryButtonText, { color: colors.text }]}>Signaler</Text>
           </Pressable>
+          {moderationQueue !== null && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setIsReviewQueueOpen(true)}
+              style={[styles.secondaryButton, { backgroundColor: colors.card, borderColor: colors.border }]}
+            >
+              <ShieldCheck color={colors.primary} size={18} />
+              <Text style={[styles.secondaryButtonText, { color: colors.text }]}>
+                Revue ({moderationQueue.length})
+              </Text>
+            </Pressable>
+          )}
         </View>
+        {moderationConsent === true && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void revokeModerationConsent()}
+            style={styles.revokeConsentButton}
+          >
+            <Text style={[styles.cancelReportText, { color: colors.secondaryText }]}>
+              Révoquer le consentement et quitter ma chaise
+            </Text>
+          </Pressable>
+        )}
       </ScrollView>
 
       {error && (
@@ -729,6 +960,44 @@ export default function GrinScreen() {
           )}
         </View>
       )}
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => {
+          if (moderationConsent === null) setModerationConsent(false);
+        }}
+        transparent
+        visible={rulesLoaded && rulesAccepted && moderationConsent === null}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
+            <ShieldCheck color={colors.primary} size={30} />
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Consentement à la modération du live</Text>
+            <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+              Si vous acceptez, l’agent QuartierPlus analyse des échantillons de votre vidéo avec AWS Rekognition et transcrit temporairement votre audio en français avec AWS Transcribe pendant ce salon. Les médias et transcriptions ne sont pas enregistrés par QuartierPlus ni conservés par l’agent; AWS les traite selon les paramètres et politiques de votre compte AWS. Les correspondances incertaines sont transmises à une revue humaine; un contenu n’est jamais supprimé automatiquement.
+            </Text>
+            <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+              Sans consentement, vous pouvez regarder et écouter, mais votre caméra et votre micro ne pourront pas publier. Vous pouvez quitter votre chaise et révoquer votre consentement à tout moment.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setModerationConsent(true)}
+              style={[styles.acceptRulesButton, { backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.acceptRulesText}>J’accepte l’analyse AWS pour ce salon</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setModerationConsent(false)}
+              style={styles.cancelConsentButton}
+            >
+              <Text style={[styles.cancelReportText, { color: colors.secondaryText }]}>
+                Continuer comme spectateur
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         animationType="fade"
@@ -759,6 +1028,61 @@ export default function GrinScreen() {
               style={[styles.acceptRulesButton, { backgroundColor: colors.primary }]}
             >
               <Text style={styles.acceptRulesText}>J’accepte et rejoindre le Grin</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setIsReviewQueueOpen(false)}
+        transparent
+        visible={isReviewQueueOpen}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
+            <ShieldCheck color={colors.primary} size={26} />
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Revue humaine</Text>
+            <ScrollView style={styles.reviewList}>
+              {moderationQueue?.length ? moderationQueue.map((event) => (
+                <View key={event.id} style={[styles.reviewItem, { borderColor: colors.border }]}>
+                  <Text style={[styles.reportReasonText, { color: colors.text }]}>
+                    {event.media_type} · {event.category} · {event.confidence.toFixed(1)}%
+                  </Text>
+                  <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+                    Participant : {event.participant_id}
+                    {event.status === "APPEALED" ? " · Recours reçu" : ""}
+                  </Text>
+                  {event.appeal_reason && (
+                    <Text style={[styles.modalIntro, { color: colors.text }]}>
+                      Recours : {event.appeal_reason}
+                    </Text>
+                  )}
+                  <View style={styles.reviewActions}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => void resolveModerationEvent(event.id, "clear")}
+                      style={[styles.reviewAction, { backgroundColor: colors.primary }]}
+                    >
+                      <Text style={styles.acceptRulesText}>Faux positif</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => void resolveModerationEvent(event.id, "confirm")}
+                      style={[styles.reviewAction, { backgroundColor: colors.danger }]}
+                    >
+                      <Text style={styles.acceptRulesText}>Confirmer</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )) : (
+                <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+                  Aucun signalement en attente.
+                </Text>
+              )}
+            </ScrollView>
+            <Pressable accessibilityRole="button" onPress={() => setIsReviewQueueOpen(false)}>
+              <Text style={[styles.cancelReportText, { color: colors.secondaryText }]}>Fermer</Text>
             </Pressable>
           </View>
         </View>
@@ -854,6 +1178,9 @@ const styles = StyleSheet.create({
   seatCountText: { color: "#6d28d9", fontSize: 12, fontWeight: "700" },
   safetyBanner: { alignItems: "center", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 9, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10 },
   safetyText: { flex: 1, fontSize: 12, lineHeight: 17 },
+  moderationNotice: { borderRadius: 12, borderWidth: 1, gap: 10, marginTop: 10, padding: 12 },
+  moderationNoticeText: { fontSize: 13, lineHeight: 18 },
+  appealButton: { alignItems: "center", borderRadius: 12, padding: 11 },
   content: { flexGrow: 1, paddingBottom: 112, paddingTop: 18 },
   compactContent: { paddingTop: 10 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "center" },
@@ -892,5 +1219,11 @@ const styles = StyleSheet.create({
   acceptRulesText: { color: "#ffffff", fontSize: 14, fontWeight: "800" },
   reportReasonButton: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11 },
   reportReasonText: { fontSize: 13, fontWeight: "600" },
+  reviewList: { maxHeight: 420 },
+  reviewItem: { borderRadius: 12, borderWidth: 1, gap: 8, marginBottom: 10, padding: 12 },
+  reviewActions: { flexDirection: "row", gap: 8 },
+  reviewAction: { alignItems: "center", borderRadius: 10, flex: 1, padding: 10 },
   cancelReportText: { fontSize: 14, fontWeight: "700", paddingTop: 4, textAlign: "center" },
+  cancelConsentButton: { alignItems: "center", paddingVertical: 8 },
+  revokeConsentButton: { alignItems: "center", paddingVertical: 10 },
 });

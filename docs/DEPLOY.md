@@ -79,6 +79,11 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 31. `migrations/027_wholesaler_optional_registration_fields.sql`
 32. `migrations/028_voyage_station_reservations.sql`
 33. `migrations/029_post_media_carousel.sql`
+34. `migrations/030_internal_post_shares.sql`
+35. `migrations/031_pro_map_impressions.sql`
+36. `migrations/032_pro_reviews.sql`
+37. `migrations/033_sponsored_pin_impressions.sql`
+38. `migrations/034_grin_live_moderation.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -127,6 +132,64 @@ elle est nécessaire avant de déployer les routes de profil, d’alliances, de
 messagerie et de fil qui lisent `users.profile_photo_url`. La migration 029
 crée `post_media_items`, lue par le fil. Appliquez ces migrations dans l’ordre
 avant de déployer cette version de l’API.
+Les migrations 030 à 033 ajoutent les partages internes, les impressions de
+carte Pro, les avis et les statistiques des épingles sponsorisées; appliquez-les
+dans l'ordre avant 034.
+La migration 034 crée la file de revue du Grin et les recours; elle ne stocke
+ni image ni transcription. Appliquez-la avant d'activer la modération en direct.
+
+## Agent de modération du Grin (AWS)
+
+La modération en direct est désactivée par défaut. Pour l'activer, déployez
+d'abord l'API et la migration 034, puis l'agent LiveKit séparé :
+
+1. Utilisez un compte LiveKit Cloud et installez LiveKit CLI (`lk`), puis
+   authentifiez-le avec `lk cloud auth`.
+2. Depuis `server/grin-moderator`, déployez l'agent avec `lk agent deploy`.
+   L'agent doit être enregistré sous le nom exact `grin-moderator`.
+3. Configurez sur le service de l'agent `AWS_REGION`,
+   `GRIN_MODERATION_EVENT_URL` (URL HTTPS de l'API suivie de
+   `/v1/livekit/moderation/events`), `GRIN_MODERATION_WEBHOOK_SECRET` et
+   `GRIN_TRANSCRIBE_LANGUAGE=fr-FR`. Les clés AWS ne vont que dans le gestionnaire
+   de secrets du service agent; préférez un rôle IAM plutôt que des clés IAM
+   longues durées.
+4. Accordez au rôle de l'agent uniquement `rekognition:DetectModerationLabels`
+   et `transcribe:StartStreamTranscription` dans la région AWS sélectionnée.
+   L'API et l'agent doivent avoir la même valeur secrète aléatoire de 32
+   caractères minimum pour `GRIN_MODERATION_WEBHOOK_SECRET`.
+5. Sur Render, configurez `GRIN_MODERATION_ENABLED=true`,
+   `GRIN_MODERATION_WEBHOOK_SECRET` et `GRIN_MODERATOR_IDS` (UUID des comptes
+   QuartierPlus autorisés à traiter la file). Appliquez la migration 034 avant
+   d'activer cette variable.
+6. Fermez la room LiveKit `grin` existante avant l'activation pour déconnecter
+   les anciennes sessions qui ne portaient pas d'attribut de consentement.
+   Les nouveaux jetons sans consentement ne permettent pas de publier.
+7. Recompilez puis distribuez un nouvel APK Android et vérifiez le Grin avec
+   des comptes de test consentants et non consentants. Une OTA seule n'active
+   pas les changements serveur.
+
+Chaque participant choisit son consentement pour le salon courant. L'agent
+s'abonne uniquement aux pistes des participants dont le jeton porte ce
+consentement. Rekognition analyse une image réduite toutes les cinq secondes;
+Transcribe traite l'audio en français (`fr-FR`). Aucun média ni texte transcrit
+n'est écrit dans la base par l'agent; seule la catégorie, le score, la piste et
+la décision sont conservés. Une détection visuelle à 95 % ou plus pour une
+catégorie grave met temporairement la piste vidéo en sourdine et ouvre une revue
+humaine. Les menaces et insultes reconnues dans une transcription française
+alimentent seulement la file : le contexte d'une phrase ne permet pas une
+suspension vocale automatique fiable. Les autres détections admissibles
+alimentent aussi la file sans couper le flux. Un modérateur autorisé peut
+confirmer ou lever la sourdine; le participant peut faire appel depuis l'écran
+du Grin. Aucun contenu n'est supprimé automatiquement.
+
+Cette première intégration ne constitue pas un classificateur sémantique
+complet : les menaces vocales ne sont reconnues que pour les phrases françaises
+explicitement configurées et les insultes ne sont que signalées pour revue.
+L'agent ne détecte pas les comportements hors champ, le harcèlement répété
+entre plusieurs salons ni la diffusion de contenus privés sans contexte de
+consentement. Le traitement AWS implique un transfert temporaire des flux vers
+AWS; validez les paramètres de conservation, la région et les obligations
+applicables avant l'activation réelle.
 
 ## 2. Créer le service web Render
 
@@ -204,6 +267,9 @@ invaliderait les signatures des billets déjà émis.
 | `LIVEKIT_API_KEY` | Clé API LiveKit au format `API...` (`^API[A-Za-z0-9_-]+$`) |
 | `LIVEKIT_API_SECRET` | Secret API correspondant de LiveKit |
 | `LIVEKIT_URL` | URL WebSocket LiveKit en `wss://` |
+| `GRIN_MODERATION_ENABLED` | `true` uniquement après déploiement de l'agent AWS et application de la migration 034 |
+| `GRIN_MODERATION_WEBHOOK_SECRET` | Secret aléatoire partagé API/agent, 32 caractères minimum |
+| `GRIN_MODERATOR_IDS` | UUID de comptes QuartierPlus autorisés à examiner la file, séparés par des virgules |
 | `CLOUDINARY_CLOUD_NAME` | Nom du cloud Cloudinary utilisé par l'API de publication |
 | `CLOUDINARY_API_KEY` | Clé API Cloudinary |
 | `CLOUDINARY_API_SECRET` | Secret API Cloudinary; reste uniquement sur Render |

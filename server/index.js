@@ -7,6 +7,7 @@ import channelRoutes from "./routes/channelRoutes.js";
 import conversationRoutes from "./routes/conversationRoutes.js";
 import eventsRoutes from "./routes/eventsRoutes.js";
 import livekitRoutes from "./routes/livekitRoutes.js";
+import grinModerationRoutes from "./routes/grinModerationRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import mapRoutes from "./routes/mapRoutes.js";
 import marketplaceRoutes from "./routes/marketplaceRoutes.js";
@@ -60,6 +61,7 @@ app.use(["/api/v1/marketplace", "/v1/marketplace"], marketplaceRoutes);
 app.use(["/api/v1/reports", "/v1/reports"], reportRoutes);
 app.use(["/api/v1/events", "/v1/events"], eventsRoutes);
 app.use(["/api/v1/livekit", "/v1/livekit"], livekitRoutes);
+app.use(["/api/v1/livekit/moderation", "/v1/livekit/moderation"], grinModerationRoutes);
 app.use(["/api/v1/payments", "/v1/payments"], paymentRoutes);
 app.use(["/api/v1/pro", "/v1/pro"], proRoutes);
 app.use(["/api/v1/pro-commerce", "/v1/pro-commerce"], proCommerceRoutes);
@@ -99,6 +101,7 @@ app.use((error, _request, response, _next) => {
       env.cloudinaryApiSecret,
       env.livekitApiKey,
       env.livekitApiSecret,
+      env.grinModerationWebhookSecret,
     ]) {
       if (secret) safe = safe.replaceAll(secret, "[masqué]");
     }

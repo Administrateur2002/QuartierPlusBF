@@ -197,6 +197,38 @@ const livekitConfigurationProblemDetails = [
     : []),
 ];
 const livekitConfigurationIsUsable = livekitConfigurationProblems.length === 0;
+const grinModerationEnabledValue = optional("GRIN_MODERATION_ENABLED");
+if (
+  grinModerationEnabledValue &&
+  !["true", "false"].includes(grinModerationEnabledValue)
+) {
+  throw new Error("GRIN_MODERATION_ENABLED must be true or false.");
+}
+const grinModerationEnabled = grinModerationEnabledValue === "true";
+const grinModerationWebhookSecret = optional("GRIN_MODERATION_WEBHOOK_SECRET");
+if (grinModerationEnabled && grinModerationWebhookSecret.length < 32) {
+  throw new Error(
+    "GRIN_MODERATION_WEBHOOK_SECRET must contain at least 32 characters when GRIN_MODERATION_ENABLED=true.",
+  );
+}
+const grinModeratorIds = [
+  ...new Set(
+    optional("GRIN_MODERATOR_IDS")
+      .split(",")
+      .map((userId) => userId.trim())
+      .filter(Boolean),
+  ),
+];
+const moderatorIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+if (grinModeratorIds.some((userId) => !moderatorIdPattern.test(userId))) {
+  throw new Error("GRIN_MODERATOR_IDS must contain comma-separated user UUIDs.");
+}
+if (grinModerationEnabled && grinModeratorIds.length === 0) {
+  throw new Error(
+    "GRIN_MODERATOR_IDS is required when GRIN_MODERATION_ENABLED=true.",
+  );
+}
 if (isProduction) {
   if (!googleClientId) {
     throw new Error("GOOGLE_CLIENT_ID is required in production.");
@@ -241,6 +273,9 @@ export const env = Object.freeze({
   livekitConfigurationIsUsable,
   livekitConfigurationProblems,
   livekitConfigurationProblemDetails,
+  grinModerationEnabled,
+  grinModerationWebhookSecret,
+  grinModeratorIds,
   fedapaySecretKey: optional("FEDAPAY_SECRET_KEY"),
   fedapayPublicKey: optional("FEDAPAY_PUBLIC_KEY"),
   fedapayEnvironment,

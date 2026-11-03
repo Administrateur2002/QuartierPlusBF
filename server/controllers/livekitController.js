@@ -1,9 +1,48 @@
-import { AccessToken, RoomConfiguration, TrackSource } from "livekit-server-sdk";
+import {
+  AccessToken,
+  LiveKitAPI,
+  RoomConfiguration,
+  TrackSource,
+} from "livekit-server-sdk";
 import { env } from "../config/env.js";
 
 const ROOM_NAME_PATTERN =
   /^(?:emergency|grin|sos_[A-Za-z0-9-]{1,100}|channel_[A-Za-z0-9-]{1,100})$/;
 const TOKEN_TTL_SECONDS = 10 * 60;
+const moderatorDispatches = new Map();
+
+const ensureGrinModerator = async () => {
+  const pending = moderatorDispatches.get("grin");
+  if (pending) return pending;
+  const dispatch = (async () => {
+    const host = new URL(env.livekitUrl);
+    host.protocol = "https:";
+    const livekit = new LiveKitAPI({
+      host: host.toString(),
+      apiKey: env.livekitApiKey,
+      secret: env.livekitApiSecret,
+    });
+    const rooms = await livekit.room.listRooms(["grin"]);
+    if (!rooms.some((room) => room.name === "grin")) {
+      await livekit.room.createRoom({
+        name: "grin",
+        maxParticipants: 6,
+      });
+    }
+    const dispatches = await livekit.agentDispatch.listDispatch("grin");
+    if (!dispatches.some((entry) => entry.agentName === "grin-moderator")) {
+      await livekit.agentDispatch.createDispatch("grin", "grin-moderator");
+    }
+  })();
+  moderatorDispatches.set("grin", dispatch);
+  try {
+    await dispatch;
+  } catch (error) {
+    moderatorDispatches.delete("grin");
+    throw error;
+  }
+  moderatorDispatches.delete("grin");
+};
 
 const safeDiagnostic = (error) => {
   const code =
@@ -34,6 +73,24 @@ export const createLiveKitToken = async (request, response) => {
       error:
         "Nom de room invalide. Utilisez emergency, grin, sos_<id> ou channel_<id>.",
     });
+  }
+  const moderationConsent = request.body?.moderationConsent === true;
+  if (roomName === "grin" && moderationConsent) {
+    if (!env.grinModerationEnabled) {
+      return response.status(503).json({
+        error: "La modération en direct n'est pas encore configurée.",
+        code: "GRIN_MODERATION_UNAVAILABLE",
+      });
+    }
+    try {
+      await ensureGrinModerator();
+    } catch (error) {
+      console.error("Unable to dispatch Grin moderation agent:", safeDiagnostic(error));
+      return response.status(503).json({
+        error: "L'agent de modération du Grin est indisponible.",
+        code: "GRIN_MODERATOR_UNAVAILABLE",
+      });
+    }
   }
   if (!env.livekitConfigurationIsUsable) {
     const details = env.livekitConfigurationProblems.join(", ");
@@ -85,16 +142,25 @@ export const createLiveKitToken = async (request, response) => {
       {
         identity: userId,
         ttl: TOKEN_TTL_SECONDS,
+        ...(roomName === "grin"
+          ? {
+              attributes: {
+                grin_moderation_consent: moderationConsent ? "true" : "false",
+              },
+            }
+          : {}),
       },
     );
     accessToken.addGrant({
       room: roomName,
       roomJoin: true,
-      canPublish: true,
+      canPublish: roomName !== "grin" || moderationConsent,
       canPublishSources:
-        roomName === "grin"
+        roomName === "grin" && moderationConsent
           ? [TrackSource.MICROPHONE, TrackSource.CAMERA]
-          : [TrackSource.MICROPHONE],
+          : roomName === "grin"
+            ? []
+            : [TrackSource.MICROPHONE],
       canSubscribe: true,
       canPublishData: false,
     });
