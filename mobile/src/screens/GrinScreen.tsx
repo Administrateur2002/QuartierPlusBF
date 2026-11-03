@@ -2,11 +2,14 @@ import { AudioSession, VideoTrack } from "@livekit/react-native";
 import {
   Camera,
   CameraOff,
+  Flag,
+  Gauge,
   Headphones,
   Mic,
   MicOff,
   PictureInPicture2,
   Radio,
+  ShieldCheck,
   Users,
   Wifi,
   WifiOff,
@@ -22,6 +25,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentRef } from "rea
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   PermissionsAndroid,
   Platform,
   Pressable,
@@ -31,6 +35,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import * as SecureStore from "expo-secure-store";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import {
@@ -58,6 +63,15 @@ type GrinChair = {
 };
 
 const MAX_CHAIRS = 6;
+const RULES_ACCEPTED_KEY = "quartierplus.grin.rules.v1";
+const REPORT_REASONS = [
+  "Harcèlement",
+  "Insultes",
+  "Menaces",
+  "Nudité explicite",
+  "Contenu privé sans consentement",
+  "Comportement abusif",
+] as const;
 const LIVEKIT_UNAVAILABLE_MESSAGE =
   "Connexion au Grin impossible.";
 
@@ -140,6 +154,7 @@ export default function GrinScreen() {
   const connectionRef = useRef<Promise<Room> | null>(null);
   const mountedRef = useRef(false);
   const pipVideoRef = useRef<ComponentRef<typeof VideoTrack> | null>(null);
+  const lowDataModeRef = useRef(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isOnChair, setIsOnChair] = useState(false);
@@ -147,11 +162,54 @@ export default function GrinScreen() {
   const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(false);
   const [chairs, setChairs] = useState<GrinChair[]>([]);
   const [pipIdentity, setPipIdentity] = useState<string | null>(null);
+  const [rulesLoaded, setRulesLoaded] = useState(false);
+  const [rulesAccepted, setRulesAccepted] = useState(false);
+  const [lowDataMode, setLowDataMode] = useState(false);
+  const [reportTarget, setReportTarget] = useState<GrinChair | null>(null);
+  const [isReportPickerOpen, setIsReportPickerOpen] = useState(false);
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  lowDataModeRef.current = lowDataMode;
+
+  useEffect(() => {
+    let active = true;
+    void SecureStore.getItemAsync(RULES_ACCEPTED_KEY)
+      .then((value) => {
+        if (active) setRulesAccepted(value === "accepted");
+      })
+      .catch((storageError: unknown) => {
+        if (active) {
+          setError(
+            storageError instanceof Error
+              ? storageError.message
+              : "Impossible de vérifier l’acceptation des règles.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setRulesLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const applyLowDataMode = useCallback((room: Room, enabled: boolean) => {
+    for (const participant of room.remoteParticipants.values()) {
+      for (const publication of participant.trackPublications.values()) {
+        if (publication.source === Track.Source.Camera) {
+          publication.setSubscribed(!enabled);
+        }
+      }
+    }
+  }, []);
 
   const connect = useCallback(async (): Promise<Room> => {
     if (roomRef.current?.state === "connected") return roomRef.current;
     if (connectionRef.current) return connectionRef.current;
+    if (!rulesAccepted) {
+      throw new Error("Acceptez les règles du quartier avant de rejoindre le live.");
+    }
     if (!API_BASE_URL) {
       throw new Error("EXPO_PUBLIC_API_URL manquant (code API_URL_MISSING).");
     }
@@ -210,7 +268,10 @@ export default function GrinScreen() {
           RoomEvent.LocalTrackPublished,
           RoomEvent.LocalTrackUnpublished,
         ]) {
-          room.on(event, refreshChairs);
+          room.on(event, () => {
+            applyLowDataMode(room, lowDataModeRef.current);
+            refreshChairs();
+          });
         }
         room.on(RoomEvent.Disconnected, () => {
           roomRef.current = null;
@@ -247,10 +308,15 @@ export default function GrinScreen() {
     } finally {
       connectionRef.current = null;
     }
-  }, [isOffline]);
+  }, [applyLowDataMode, isOffline, rulesAccepted]);
 
   useEffect(() => {
     mountedRef.current = true;
+    if (!rulesLoaded || !rulesAccepted) {
+      return () => {
+        mountedRef.current = false;
+      };
+    }
     if (isOffline) {
       setError("Connectez-vous à Internet pour rejoindre le Grin en direct.");
       return () => {
@@ -270,7 +336,58 @@ export default function GrinScreen() {
         console.error("Unable to stop Grin audio session:", audioError);
       });
     };
-  }, [connect, isOffline]);
+  }, [connect, isOffline, rulesAccepted, rulesLoaded]);
+
+  useEffect(() => {
+    if (roomRef.current) applyLowDataMode(roomRef.current, lowDataMode);
+  }, [applyLowDataMode, lowDataMode]);
+
+  const acceptRules = async () => {
+    try {
+      await SecureStore.setItemAsync(RULES_ACCEPTED_KEY, "accepted");
+      setRulesAccepted(true);
+      setError(null);
+    } catch (storageError) {
+      setError(
+        storageError instanceof Error
+          ? storageError.message
+          : "Impossible d’enregistrer votre acceptation des règles.",
+      );
+    }
+  };
+
+  const submitReport = async (reason: (typeof REPORT_REASONS)[number]) => {
+    if (!reportTarget || !API_BASE_URL || isSubmittingReport) return;
+    setIsSubmittingReport(true);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/reports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_type: "live_participant",
+          target_id: reportTarget.identity,
+          reason,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`Le signalement a échoué (HTTP ${response.status}).`);
+      }
+      setReportTarget(null);
+      Alert.alert(
+        "Signalement transmis",
+        "Les modérateurs pourront examiner ce signalement. Un signalement ne supprime pas automatiquement le contenu.",
+      );
+    } catch (reportError) {
+      Alert.alert(
+        "Signalement impossible",
+        reportError instanceof Error
+          ? reportError.message
+          : "Une erreur est survenue pendant le signalement.",
+      );
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  };
 
   const joinChair = async () => {
     try {
@@ -422,6 +539,13 @@ export default function GrinScreen() {
         </View>
       )}
 
+      <View style={[styles.safetyBanner, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <ShieldCheck color={colors.primary} size={19} />
+        <Text style={[styles.safetyText, { color: colors.secondaryText }]}>
+          Caméra et micro restent coupés jusqu’à votre prise de parole.
+        </Text>
+      </View>
+
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -569,6 +693,28 @@ export default function GrinScreen() {
             <PictureInPicture2 color={colors.secondaryText} size={21} />
           </Pressable>
         </View>
+
+        <View style={styles.secondaryControls}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={lowDataMode ? "Désactiver le mode faible connexion" : "Activer le mode faible connexion"}
+            onPress={() => setLowDataMode((enabled) => !enabled)}
+            style={[styles.secondaryButton, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <Gauge color={lowDataMode ? colors.primary : colors.secondaryText} size={18} />
+            <Text style={[styles.secondaryButtonText, { color: colors.text }]}>
+              {lowDataMode ? "Mode éco activé" : "Mode faible connexion"}
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setIsReportPickerOpen(true)}
+            style={[styles.secondaryButton, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <Flag color={colors.danger} size={18} />
+            <Text style={[styles.secondaryButtonText, { color: colors.text }]}>Signaler</Text>
+          </Pressable>
+        </View>
       </ScrollView>
 
       {error && (
@@ -583,6 +729,110 @@ export default function GrinScreen() {
           )}
         </View>
       )}
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => {
+          if (!rulesAccepted) return;
+        }}
+        transparent
+        visible={rulesLoaded && !rulesAccepted}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
+            <ShieldCheck color={colors.primary} size={30} />
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Les règles d’or du quartier</Text>
+            <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+              Avant votre premier live, confirmez que vous respecterez chaque participant.
+            </Text>
+            {[
+              "Respect mutuel : aucune injure, menace, intimidation ou forme de harcèlement.",
+              "Aucune nudité ou image sexuelle explicite.",
+              "Ne diffusez jamais de contenu privé sans le consentement des personnes concernées.",
+              "Signalez les abus; les cas incertains doivent être examinés par une personne.",
+            ].map((rule) => (
+              <Text key={rule} style={[styles.ruleText, { color: colors.text }]}>• {rule}</Text>
+            ))}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void acceptRules()}
+              style={[styles.acceptRulesButton, { backgroundColor: colors.primary }]}
+            >
+              <Text style={styles.acceptRulesText}>J’accepte et rejoindre le Grin</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setIsReportPickerOpen(false)}
+        transparent
+        visible={isReportPickerOpen}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
+            <Flag color={colors.danger} size={26} />
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Signaler un participant</Text>
+            <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+              Choisissez la personne concernée. Votre signalement sera examiné par les modérateurs.
+            </Text>
+            {chairs.filter((chair) => !chair.isLocal).length === 0 ? (
+              <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+                Aucun autre participant n’est présent dans le salon pour le moment.
+              </Text>
+            ) : chairs.filter((chair) => !chair.isLocal).map((chair) => (
+              <Pressable
+                accessibilityRole="button"
+                key={chair.identity}
+                onPress={() => {
+                  setIsReportPickerOpen(false);
+                  setReportTarget(chair);
+                }}
+                style={[styles.reportReasonButton, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.reportReasonText, { color: colors.text }]}>{chair.name}</Text>
+              </Pressable>
+            ))}
+            <Pressable accessibilityRole="button" onPress={() => setIsReportPickerOpen(false)}>
+              <Text style={[styles.cancelReportText, { color: colors.secondaryText }]}>Fermer</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setReportTarget(null)}
+        transparent
+        visible={reportTarget !== null}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
+            <Flag color={colors.danger} size={26} />
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              Signaler {reportTarget?.name ?? "un participant"}
+            </Text>
+            <Text style={[styles.modalIntro, { color: colors.secondaryText }]}>
+              Le signalement est transmis aux modérateurs pour vérification.
+            </Text>
+            {REPORT_REASONS.map((reason) => (
+              <Pressable
+                accessibilityRole="button"
+                disabled={isSubmittingReport}
+                key={reason}
+                onPress={() => void submitReport(reason)}
+                style={[styles.reportReasonButton, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.reportReasonText, { color: colors.text }]}>{reason}</Text>
+              </Pressable>
+            ))}
+            <Pressable accessibilityRole="button" onPress={() => setReportTarget(null)}>
+              <Text style={[styles.cancelReportText, { color: colors.secondaryText }]}>Annuler</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -602,6 +852,8 @@ const styles = StyleSheet.create({
   roomSubtitle: { color: "#64748b", fontSize: 12, marginTop: 4 },
   seatCount: { alignItems: "center", backgroundColor: "#f3e8ff", borderRadius: 14, flexDirection: "row", gap: 5, paddingHorizontal: 9, paddingVertical: 6 },
   seatCountText: { color: "#6d28d9", fontSize: 12, fontWeight: "700" },
+  safetyBanner: { alignItems: "center", borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 9, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  safetyText: { flex: 1, fontSize: 12, lineHeight: 17 },
   content: { flexGrow: 1, paddingBottom: 112, paddingTop: 18 },
   compactContent: { paddingTop: 10 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 10, justifyContent: "center" },
@@ -624,7 +876,21 @@ const styles = StyleSheet.create({
   joinButtonText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
   pipButton: { alignItems: "center", backgroundColor: "#e2e8f0", borderRadius: 25, height: 50, justifyContent: "center", width: 50 },
   disabledPip: { opacity: 0.45 },
+  secondaryControls: { flexDirection: "row", gap: 10, marginTop: 12 },
+  secondaryButton: { alignItems: "center", borderRadius: 13, borderWidth: 1, flex: 1, flexDirection: "row", gap: 8, justifyContent: "center", minHeight: 44, paddingHorizontal: 8 },
+  secondaryButtonText: { fontSize: 12, fontWeight: "700" },
+  disabledSecondaryButton: { opacity: 0.5 },
   errorCard: { backgroundColor: "#fef2f2", borderRadius: 12, marginBottom: 16, padding: 13 },
   errorText: { color: "#b91c1c", fontSize: 12, lineHeight: 18 },
   retryText: { color: "#1d4ed8", fontSize: 13, fontWeight: "700", marginTop: 8 },
+  modalBackdrop: { backgroundColor: "rgba(15, 23, 42, 0.62)", flex: 1, justifyContent: "center", padding: 20 },
+  modalCard: { borderRadius: 22, gap: 12, maxHeight: "90%", padding: 22 },
+  modalTitle: { fontSize: 20, fontWeight: "800" },
+  modalIntro: { fontSize: 13, lineHeight: 19 },
+  ruleText: { fontSize: 14, lineHeight: 20 },
+  acceptRulesButton: { alignItems: "center", borderRadius: 14, marginTop: 8, padding: 15 },
+  acceptRulesText: { color: "#ffffff", fontSize: 14, fontWeight: "800" },
+  reportReasonButton: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11 },
+  reportReasonText: { fontSize: 13, fontWeight: "600" },
+  cancelReportText: { fontSize: 14, fontWeight: "700", paddingTop: 4, textAlign: "center" },
 });

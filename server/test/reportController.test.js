@@ -34,6 +34,7 @@ test("comment and profile reports are stored for moderation", async (context) =>
   for (const [targetType, targetId, targetTable] of [
     ["comment", "2b490a29-02dd-44ad-8c9f-81d9cadc0002", "post_comments"],
     ["profile", "4b490a29-02dd-44ad-8c9f-81d9cadc0004", "users"],
+    ["live_participant", "6b490a29-02dd-44ad-8c9f-81d9cadc0006", "users"],
     ["message", "5b490a29-02dd-44ad-8c9f-81d9cadc0005", "messages"],
   ]) {
     const response = createResponse();
@@ -73,6 +74,49 @@ test("report creation rejects an unsupported reason before database access", asy
   );
 
   assert.equal(response.statusCode, 400);
+});
+
+test("live participant reports reject self-reporting and accept safety reasons", async (context) => {
+  let queries = 0;
+  context.mock.method(pool, "query", async () => {
+    queries += 1;
+    return queries === 1
+      ? { rowCount: 1, rows: [{ id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002" }] }
+      : { rowCount: 1, rows: [{ id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003" }] };
+  });
+  const reporterId = "1b490a29-02dd-44ad-8c9f-81d9cadc0001";
+  const selfReport = createResponse();
+  await createReport(
+    {
+      body: {
+        target_type: "live_participant",
+        target_id: reporterId,
+        reason: "Menaces",
+      },
+      auth: { userId: reporterId },
+    },
+    selfReport,
+    (error) => { throw error; },
+  );
+  assert.equal(selfReport.statusCode, 400);
+  assert.equal(queries, 0);
+
+  const report = createResponse();
+  await createReport(
+    {
+      body: {
+        target_type: "live_participant",
+        target_id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002",
+        reason: "Nudité explicite",
+      },
+      auth: { userId: reporterId },
+    },
+    report,
+    (error) => { throw error; },
+  );
+  assert.equal(report.statusCode, 201);
+  assert.equal(report.payload.reported, true);
+  assert.equal(queries, 2);
 });
 
 test("report creation does not store a missing target", async (context) => {

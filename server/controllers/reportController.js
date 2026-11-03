@@ -8,6 +8,7 @@ const TARGET_TYPES = new Map([
   ["marketplace_item", { type: "MARKETPLACE_ITEM", table: "marketplace_items" }],
   ["comment", { type: "COMMENT", table: "post_comments" }],
   ["profile", { type: "PROFILE", table: "users" }],
+  ["live_participant", { type: "LIVE_PARTICIPANT", table: "users" }],
 ]);
 const REPORT_REASONS = new Set([
   "Harcèlement",
@@ -17,6 +18,10 @@ const REPORT_REASONS = new Set([
   "Spam",
   "Usurpation d’identité",
   "Contenu dangereux",
+  "Menaces",
+  "Nudité explicite",
+  "Contenu privé sans consentement",
+  "Comportement abusif",
   "Autre motif",
 ]);
 
@@ -35,6 +40,14 @@ export const createReport = async (request, response, next) => {
       : "";
   if (!target || !UUID_PATTERN.test(targetId) || !REPORT_REASONS.has(reason)) {
     return response.status(400).json({ error: "Les informations du signalement sont invalides." });
+  }
+  if (
+    target.type === "LIVE_PARTICIPANT" &&
+    targetId === request.auth.userId
+  ) {
+    return response.status(400).json({
+      error: "Vous ne pouvez pas vous signaler vous-même.",
+    });
   }
   try {
     const targetResult = target.table
