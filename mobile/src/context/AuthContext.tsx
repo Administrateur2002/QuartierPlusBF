@@ -61,6 +61,7 @@ type AuthContextValue = {
   isSessionLoading: boolean;
   authError: string | null;
   setSession: (token: string, user: AuthUser) => Promise<void>;
+  requestPushNotifications: () => Promise<boolean>;
   queueOfflineAction: (
     actionType: SyncActionType,
     payload: Record<string, unknown>,
@@ -322,6 +323,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setIsSessionLoading(false);
   }, []);
 
+  const requestPushNotifications = useCallback(async () => {
+    if (!user?.id) {
+      throw new Error("Connectez-vous pour activer les notifications.");
+    }
+    const pushToken = await registerPushNotifications(user.id);
+    if (pushToken) pushTokenRef.current = pushToken;
+    return Boolean(pushToken);
+  }, [user?.id]);
+
   const requestAuthentication = useCallback(() => {
     setAuthPromptVisible(true);
   }, []);
@@ -364,23 +374,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
     void syncQueuedActions();
   }, [syncQueuedActions]);
 
-  useEffect(() => {
-    if (!user?.id || !token || isOffline) return;
-    let active = true;
-    void registerPushNotifications(user.id)
-      .then((pushToken) => {
-        if (active) pushTokenRef.current = pushToken;
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          console.error("Unable to register push notifications:", error);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [isOffline, token, user?.id]);
-
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -393,6 +386,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       isSessionLoading,
       authError,
       setSession,
+      requestPushNotifications,
       queueOfflineAction,
       refreshUser,
       signOut,
@@ -408,6 +402,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       isSessionLoading,
       authError,
       setSession,
+      requestPushNotifications,
       queueOfflineAction,
       refreshUser,
       signOut,

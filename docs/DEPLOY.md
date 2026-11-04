@@ -86,6 +86,8 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 38. `migrations/034_grin_live_moderation.sql`
 39. `migrations/035_secure_admin_workspace.sql`
 40. `migrations/036_post_upload_moderation.sql`
+41. `migrations/037_public_text_conflicts.sql`
+42. `migrations/038_legal_document_acceptances.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -110,6 +112,12 @@ d'urgence facultatif. Le seed doit être appliqué après 011 afin que les deux
 canaux soient créés pour chaque pays. Au démarrage, le
 serveur les upsert à nouveau pour réparer les canaux manquants sans produire
 de 404 pour un compte n'ayant encore aucune conversation.
+
+La migration 038 enregistre les acceptations datées des documents légaux par
+utilisateur, version et version de l’application. Appliquez-la avant de
+déployer le parcours de consentement. Les variables `LEGAL_*_VERSION` du
+serveur déterminent les versions en vigueur ; changer une valeur relance la
+demande d’acceptation pour le document correspondant.
 
 Les migrations 015 à 017 ajoutent les champs utilisés par les publications
 Made in, les épingles sponsorisées et les détails d'offres Pro. Appliquez-les

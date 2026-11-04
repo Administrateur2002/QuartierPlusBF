@@ -53,6 +53,7 @@ import VoiceTextInput from "../components/VoiceTextInput";
 import ProfileAvatar from "../components/ProfileAvatar";
 import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
 import GoldenRulesModal from "../components/GoldenRulesModal";
+import LegalDocumentsModal from "../components/LegalDocumentsModal";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
 import {
   EMERGENCY_COUNTRIES,
@@ -146,7 +147,14 @@ const PLUS_DESTINATIONS = [
 
 export default function ProfileScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
-  const { isOffline, refreshUser, requestAuthentication, signOut, user } = useAuth();
+  const {
+    isOffline,
+    refreshUser,
+    requestAuthentication,
+    requestPushNotifications,
+    signOut,
+    user,
+  } = useAuth();
   const { colors, language, setLanguage, setTheme, t, theme } = useTheme();
   const { setFloatingButtonEnabled } = useVoiceAssistant();
   const [selectedCountry, setSelectedCountry] = useState<Country>(COUNTRIES[3]);
@@ -189,6 +197,7 @@ export default function ProfileScreen() {
   const [isUpdatingPhone, setIsUpdatingPhone] = useState(false);
   const [aboutVisible, setAboutVisible] = useState(false);
   const [goldenRulesVisible, setGoldenRulesVisible] = useState(false);
+  const [legalDocumentsVisible, setLegalDocumentsVisible] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [privacyVisible, setPrivacyVisible] = useState(false);
@@ -767,6 +776,38 @@ export default function ProfileScreen() {
     }
   };
 
+  const explainAndRequestNotifications = () => {
+    Alert.alert(
+      "Activer les notifications",
+      "QuartierPlus peut vous avertir des alertes SOS et des messages du quartier. Votre autorisation est demandée maintenant et peut être retirée dans les réglages de l’appareil.",
+      [
+        { text: "Plus tard", style: "cancel" },
+        {
+          text: "Continuer",
+          onPress: () => {
+            void requestPushNotifications()
+              .then((enabled) => {
+                if (!enabled) {
+                  Alert.alert(
+                    "Notifications non activées",
+                    "Autorisez les notifications dans les réglages de votre appareil.",
+                  );
+                }
+              })
+              .catch((error: unknown) => {
+                Alert.alert(
+                  "Notifications indisponibles",
+                  error instanceof Error
+                    ? error.message
+                    : "Impossible d’activer les notifications.",
+                );
+              });
+          },
+        },
+      ],
+    );
+  };
+
   const confirmClearCachedContent = () => {
     Alert.alert(
       "Effacer le contenu local",
@@ -1056,11 +1097,21 @@ export default function ProfileScreen() {
                 accessibilityRole="button"
                 onPress={() => {
                   setAboutVisible(false);
+                  setLegalDocumentsVisible(true);
+                }}
+                style={styles.guestModalClose}
+              >
+                <Text style={styles.guestModalCloseText}>Documents légaux</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setAboutVisible(false);
                   setGoldenRulesVisible(true);
                 }}
                 style={styles.guestModalClose}
               >
-                <Text style={styles.guestModalCloseText}>Documents légaux · Règles d'or</Text>
+                <Text style={styles.guestModalCloseText}>Règles d'or</Text>
               </Pressable>
               <Text style={styles.guestMetadata}>Version : {require("../../app.json").expo.version}</Text>
               <Text style={styles.guestMetadata}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
@@ -1110,6 +1161,10 @@ export default function ProfileScreen() {
         <GoldenRulesModal
           onClose={() => setGoldenRulesVisible(false)}
           visible={goldenRulesVisible}
+        />
+        <LegalDocumentsModal
+          onClose={() => setLegalDocumentsVisible(false)}
+          visible={legalDocumentsVisible}
         />
       </View>
     );
@@ -1842,6 +1897,17 @@ export default function ProfileScreen() {
               </View>
               <Pressable
                 accessibilityRole="button"
+                onPress={explainAndRequestNotifications}
+                style={styles.privacyAction}
+              >
+                <Bell color={colors.primary} size={18} />
+                <Text style={[styles.privacyActionText, { color: colors.text }]}>
+                  Activer les notifications
+                </Text>
+                <ChevronRight color={colors.secondaryText} size={18} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
                 onPress={() => void openDeviceNotificationSettings()}
                 style={styles.privacyAction}
               >
@@ -1890,11 +1956,21 @@ export default function ProfileScreen() {
               accessibilityRole="button"
               onPress={() => {
                 setAboutVisible(false);
+                setLegalDocumentsVisible(true);
+              }}
+              style={styles.primaryAction}
+            >
+              <Text style={styles.primaryActionText}>Documents légaux</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setAboutVisible(false);
                 setGoldenRulesVisible(true);
               }}
               style={styles.primaryAction}
             >
-              <Text style={styles.primaryActionText}>Documents légaux · Règles d'or</Text>
+              <Text style={styles.primaryActionText}>Règles d'or</Text>
             </Pressable>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Version : {require("../../app.json").expo.version}</Text>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
@@ -1936,6 +2012,10 @@ export default function ProfileScreen() {
       <GoldenRulesModal
         onClose={() => setGoldenRulesVisible(false)}
         visible={goldenRulesVisible}
+      />
+      <LegalDocumentsModal
+        onClose={() => setLegalDocumentsVisible(false)}
+        visible={legalDocumentsVisible}
       />
       <Modal
         animationType="slide"

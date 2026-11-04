@@ -16,6 +16,7 @@ import {
 import { useAuth, type AuthUser } from "../../context/AuthContext";
 import api from "../../services/api";
 import GoogleAuthScreen from "./GoogleAuthScreen";
+import LegalDocumentsModal from "../../components/LegalDocumentsModal";
 import {
   EMBEDDED_PHONE_COUNTRIES,
   formatPhoneNumberE164,
@@ -99,6 +100,8 @@ export default function PhoneAuthScreen() {
   const [email, setEmail] = useState("");
   const [identifier, setIdentifier] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
+  const [legalDocumentsVisible, setLegalDocumentsVisible] = useState(false);
   const [otp, setOtp] = useState("");
   const [otpChannel, setOtpChannel] = useState<"sms" | "email">("sms");
   const [otpIdentifier, setOtpIdentifier] = useState("");
@@ -178,6 +181,9 @@ export default function PhoneAuthScreen() {
         if (!termsAccepted) {
           throw new Error("Vous devez accepter les conditions et la politique de confidentialité.");
         }
+        if (!ageConfirmed) {
+          throw new Error("La création d’un compte est réservée aux personnes âgées d’au moins 16 ans.");
+        }
         const phoneNumber = fullPhoneNumber();
         const countryCode =
           parseInternationalPhone(phoneNumber, manualCountryCode)?.country?.code ??
@@ -193,6 +199,7 @@ export default function PhoneAuthScreen() {
           phone_number: phoneNumber,
           email: email.trim().toLowerCase(),
           terms_accepted: true,
+          age_16_or_older: true,
           channel: otpChannel,
         };
       } else {
@@ -419,6 +426,26 @@ export default function PhoneAuthScreen() {
                 J’accepte les conditions d’utilisation et la politique de confidentialité.
               </Text>
             </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setLegalDocumentsVisible(true)}
+              style={styles.consentLink}
+            >
+              <Text style={styles.consentLinkText}>Lire les documents légaux</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: ageConfirmed }}
+              onPress={() => setAgeConfirmed((confirmed) => !confirmed)}
+              style={styles.consentRow}
+            >
+              <View style={[styles.checkbox, ageConfirmed && styles.checkboxChecked]}>
+                {ageConfirmed && <Text style={styles.checkboxTick}>✓</Text>}
+              </View>
+              <Text style={styles.consentText}>
+                Je confirme avoir au moins 16 ans.
+              </Text>
+            </Pressable>
           </>
         ) : (
           <>
@@ -591,6 +618,10 @@ export default function PhoneAuthScreen() {
           </>
         )}
       </ScrollView>
+      <LegalDocumentsModal
+        onClose={() => setLegalDocumentsVisible(false)}
+        visible={legalDocumentsVisible}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -632,6 +663,8 @@ const styles = StyleSheet.create({
   checkboxChecked: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
   checkboxTick: { color: "#ffffff", fontSize: 15, fontWeight: "800", lineHeight: 18 },
   consentText: { color: "#475569", flex: 1, fontSize: 13, lineHeight: 19 },
+  consentLink: { alignSelf: "flex-start", marginTop: 8, paddingVertical: 5 },
+  consentLinkText: { color: "#2563eb", fontSize: 13, fontWeight: "700" },
   otpInput: { fontSize: 22, letterSpacing: 10, textAlign: "center" },
   resend: { color: "#2563eb", fontSize: 14, fontWeight: "600", marginTop: 10, textAlign: "right" },
   disabledText: { color: "#94a3b8" },

@@ -166,6 +166,11 @@ export const requestOtp = async (request, response, next) => {
         error: "Vous devez accepter les conditions d’utilisation et la politique de confidentialité.",
       });
     }
+    if (request.body?.age_16_or_older !== true) {
+      return response.status(400).json({
+        error: "La création d’un compte est réservée aux personnes âgées d’au moins 16 ans.",
+      });
+    }
 
     try {
       const country = await pool.query(

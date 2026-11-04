@@ -33,6 +33,35 @@ const createClient = (query) => ({
   release() {},
 });
 
+test("registration is rejected unless the user confirms the 16-year minimum", async (context) => {
+  let databaseAccessed = false;
+  context.mock.method(pool, "query", async () => {
+    databaseAccessed = true;
+    throw new Error("Invalid age confirmation must be rejected before database access.");
+  });
+  const response = createResponse();
+  await requestOtp(
+    {
+      body: {
+        flow: "register",
+        first_name: "Awa",
+        last_name: "Traoré",
+        country_code: "BF",
+        phone_number: phoneNumber,
+        email: "awa@example.com",
+        terms_accepted: true,
+        age_16_or_older: false,
+      },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.payload.error, /16 ans/);
+  assert.equal(databaseAccessed, false);
+});
+
 test("registration OTP stores the validated details and creates the account after verification", async (context) => {
   const registration = {
     first_name: "Awa",
@@ -103,6 +132,7 @@ test("registration OTP stores the validated details and creates the account afte
         phone_number: phoneNumber,
         email: registration.email,
         terms_accepted: true,
+        age_16_or_older: true,
       },
     },
     requestResponse,

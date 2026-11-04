@@ -69,6 +69,7 @@ import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
 import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
 import AdminScreen from "./src/screens/AdminScreen";
 import { LockKeyhole, X } from "lucide-react-native";
+import LegalConsentGate from "./src/components/LegalConsentGate";
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -470,6 +471,7 @@ function AppNavigation() {
         <RootNavigator />
         <VoiceAssistantLayer currentRoute={currentRoute} />
         <AuthPromptLayer />
+        <LegalConsentGate />
       </NavigationContainer>
     </View>
   );

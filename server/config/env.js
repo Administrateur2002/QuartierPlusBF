@@ -350,6 +350,23 @@ if (!["sandbox", "live"].includes(fedapayEnvironment)) {
   throw new Error("FEDAPAY_ENVIRONMENT must be sandbox or live.");
 }
 
+const legalDocumentVersions = Object.freeze({
+  terms: optional("LEGAL_TERMS_VERSION") || "2026-11-04.1",
+  privacy: optional("LEGAL_PRIVACY_VERSION") || "2026-11-04.1",
+  golden_rules: optional("LEGAL_GOLDEN_RULES_VERSION") || "2026-11-04.1",
+  pro_terms: optional("LEGAL_PRO_TERMS_VERSION") || "2026-11-04.1",
+  sos_safety: optional("LEGAL_SOS_SAFETY_VERSION") || "2026-11-04.1",
+  automated_moderation:
+    optional("LEGAL_AUTOMATED_MODERATION_VERSION") || "2026-11-04.1",
+});
+if (
+  Object.values(legalDocumentVersions).some(
+    (version) => !/^[0-9A-Za-z._-]{1,40}$/.test(version),
+  )
+) {
+  throw new Error("Legal document versions must be 1-40 safe characters.");
+}
+
 export const env = Object.freeze({
   nodeEnv,
   port,
@@ -399,6 +416,7 @@ export const env = Object.freeze({
   fedapaySecretKey: optional("FEDAPAY_SECRET_KEY"),
   fedapayPublicKey: optional("FEDAPAY_PUBLIC_KEY"),
   fedapayEnvironment,
+  legalDocumentVersions,
   fedapayWebhookSecret: optional("FEDAPAY_WEBHOOK_SECRET"),
   ticketQrSecret: ticketQrSecret || jwtSecret,
   cloudinaryCloudName,
