@@ -85,6 +85,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 37. `migrations/033_sponsored_pin_impressions.sql`
 38. `migrations/034_grin_live_moderation.sql`
 39. `migrations/035_secure_admin_workspace.sql`
+40. `migrations/036_post_upload_moderation.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -312,6 +313,20 @@ invaliderait les signatures des billets déjà émis.
 | `POST_MAX_VIDEO_SECONDS` | Durée maximale d’une vidéo; défaut `420` secondes |
 | `POST_MAX_VIDEO_BYTES` | Taille maximale d’une vidéo en octets; défaut `104857600` (100 Mio) |
 | `POST_DAILY_LIMIT` | Nombre maximal de publications par compte et par jour; défaut `10` |
+| `MODERATION_UPLOADS_ENABLED` | `false` par défaut; analyse les médias via l'agent AWS de Grin si activé |
+| `MODERATION_SERVICE_URL` | URL HTTPS du point `/v1/analyze-upload` servi par l'agent Grin |
+| `MODERATION_DAILY_ANALYSIS_LIMIT` | Plafond d'analyses Rekognition par jour UTC; défaut `100` |
+| `MODERATION_HIGH_THRESHOLD` / `MODERATION_MEDIUM_THRESHOLD` | Seuils de confiance en pourcentage; défaut `90` / `50` |
+| `SUPPORT_NOTIFY_EMAIL` | Adresse destinataire des alertes de modération graves |
+
+Pour activer la modération média, configurez l'API avec
+`MODERATION_UPLOADS_ENABLED=true`, une URL HTTPS publique vers l'agent et le
+même secret fort `GRIN_MODERATION_WEBHOOK_SECRET` sur l'API et l'agent. Sur le
+service de l'agent, configurez également `MODERATION_UPLOADS_WORKER_ENABLED=true`,
+`MODERATION_HTTP_PORT` et `CLOUDINARY_CLOUD_NAME`. Configurez une livraison
+SMTP ou Resend et `SUPPORT_NOTIFY_EMAIL` avant l'activation. Les échantillons
+vidéo sont extraits à cinq instants en mémoire; les médias et images extraites
+ne sont pas enregistrés par le worker.
 | `PRO_ENABLED` | `false` par défaut; `true` active les catalogues, commandes et livraisons grossistes |
 | `PRO_ADMIN_TOKEN` | Secret serveur indépendant, facultatif; protège la validation RCCM/IFU via l’API Pro |
 

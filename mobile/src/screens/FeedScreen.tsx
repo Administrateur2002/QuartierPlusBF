@@ -2110,12 +2110,33 @@ export default function FeedScreen() {
               : `La publication a été refusée par le serveur (HTTP ${postResponse.status}).`,
         );
       }
+      const postPayload: unknown = await postResponse.json();
+      const moderationStatus =
+        isRecord(postPayload) && typeof postPayload.moderation_status === "string"
+          ? postPayload.moderation_status
+          : null;
       setUploadProgress(100);
       setComposerStage("closed");
       setDraftMedia(null);
       setAdditionalDraftMedia([]);
       setDraftCaption("");
       refresh();
+      if (moderationStatus === "PENDING_REVIEW") {
+        Alert.alert(
+          "Publication en revue",
+          "Votre média reste visible uniquement par vous jusqu'à la fin de la vérification.",
+        );
+      } else if (moderationStatus === "BLOCKED") {
+        Alert.alert(
+          "Média bloqué",
+          "Ce média n'est pas publié et a été transmis à l'équipe de modération.",
+        );
+      } else if (moderationStatus === "CHILD_SAFETY_ALERT") {
+        Alert.alert(
+          "Publication bloquée",
+          "La publication a été bloquée et transmise à l'équipe de modération.",
+        );
+      }
     } catch (publishError) {
       if (controller.signal.aborted) return;
       console.error("Unable to publish media:", publishError);

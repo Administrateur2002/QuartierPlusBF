@@ -117,6 +117,54 @@ test("video limits default to 420 seconds and 100 MiB and can be configured", ()
   assert.deepEqual(JSON.parse(configuredLimit.stdout.trim()), [240, 50000000]);
 });
 
+test("upload moderation is disabled by default and requires worker and email configuration", () => {
+  const loadModeration = (overrides = {}) =>
+    spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "import { env } from './config/env.js'; console.log(JSON.stringify([env.moderationUploadsEnabled, env.moderationDailyAnalysisLimit]))",
+      ],
+      {
+        cwd: serverDirectory,
+        env: {
+          ...productionEnv,
+          ...overrides,
+          DOTENV_CONFIG_PATH: "/dev/null",
+        },
+        encoding: "utf8",
+      },
+    );
+
+  const disabled = loadModeration();
+  assert.equal(disabled.status, 0, disabled.stderr);
+  assert.deepEqual(JSON.parse(disabled.stdout.trim()), [false, 100]);
+
+  const enabled = loadModeration({
+    MODERATION_UPLOADS_ENABLED: "true",
+    MODERATION_SERVICE_URL: "https://moderator.example.test",
+    MODERATION_DAILY_ANALYSIS_LIMIT: "25",
+    GRIN_MODERATION_WEBHOOK_SECRET:
+      "production-grin-moderation-webhook-secret-over-32-characters",
+    SUPPORT_NOTIFY_EMAIL: "support@example.test",
+    EMAIL_PROVIDER: "smtp",
+    SMTP_HOST: "smtp.example.test",
+    SMTP_PORT: "587",
+    SMTP_USER: "support",
+    SMTP_PASS: "test-password",
+    MAIL_FROM: "QuartierPlus <noreply@example.test>",
+  });
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.deepEqual(JSON.parse(enabled.stdout.trim()), [true, 25]);
+
+  const incomplete = loadModeration({
+    MODERATION_UPLOADS_ENABLED: "true",
+  });
+  assert.notEqual(incomplete.status, 0);
+  assert.match(incomplete.stderr, /MODERATION_SERVICE_URL/);
+});
+
 test("Cloudinary and LiveKit values are trimmed and unquoted", () => {
   const result = spawnSync(
     process.execPath,

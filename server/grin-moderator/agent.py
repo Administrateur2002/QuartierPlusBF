@@ -1,12 +1,17 @@
 import asyncio
+import hmac
 import io
 import json
 import logging
+import math
 import os
 import re
+import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import boto3
 from livekit import rtc
@@ -18,6 +23,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("grin-moderator")
 
 AWS_REGION = os.environ.get("AWS_REGION", "").strip()
+UPLOAD_MODERATION_ENABLED = (
+    os.environ.get("MODERATION_UPLOADS_WORKER_ENABLED", "").strip().lower()
+    == "true"
+)
+UPLOAD_MODERATION_SECRET = os.environ.get(
+    "GRIN_MODERATION_WEBHOOK_SECRET", ""
+).strip()
+UPLOAD_MODERATION_HTTP_PORT = int(
+    os.environ.get("MODERATION_HTTP_PORT", "8081").strip()
+)
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
 TRANSCRIBE_LANGUAGE = os.environ.get("GRIN_TRANSCRIBE_LANGUAGE", "fr-FR").strip()
 EVENT_URL = os.environ.get("GRIN_MODERATION_EVENT_URL", "").strip()
 EVENT_SECRET = os.environ.get("GRIN_MODERATION_WEBHOOK_SECRET", "").strip()
@@ -64,6 +80,154 @@ def analyze_frame(frame_bytes: bytes) -> list[tuple[str, float]]:
         (label["Name"], float(label["Confidence"]))
         for label in response.get("ModerationLabels", [])
     ]
+
+
+def cloudinary_sample_url(url: str, media_type: str, second: float = 0) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "res.cloudinary.com"
+        or not CLOUDINARY_CLOUD_NAME
+        or f"/{CLOUDINARY_CLOUD_NAME}/" not in parsed.path
+    ):
+        raise ValueError("Upload URL is not a configured Cloudinary asset.")
+    if media_type == "image" and "/image/upload/" in parsed.path:
+        path = parsed.path.replace(
+            "/image/upload/",
+            "/image/upload/w_640,c_limit,q_auto,f_jpg/",
+            1,
+        )
+    elif media_type == "video" and "/video/upload/" in parsed.path:
+        filename = parsed.path.rsplit("/", 1)[-1]
+        stem = filename.rsplit(".", 1)[0]
+        path = parsed.path.rsplit("/", 1)[0] + f"/so_{max(0, int(second))},w_640,c_limit,f_jpg/{stem}.jpg"
+    else:
+        raise ValueError("Upload type does not match the Cloudinary URL.")
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, "")
+    )
+
+
+def read_cloudinary_sample(url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "QuartierPlus-Grin-Moderator/1"},
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        content = response.read(5 * 1024 * 1024 + 1)
+    if len(content) > 5 * 1024 * 1024:
+        raise ValueError("Moderation sample exceeds the Rekognition image limit.")
+    return content
+
+
+def analyze_upload(url: str, media_type: str, duration: float | None) -> dict:
+    if rekognition is None:
+        raise RuntimeError("AWS_REGION is required for upload moderation.")
+    if media_type not in ("image", "video"):
+        raise ValueError("Unsupported upload media type.")
+    sample_times = (
+        [0]
+        if media_type == "image"
+        else [
+            max(0, (duration or 0) * fraction)
+            for fraction in (0.01, 0.25, 0.5, 0.75, 0.99)
+        ]
+    )
+    max_confidence = 0.0
+    minor_detected = False
+    for second in sample_times:
+        sample_url = cloudinary_sample_url(url, media_type, second)
+        image_bytes = read_cloudinary_sample(sample_url)
+        labels = rekognition.detect_moderation_labels(
+            Image={"Bytes": image_bytes},
+            MinConfidence=FRAME_MIN_CONFIDENCE,
+            MaxLabels=20,
+        )
+        for label in labels.get("ModerationLabels", []):
+            max_confidence = max(max_confidence, float(label["Confidence"]))
+        faces = rekognition.detect_faces(
+            Image={"Bytes": image_bytes},
+            Attributes=["AGE_RANGE"],
+        )
+        minor_detected = minor_detected or any(
+            face.get("AgeRange", {}).get("Low", 100) < 18
+            for face in faces.get("FaceDetails", [])
+        )
+    return {
+        "score": round(max_confidence, 2),
+        "minorDetected": minor_detected,
+    }
+
+
+class UploadModerationHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        if self.path != "/v1/analyze-upload":
+            self.send_error(404)
+            return
+        provided = self.headers.get("X-Grin-Moderation-Token", "")
+        if (
+            len(provided) != len(UPLOAD_MODERATION_SECRET)
+            or not UPLOAD_MODERATION_SECRET
+            or not hmac.compare_digest(provided, UPLOAD_MODERATION_SECRET)
+        ):
+            self.send_error(401)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 16_384:
+                raise ValueError("Invalid request size.")
+            payload = json.loads(self.rfile.read(length))
+            media_type = payload.get("media_type")
+            url = payload.get("url")
+            duration = payload.get("duration")
+            if (
+                media_type not in ("image", "video")
+                or not isinstance(url, str)
+                or len(url) > 2048
+                or (
+                    media_type == "video"
+                    and (
+                        not isinstance(duration, (int, float))
+                        or not math.isfinite(duration)
+                        or duration <= 0
+                    )
+                )
+            ):
+                raise ValueError("Invalid upload analysis request.")
+            result = analyze_upload(url, media_type, duration)
+            body = json.dumps(result).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as error:
+            logger.error("Upload moderation analysis failed: %s", error)
+            self.send_error(503)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+def start_upload_moderation_server() -> None:
+    if not UPLOAD_MODERATION_ENABLED:
+        return
+    if (
+        not AWS_REGION
+        or len(UPLOAD_MODERATION_SECRET) < 32
+        or not CLOUDINARY_CLOUD_NAME
+        or not 1 <= UPLOAD_MODERATION_HTTP_PORT <= 65535
+    ):
+        raise RuntimeError("Upload moderation worker configuration is incomplete.")
+    server = ThreadingHTTPServer(
+        ("0.0.0.0", UPLOAD_MODERATION_HTTP_PORT),
+        UploadModerationHandler,
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logger.info(
+        "Upload moderation endpoint enabled on port %s.",
+        UPLOAD_MODERATION_HTTP_PORT,
+    )
 
 
 def submit_event(
@@ -297,4 +461,5 @@ async def moderate_grin(ctx: JobContext) -> None:
 
 
 if __name__ == "__main__":
+    start_upload_moderation_server()
     cli.run_app(server)

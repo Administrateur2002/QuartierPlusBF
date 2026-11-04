@@ -211,6 +211,57 @@ if (grinModerationEnabled && grinModerationWebhookSecret.length < 32) {
     "GRIN_MODERATION_WEBHOOK_SECRET must contain at least 32 characters when GRIN_MODERATION_ENABLED=true.",
   );
 }
+const moderationUploadsEnabledValue = optional("MODERATION_UPLOADS_ENABLED");
+if (
+  moderationUploadsEnabledValue &&
+  !["true", "false"].includes(moderationUploadsEnabledValue)
+) {
+  throw new Error("MODERATION_UPLOADS_ENABLED must be true or false.");
+}
+const moderationUploadsEnabled = moderationUploadsEnabledValue === "true";
+const moderationServiceUrl = optional("MODERATION_SERVICE_URL");
+const moderationDailyAnalysisLimit = positiveInteger(
+  "MODERATION_DAILY_ANALYSIS_LIMIT",
+  100,
+);
+const moderationHighThreshold = Number(
+  optional("MODERATION_HIGH_THRESHOLD") || "90",
+);
+const moderationMediumThreshold = Number(
+  optional("MODERATION_MEDIUM_THRESHOLD") || "50",
+);
+if (
+  !Number.isFinite(moderationHighThreshold) ||
+  moderationHighThreshold < 0 ||
+  moderationHighThreshold > 100 ||
+  !Number.isFinite(moderationMediumThreshold) ||
+  moderationMediumThreshold < 0 ||
+  moderationMediumThreshold > 100 ||
+  moderationMediumThreshold >= moderationHighThreshold
+) {
+  throw new Error(
+    "MODERATION_HIGH_THRESHOLD and MODERATION_MEDIUM_THRESHOLD must be percentages from 0 to 100, with medium below high.",
+  );
+}
+if (moderationUploadsEnabled) {
+  let parsedModerationServiceUrl;
+  try {
+    parsedModerationServiceUrl = new URL(moderationServiceUrl);
+  } catch {
+    throw new Error(
+      "MODERATION_SERVICE_URL must be a valid HTTPS URL when MODERATION_UPLOADS_ENABLED=true.",
+    );
+  }
+  if (
+    parsedModerationServiceUrl.protocol !== "https:" ||
+    !grinModerationWebhookSecret ||
+    grinModerationWebhookSecret.length < 32
+  ) {
+    throw new Error(
+      "MODERATION_UPLOADS_ENABLED requires HTTPS MODERATION_SERVICE_URL and a GRIN_MODERATION_WEBHOOK_SECRET of at least 32 characters.",
+    );
+  }
+}
 const grinModeratorIds = [
   ...new Set(
     optional("GRIN_MODERATOR_IDS")
@@ -221,6 +272,25 @@ const grinModeratorIds = [
 ];
 const adminEmail = (optional("ADMIN_EMAIL") || "administrateurquartierplus@gmail.com")
   .toLowerCase();
+const supportNotifyEmail = optional("SUPPORT_NOTIFY_EMAIL").toLowerCase();
+if (
+  supportNotifyEmail &&
+  !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(supportNotifyEmail)
+) {
+  throw new Error("SUPPORT_NOTIFY_EMAIL must be a valid email address.");
+}
+if (moderationUploadsEnabled) {
+  const supportEmailDeliveryReady =
+    Boolean(supportNotifyEmail) &&
+    Boolean(mailFrom || optional("EMAIL_FROM")) &&
+    ((emailProvider === "smtp" && smtpConfigured) ||
+      (emailProvider === "resend" && Boolean(optional("EMAIL_API_KEY"))));
+  if (!supportEmailDeliveryReady) {
+    throw new Error(
+      "MODERATION_UPLOADS_ENABLED requires SUPPORT_NOTIFY_EMAIL and a configured SMTP or Resend email provider.",
+    );
+  }
+}
 const adminUserIds = [
   ...new Set(
     optional("ADMIN_USER_IDS")
@@ -294,6 +364,12 @@ export const env = Object.freeze({
   grinModerationEnabled,
   grinModerationWebhookSecret,
   grinModeratorIds,
+  moderationUploadsEnabled,
+  moderationServiceUrl,
+  moderationDailyAnalysisLimit,
+  moderationHighThreshold,
+  moderationMediumThreshold,
+  supportNotifyEmail,
   fedapaySecretKey: optional("FEDAPAY_SECRET_KEY"),
   fedapayPublicKey: optional("FEDAPAY_PUBLIC_KEY"),
   fedapayEnvironment,

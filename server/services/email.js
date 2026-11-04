@@ -71,6 +71,46 @@ export const sendSmtpDiagnosticEmail = async (to) => {
   });
 };
 
+export const sendSupportNotification = async (subject, text) => {
+  if (!env.supportNotifyEmail) {
+    throw new Error("SUPPORT_NOTIFY_EMAIL n'est pas configurée.");
+  }
+  if (env.emailProvider === "smtp" && smtpTransporter) {
+    await smtpTransporter.sendMail({
+      from: env.emailFrom,
+      to: env.supportNotifyEmail,
+      subject,
+      text,
+    });
+    return;
+  }
+  if (
+    env.emailProvider === "resend" &&
+    env.emailApiKey &&
+    env.emailFrom
+  ) {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.emailApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: env.emailFrom,
+        to: [env.supportNotifyEmail],
+        subject,
+        text,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      throw new Error(`Échec de livraison e-mail (${response.status}).`);
+    }
+    return;
+  }
+  throw new Error("Aucun fournisseur e-mail n'est configuré pour le support.");
+};
+
 export const isEmailDeliveryConfigured = (configuration) =>
   Boolean(
     configuration.emailProvider &&

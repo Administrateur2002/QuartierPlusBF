@@ -8,6 +8,11 @@ import {
   getCloudinaryAsset,
   isCloudinaryPublicIdOwnedByUser,
 } from "../services/cloudinary.js";
+import { sendSupportNotification } from "../services/email.js";
+import {
+  analyzeUploadedMedia,
+  ModerationCapacityError,
+} from "../services/uploadModeration.js";
 
 const SCOPES = new Set(["neighborhood", "region", "country", "international"]);
 const IMAGE_FORMATS = new Set(["jpg", "jpeg", "png", "webp"]);
@@ -72,6 +77,161 @@ const requireVerifiedPhone = async (userId, response) => {
     return null;
   }
   return user;
+};
+
+const recordPostModerationEvent = (
+  postId,
+  authorId,
+  media,
+  score,
+  status,
+) =>
+  pool.query(
+    `INSERT INTO post_moderation_events
+       (post_id, author_id, media_type, media_id, score, status)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [postId, authorId, media.type, media.publicId, score, status],
+  );
+
+const notifySupportOfSevereModeration = async (
+  postId,
+  status,
+  mediaType,
+  mediaDeletionFailed = false,
+) => {
+  const childAlert = status === "CHILD_SAFETY_ALERT";
+  const subject = childAlert
+    ? "Alerte prioritaire de protection de l’enfance · QuartierPlus"
+    : "Contenu à risque élevé · QuartierPlus";
+  const text = [
+    `Dossier : ${postId}`,
+    `Type : ${mediaType}`,
+    `État : ${status}`,
+    childAlert
+      ? `Un signal de présence possible d’un mineur a été détecté. ${mediaDeletionFailed ? "La suppression du média Cloudinary a échoué et exige une intervention immédiate." : "Le média Cloudinary a été supprimé de la publication."} Suivre la loi applicable et signaler aux autorités compétentes.`
+      : "Un média a dépassé le seuil élevé et attend une revue administrateur.",
+  ].join("\n");
+  try {
+    await sendSupportNotification(subject, text);
+  } catch (error) {
+    console.error("Unable to deliver a severe moderation support alert:", error);
+  }
+};
+
+const moderatePostMedia = async (postId, authorId, mediaItems) => {
+  if (!env.moderationUploadsEnabled || mediaItems.length === 0) {
+    return { postStatus: "ACTIVE", moderationStatus: null };
+  }
+
+  let postStatus = "ACTIVE";
+  let moderationStatus = "APPROVED";
+  let childSafetyMedia = null;
+  let severeMedia = null;
+  for (const media of mediaItems) {
+    let analysis;
+    try {
+      analysis = await analyzeUploadedMedia({
+        url: media.url,
+        mediaType: media.type,
+        duration: media.duration,
+      });
+    } catch (error) {
+      if (!(error instanceof ModerationCapacityError)) {
+        console.error("Upload moderation analysis failed; keeping post pending:", {
+          postId,
+          mediaType: media.type,
+          error,
+        });
+      }
+      await recordPostModerationEvent(
+        postId,
+        authorId,
+        media,
+        null,
+        "PENDING_REVIEW",
+      );
+      postStatus = "PENDING_REVIEW";
+      moderationStatus = "PENDING_REVIEW";
+      break;
+    }
+
+    if (analysis.minorDetected) {
+      await recordPostModerationEvent(
+        postId,
+        authorId,
+        media,
+        analysis.score,
+        "CHILD_SAFETY_ALERT",
+      );
+      childSafetyMedia = media;
+      postStatus = "DELETED";
+      moderationStatus = "CHILD_SAFETY_ALERT";
+      break;
+    }
+
+    const eventStatus =
+      analysis.score >= env.moderationHighThreshold
+        ? "BLOCKED"
+        : analysis.score >= env.moderationMediumThreshold
+          ? "PENDING_REVIEW"
+          : "APPROVED";
+    await recordPostModerationEvent(
+      postId,
+      authorId,
+      media,
+      analysis.score,
+      eventStatus,
+    );
+    if (eventStatus === "BLOCKED") {
+      postStatus = "HIDDEN";
+      moderationStatus = "BLOCKED";
+      severeMedia = media;
+    } else if (eventStatus === "PENDING_REVIEW" && postStatus === "ACTIVE") {
+      postStatus = "PENDING_REVIEW";
+      moderationStatus = "PENDING_REVIEW";
+    }
+  }
+
+  if (childSafetyMedia) {
+    const deletions = await Promise.allSettled(
+      mediaItems.map((media) =>
+        deleteCloudinaryAsset(media.type, media.publicId),
+      ),
+    );
+    deletions.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error("Unable to immediately delete a child-safety media asset:", {
+          postId,
+          mediaType: mediaItems[index].type,
+          error: result.reason,
+        });
+      }
+    });
+    const mediaDeletionFailed = deletions.some(
+      (result) => result.status === "rejected",
+    );
+    await pool.query("DELETE FROM posts WHERE id = $1", [postId]);
+    await notifySupportOfSevereModeration(
+      postId,
+      "CHILD_SAFETY_ALERT",
+      childSafetyMedia.type,
+      mediaDeletionFailed,
+    );
+    return { postStatus, moderationStatus };
+  }
+
+  await pool.query("UPDATE posts SET status = $2 WHERE id = $1", [
+    postId,
+    postStatus,
+  ]);
+  if (moderationStatus === "BLOCKED") {
+    await notifySupportOfSevereModeration(
+      postId,
+      moderationStatus,
+      severeMedia?.type ?? mediaItems[0].type,
+    );
+  }
+  return { postStatus, moderationStatus };
 };
 
 export const signMediaUpload = async (request, response, next) => {
@@ -335,6 +495,7 @@ export const createPost = async (request, response, next) => {
       ? roundCoordinatesTo200mGrid(coordinates)
       : null;
     const client = await pool.connect();
+    let transactionCommitted = false;
     try {
       await client.query("BEGIN");
       const lockedUser = await client.query(
@@ -363,19 +524,21 @@ export const createPost = async (request, response, next) => {
           error: `La limite de ${env.postDailyLimit} publications par jour est atteinte.`,
         });
       }
+      const initialPostStatus =
+        env.moderationUploadsEnabled && media ? "PENDING_REVIEW" : "ACTIVE";
       const result = await client.query(
         `INSERT INTO posts (
            author_id, scope, country_code, location, caption, media_public_id,
            media_url, media_type, media_format, media_bytes,
-           media_duration_seconds
+           media_duration_seconds, status
          )
          VALUES (
            $1, $2, $3,
            CASE WHEN $4::double precision IS NULL THEN NULL
              ELSE ST_SetSRID(ST_MakePoint($5, $4), 4326) END,
-           $6, $7, $8, $9, $10, $11, $12
+           $6, $7, $8, $9, $10, $11, $12, $13
          )
-         RETURNING id, caption, scope, media_url, media_type, created_at`,
+         RETURNING id, caption, scope, media_url, media_type, created_at, status`,
         [
           user.id,
           scope,
@@ -389,6 +552,7 @@ export const createPost = async (request, response, next) => {
           media?.format ?? null,
           media?.asset.bytes ?? null,
           media?.duration ?? null,
+          initialPostStatus,
         ],
       );
       for (const [index, item] of additionalMedia.entries()) {
@@ -408,9 +572,44 @@ export const createPost = async (request, response, next) => {
         );
       }
       await client.query("COMMIT");
-      return response.status(201).json({ post: result.rows[0] });
+      transactionCommitted = true;
+      const post = result.rows[0];
+      const moderation = await moderatePostMedia(
+        post.id,
+        user.id,
+        [
+          ...(media
+            ? [
+                {
+                  type: mediaType,
+                  publicId: media.asset.public_id,
+                  url: media.asset.secure_url,
+                  duration: media.duration,
+                },
+              ]
+            : []),
+          ...additionalMedia.map((item) => ({
+            type: "image",
+            publicId: item.asset.public_id,
+            url: item.asset.secure_url,
+            duration: null,
+          })),
+        ],
+      );
+      if (moderation.moderationStatus === "CHILD_SAFETY_ALERT") {
+        return response.status(201).json({
+          post: { id: post.id, status: "DELETED", media_url: null },
+          moderation_status: moderation.moderationStatus,
+        });
+      }
+      return response.status(201).json({
+        post: { ...post, status: moderation.postStatus },
+        ...(moderation.moderationStatus
+          ? { moderation_status: moderation.moderationStatus }
+          : {}),
+      });
     } catch (error) {
-      await client.query("ROLLBACK");
+      if (!transactionCommitted) await client.query("ROLLBACK");
       throw error;
     } finally {
       client.release();
@@ -479,7 +678,13 @@ export const listFeed = async (request, response, next) => {
               ) END AS author_is_ally
        FROM posts AS post
        JOIN users AS author ON author.id = post.author_id
-       WHERE post.status = 'ACTIVE'
+       WHERE (
+         post.status = 'ACTIVE'
+         OR (
+           post.status = 'PENDING_REVIEW'
+           AND post.author_id = $5::uuid
+         )
+       )
          AND ($5::uuid IS NULL OR NOT EXISTS (
            SELECT 1 FROM user_blocks blocked
            WHERE blocked.blocker_id = $5 AND blocked.blocked_id = post.author_id

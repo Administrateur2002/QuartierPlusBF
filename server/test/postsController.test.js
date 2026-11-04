@@ -65,7 +65,7 @@ const createTransactionClient = (overrides = {}) => ({
     }
     if (statement.includes("INSERT INTO posts")) {
       const overridden = overrides.query?.(statement, values);
-      if (overridden) return overridden;
+      if (overridden?.rows?.[0]) return overridden;
       return {
         rowCount: 1,
         rows: [
@@ -435,7 +435,15 @@ test("text-only publication stores null media fields when upload is unavailable"
   );
 
   assert.equal(response.statusCode, 201);
-  assert.deepEqual(insertValues.slice(6), [null, null, null, null, null, null]);
+  assert.deepEqual(insertValues.slice(6), [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    "ACTIVE",
+  ]);
 });
 
 test("server rejects oversized photos and videos that exceed the configured duration", async (context) => {
