@@ -52,6 +52,7 @@ import { useTheme } from "../context/ThemeContext";
 import VoiceTextInput from "../components/VoiceTextInput";
 import ProfileAvatar from "../components/ProfileAvatar";
 import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
+import GoldenRulesModal from "../components/GoldenRulesModal";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
 import {
   EMERGENCY_COUNTRIES,
@@ -187,6 +188,7 @@ export default function ProfileScreen() {
   const [phoneOtpRequested, setPhoneOtpRequested] = useState(false);
   const [isUpdatingPhone, setIsUpdatingPhone] = useState(false);
   const [aboutVisible, setAboutVisible] = useState(false);
+  const [goldenRulesVisible, setGoldenRulesVisible] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [privacyVisible, setPrivacyVisible] = useState(false);
@@ -1050,6 +1052,16 @@ export default function ProfileScreen() {
           <View style={styles.guestModalBackdrop}>
             <View style={styles.guestModal}>
               <Text accessibilityRole="header" style={styles.guestModalTitle}>À propos et mises à jour</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setAboutVisible(false);
+                  setGoldenRulesVisible(true);
+                }}
+                style={styles.guestModalClose}
+              >
+                <Text style={styles.guestModalCloseText}>Documents légaux · Règles d'or</Text>
+              </Pressable>
               <Text style={styles.guestMetadata}>Version : {require("../../app.json").expo.version}</Text>
               <Text style={styles.guestMetadata}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
               <Text style={styles.guestMetadata}>Canal : {Updates.channel ?? "—"}</Text>
@@ -1095,6 +1107,10 @@ export default function ProfileScreen() {
             </View>
           </View>
         </Modal>
+        <GoldenRulesModal
+          onClose={() => setGoldenRulesVisible(false)}
+          visible={goldenRulesVisible}
+        />
       </View>
     );
   }
@@ -1870,6 +1886,16 @@ export default function ProfileScreen() {
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>À propos et mises à jour</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setAboutVisible(false);
+                setGoldenRulesVisible(true);
+              }}
+              style={styles.primaryAction}
+            >
+              <Text style={styles.primaryActionText}>Documents légaux · Règles d'or</Text>
+            </Pressable>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Version : {require("../../app.json").expo.version}</Text>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Runtime : {Updates.runtimeVersion ?? "—"}</Text>
             <Text style={[styles.settingDescription, { color: colors.secondaryText }]}>Canal : {Updates.channel ?? "—"}</Text>
@@ -1907,6 +1933,10 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
+      <GoldenRulesModal
+        onClose={() => setGoldenRulesVisible(false)}
+        visible={goldenRulesVisible}
+      />
       <Modal
         animationType="slide"
         onRequestClose={() => setIsEditingProfile(false)}
