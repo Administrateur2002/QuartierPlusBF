@@ -12,6 +12,7 @@ const {
   deliverFlashBroadcast,
   getAdminDashboard,
   appealReport,
+  resolvePostModerationEvent,
 } = await import("../controllers/adminController.js");
 const { pool } = await import("../db/pool.js");
 
@@ -28,7 +29,7 @@ const createResponse = () => ({
   },
 });
 
-test("admin dashboard fetches actual reports, live detections, and status counts", async (context) => {
+test("admin dashboard fetches reports, live and upload moderation queues, and counts", async (context) => {
   const statements = [];
   context.mock.method(pool, "query", async (statement, values) => {
     statements.push({ statement, values });
@@ -37,6 +38,9 @@ test("admin dashboard fetches actual reports, live detections, and status counts
     }
     if (statement.includes("FROM grin_moderation_events")) {
       return { rows: [{ id: "event-id", category: "Explicit Nudity" }] };
+    }
+    if (statement.includes("FROM post_moderation_events")) {
+      return { rows: [{ id: "upload-event-id", status: "PENDING_REVIEW" }] };
     }
     return { rows: [{ status: "PENDING", count: 1 }] };
   });
@@ -47,10 +51,57 @@ test("admin dashboard fetches actual reports, live detections, and status counts
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.reports[0].id, "report-id");
   assert.equal(response.payload.live_events[0].id, "event-id");
+  assert.equal(response.payload.upload_moderation_events[0].id, "upload-event-id");
   assert.equal(response.payload.counts.PENDING, 1);
   assert.equal(statements[0].values[0], "ALL");
   assert.match(statements[0].statement, /private_messages/);
   assert.match(statements[0].statement, /sos_alerts/);
+});
+
+test("an admin can approve a reviewed upload and publish it only after other pending checks clear", async (context) => {
+  const statements = [];
+  const client = {
+    async query(statement, values) {
+      statements.push({ statement, values });
+      if (statement.includes("SELECT event.id")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002",
+            post_id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+            author_id: "4b490a29-02dd-44ad-8c9f-81d9cadc0004",
+            media_type: "image",
+            media_id: "media-id",
+            score: "60",
+            status: "PENDING_REVIEW",
+            available_post_id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+          }],
+        };
+      }
+      if (statement.includes("SELECT 1 FROM post_moderation_events")) {
+        return { rowCount: 0, rows: [] };
+      }
+      return { rowCount: 1, rows: [] };
+    },
+    release() {},
+  };
+  context.mock.method(pool, "connect", async () => client);
+  const response = createResponse();
+
+  await resolvePostModerationEvent(
+    {
+      params: { eventId: "2b490a29-02dd-44ad-8c9f-81d9cadc0002" },
+      body: { action: "approve" },
+      auth: { userId: "5b490a29-02dd-44ad-8c9f-81d9cadc0005" },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.ok(statements.some(({ statement }) => statement.includes("UPDATE posts SET status = 'ACTIVE'")));
+  assert.ok(statements.some(({ statement }) => statement.includes("INSERT INTO admin_audit_log")));
+  assert.equal(statements.at(-1).statement, "COMMIT");
 });
 
 test("report actions update content, preserve the affected account, and write an audit entry", async (context) => {

@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { DataPacket_Kind, LiveKitAPI } from "livekit-server-sdk";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
+import { sendSupportNotification } from "../services/email.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -125,6 +126,23 @@ export const receiveModerationEvent = async (request, response, next) => {
       ).rows[0];
     if (!event) {
       throw new Error("The moderation event was not persisted.");
+    }
+
+    if (
+      saved.rowCount &&
+      env.textModerationEnabled &&
+      mediaType === "AUDIO" &&
+      category.trim().toLowerCase() === "threat" &&
+      env.supportNotifyEmail
+    ) {
+      try {
+        await sendSupportNotification(
+          "Alerte prioritaire — menace détectée dans le Grin",
+          `Une menace potentielle a été détectée dans un live consenti. Identifiant de revue : ${event.id}. Aucun audio ni texte transcrit n'a été conservé.`,
+        );
+      } catch (error) {
+        console.error("Unable to deliver severe live-text notification:", error);
+      }
     }
 
     if (event.status === "PAUSED_PENDING_REVIEW") {

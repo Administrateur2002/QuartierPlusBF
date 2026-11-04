@@ -6,11 +6,13 @@ import {
   receiveModerationEvent,
   resolveModerationEvent,
 } from "../controllers/grinModerationController.js";
+import { getAgentModerationLexicon } from "../controllers/conflictController.js";
 import { authMiddleware } from "../middlewares/authMiddleware.js";
 
 const router = Router();
 
 router.post("/events", receiveModerationEvent);
+router.get("/lexicon", getAgentModerationLexicon);
 router.get("/events/mine", authMiddleware, listMyModerationEvents);
 router.post("/events/:eventId/appeal", authMiddleware, appealModerationEvent);
 router.get("/review-queue", authMiddleware, listModerationQueue);

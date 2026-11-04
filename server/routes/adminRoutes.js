@@ -4,17 +4,27 @@ import { Router } from "express";
 import {
   actOnReport,
   appealReport,
+  appealPostModerationEvent,
   createFlash,
   getAdminDashboard,
   getAdminHistory,
   listAppealableReports,
   listFlashes,
+  resolvePostModerationEvent,
 } from "../controllers/adminController.js";
 import { resolveModerationEvent } from "../controllers/grinModerationController.js";
 import { env } from "../config/env.js";
 import { authMiddleware, authMiddlewareAllowSuspended } from "../middlewares/authMiddleware.js";
 import { adminAuthMiddleware } from "../middlewares/adminAuthMiddleware.js";
 import { sendSmtpDiagnosticEmail } from "../services/email.js";
+import {
+  actOnConflict,
+  appealConflict,
+  createModerationLexiconEntry,
+  deleteModerationLexiconEntry,
+  listAdminConflicts,
+  listModerationLexicon,
+} from "../controllers/conflictController.js";
 
 const router = Router();
 const admin = [authMiddleware, adminAuthMiddleware];
@@ -31,7 +41,27 @@ router.get("/me", ...admin, (_request, response) =>
 );
 router.get("/dashboard", ...admin, getAdminDashboard);
 router.get("/history", ...admin, getAdminHistory);
+router.get("/conflicts", ...admin, listAdminConflicts);
+router.post("/conflicts/:conflictId/action", ...admin, actOnConflict);
+router.post(
+  "/conflicts/:conflictId/appeal",
+  authMiddlewareAllowSuspended,
+  appealConflict,
+);
+router.get("/moderation-lexicon", ...admin, listModerationLexicon);
+router.post("/moderation-lexicon", ...admin, createModerationLexiconEntry);
+router.delete("/moderation-lexicon/:entryId", ...admin, deleteModerationLexiconEntry);
 router.post("/reports/:reportId/action", ...admin, actOnReport);
+router.post(
+  "/post-moderation-events/:eventId/action",
+  ...admin,
+  resolvePostModerationEvent,
+);
+router.post(
+  "/post-moderation-events/:eventId/appeal",
+  authMiddlewareAllowSuspended,
+  appealPostModerationEvent,
+);
 router.post("/live-events/:eventId/action", ...admin, resolveModerationEvent);
 router.post("/reports/:reportId/appeal", authMiddlewareAllowSuspended, appealReport);
 router.get("/appealable-reports", authMiddlewareAllowSuspended, listAppealableReports);

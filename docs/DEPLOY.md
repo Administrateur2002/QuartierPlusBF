@@ -211,16 +211,30 @@ Transcribe traite l'audio en français (`fr-FR`). Aucun média ni texte transcri
 n'est écrit dans la base par l'agent; seule la catégorie, le score, la piste et
 la décision sont conservés. Une détection visuelle à 95 % ou plus pour une
 catégorie grave met temporairement la piste vidéo en sourdine et ouvre une revue
-humaine. Les menaces et insultes reconnues dans une transcription française
-alimentent seulement la file : le contexte d'une phrase ne permet pas une
-suspension vocale automatique fiable. Les autres détections admissibles
-alimentent aussi la file sans couper le flux. Un modérateur autorisé peut
-confirmer ou lever la sourdine; le participant peut faire appel depuis l'écran
-du Grin. Aucun contenu n'est supprimé automatiquement.
+humaine. Les menaces et insultes reconnues dans une transcription alimentent
+seulement la file : le contexte d'une phrase ne permet pas une suspension
+vocale automatique fiable. Les autres détections admissibles alimentent aussi
+la file sans couper le flux. Un modérateur autorisé peut confirmer ou lever la
+sourdine; le participant peut faire appel depuis l'écran du Grin. Aucun contenu
+n'est supprimé automatiquement.
+
+L'analyse des propos publics est distincte et désactivée par défaut. Pour
+l'activer, appliquez également la migration 037, configurez
+`TEXT_MODERATION_ENABLED=true` sur l'API et l'agent, puis activez
+`GRIN_MODERATION_ENABLED=true` avec un modérateur et un fournisseur e-mail
+opérationnel. L'agent récupère le lexique administrable via l'API; il ne
+conserve ni transcription ni extrait audio. Les publications et commentaires
+affichent un avertissement avant confirmation. `CONFLICT_PROTECTION_ENABLED=true`
+active en plus les pauses de 15 minutes après des propos hostiles répétés envers
+le même compte et les alertes basées sur plusieurs signalements.
+Les entrées mooré (`mos`), dioula (`dyu`) et fulfulde (`ff`) sont prises en
+charge dans les textes saisis; la détection orale du live dépend toutefois des
+langues effectivement prises en charge par AWS Transcribe et de
+`GRIN_TRANSCRIBE_LANGUAGE`.
 
 Cette première intégration ne constitue pas un classificateur sémantique
-complet : les menaces vocales ne sont reconnues que pour les phrases françaises
-explicitement configurées et les insultes ne sont que signalées pour revue.
+complet : les menaces vocales sont détectées par correspondance lexicale et
+signalées pour revue.
 L'agent ne détecte pas les comportements hors champ, le harcèlement répété
 entre plusieurs salons ni la diffusion de contenus privés sans contexte de
 consentement. Le traitement AWS implique un transfert temporaire des flux vers
@@ -318,6 +332,8 @@ invaliderait les signatures des billets déjà émis.
 | `MODERATION_DAILY_ANALYSIS_LIMIT` | Plafond d'analyses Rekognition par jour UTC; défaut `100` |
 | `MODERATION_HIGH_THRESHOLD` / `MODERATION_MEDIUM_THRESHOLD` | Seuils de confiance en pourcentage; défaut `90` / `50` |
 | `SUPPORT_NOTIFY_EMAIL` | Adresse destinataire des alertes de modération graves |
+| `TEXT_MODERATION_ENABLED` | `false` par défaut; avertissement et revue lexicale des publications, commentaires et textes du Grin |
+| `CONFLICT_PROTECTION_ENABLED` | `false` par défaut; exige la modération textuelle et active la mise en sourdine, les pauses de 15 minutes et la détection de signalements multiples |
 
 Pour activer la modération média, configurez l'API avec
 `MODERATION_UPLOADS_ENABLED=true`, une URL HTTPS publique vers l'agent et le
@@ -326,7 +342,9 @@ service de l'agent, configurez également `MODERATION_UPLOADS_WORKER_ENABLED=tru
 `MODERATION_HTTP_PORT` et `CLOUDINARY_CLOUD_NAME`. Configurez une livraison
 SMTP ou Resend et `SUPPORT_NOTIFY_EMAIL` avant l'activation. Les échantillons
 vidéo sont extraits à cinq instants en mémoire; les médias et images extraites
-ne sont pas enregistrés par le worker.
+ne sont pas enregistrés par le worker. Pour la modération textuelle, configurez
+aussi `TEXT_MODERATION_ENABLED=true` sur l'agent; la variable correspondante
+doit être activée sur l'API et dépend de la migration 037.
 | `PRO_ENABLED` | `false` par défaut; `true` active les catalogues, commandes et livraisons grossistes |
 | `PRO_ADMIN_TOKEN` | Secret serveur indépendant, facultatif; protège la validation RCCM/IFU via l’API Pro |
 

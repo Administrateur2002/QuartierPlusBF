@@ -13,6 +13,7 @@ import {
   analyzeUploadedMedia,
   ModerationCapacityError,
 } from "../services/uploadModeration.js";
+import { evaluateConfirmedPublicText } from "./conflictController.js";
 
 const SCOPES = new Set(["neighborhood", "region", "country", "international"]);
 const IMAGE_FORMATS = new Set(["jpg", "jpeg", "png", "webp"]);
@@ -473,6 +474,20 @@ export const createPost = async (request, response, next) => {
         error: "Le pays du compte doit être configuré avant de publier.",
       });
     }
+    const textModeration = await evaluateConfirmedPublicText({
+      userId: user.id,
+      targetType: "POST",
+      text: caption,
+      confirmed: request.body?.confirmed_hostile === true,
+    });
+    if (!textModeration.allowed) {
+      return response.status(textModeration.status).json({
+        code: textModeration.code,
+        error: textModeration.error,
+        ...(textModeration.warning ? { warning: textModeration.warning } : {}),
+        ...(textModeration.pause_until ? { pause_until: textModeration.pause_until } : {}),
+      });
+    }
     const media = hasMedia
       ? await getVerifiedAsset(
           user.id,
@@ -555,6 +570,12 @@ export const createPost = async (request, response, next) => {
           initialPostStatus,
         ],
       );
+      if (textModeration.conflictId) {
+        await client.query(
+          "UPDATE moderation_conflicts SET target_id = $2 WHERE id = $1",
+          [textModeration.conflictId, result.rows[0].id],
+        );
+      }
       for (const [index, item] of additionalMedia.entries()) {
         await client.query(
           `INSERT INTO post_media_items (
@@ -689,6 +710,12 @@ export const listFeed = async (request, response, next) => {
            SELECT 1 FROM user_blocks blocked
            WHERE blocked.blocker_id = $5 AND blocked.blocked_id = post.author_id
          ))
+         AND (
+           $5::uuid IS NULL OR NOT $7::boolean OR NOT EXISTS (
+             SELECT 1 FROM user_mutes muted
+             WHERE muted.muter_id = $5 AND muted.muted_id = post.author_id
+           )
+         )
          AND CASE
            WHEN $1 = 'international' THEN TRUE
            WHEN $1 = 'country' THEN
@@ -734,6 +761,7 @@ export const listFeed = async (request, response, next) => {
         coordinates?.longitude ?? null,
         request.auth?.userId ?? null,
         offset,
+        env.conflictProtectionEnabled,
       ],
     );
     return response.status(200).json({ posts: result.rows });

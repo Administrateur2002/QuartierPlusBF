@@ -1,4 +1,6 @@
 import { pool } from "../db/pool.js";
+import { env } from "../config/env.js";
+import { sendSupportNotification } from "../services/email.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -51,7 +53,14 @@ export const createReport = async (request, response, next) => {
   }
   try {
     const targetResult = target.table
-      ? await pool.query(`SELECT id FROM ${target.table} WHERE id = $1`, [targetId])
+      ? await pool.query(
+          target.type === "POST"
+            ? "SELECT id, author_id AS owner_id FROM posts WHERE id = $1"
+            : target.type === "COMMENT"
+              ? "SELECT id, user_id AS owner_id FROM post_comments WHERE id = $1"
+              : `SELECT id, id AS owner_id FROM ${target.table} WHERE id = $1`,
+          [targetId],
+        )
       : await pool.query(
           `SELECT private_message.id
            FROM private_messages private_message
@@ -81,6 +90,52 @@ export const createReport = async (request, response, next) => {
        RETURNING id`,
       [request.auth.userId, target.type, targetId, reason],
     );
+    if (
+      env.supportNotifyEmail &&
+      ["Menaces", "Nudité explicite", "Contenu privé sans consentement"].includes(reason)
+    ) {
+      try {
+        await sendSupportNotification(
+          "Alerte prioritaire — signalement grave QuartierPlus",
+          `Un signalement grave a été créé. Identifiant de revue : ${result.rows[0].id}. Aucun contenu du signalement n'est inclus dans cette alerte.`,
+        );
+      } catch (error) {
+        console.error("Unable to deliver severe report notification:", error);
+      }
+    }
+    if (
+      env.conflictProtectionEnabled &&
+      ["POST", "COMMENT"].includes(target.type) &&
+      targetResult.rows[0].owner_id !== request.auth.userId
+    ) {
+      const reportCount = await pool.query(
+        `SELECT COUNT(DISTINCT reporter_id)::int AS count
+         FROM reports
+         WHERE target_type = $1 AND target_id = $2
+           AND reporter_id <> $3
+           AND created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'`,
+        [target.type, targetId, targetResult.rows[0].owner_id],
+      );
+      if (reportCount.rows[0].count >= 3) {
+        const conflict = await pool.query(
+          `INSERT INTO moderation_conflicts
+             (actor_id, target_type, target_id, category)
+           VALUES ($1, 'REPORT', $2, 'REPEATED_REPORTS')
+           ON CONFLICT DO NOTHING`,
+          [targetResult.rows[0].owner_id, targetId],
+        );
+        if (conflict.rowCount && env.supportNotifyEmail) {
+          try {
+            await sendSupportNotification(
+              "Alerte — signalements multiples sur QuartierPlus",
+              `Plusieurs comptes ont signalé le même contenu public dans les dernières 24 heures. Identifiant du contenu : ${targetId}. Aucun texte de signalement n'est inclus dans cette alerte.`,
+            );
+          } catch (error) {
+            console.error("Unable to deliver repeated-report notification:", error);
+          }
+        }
+      }
+    }
     return response.status(201).json({
       reported: true,
       report_id: result.rows[0].id,

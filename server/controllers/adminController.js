@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "../db/pool.js";
-import { sendAdminFlashNotifications } from "../services/pushNotifications.js";
+import {
+  deleteCloudinaryAsset,
+} from "../services/cloudinary.js";
+import {
+  sendAdminFlashNotifications,
+  sendExpoPushNotifications,
+} from "../services/pushNotifications.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -20,7 +26,17 @@ const reportSelect = `
          reporter.id AS reporter_id, reporter.full_name AS reporter_name,
          target_owner.id AS target_user_id, target_owner.full_name AS target_user_name,
          COALESCE(post.caption, post.media_url, comment.content,
-                  item.title, item.description, private_message.body,
+                  item.title, item.description,
+                  CASE WHEN private_message.id IS NOT NULL THEN (
+                    SELECT string_agg(context.body, E'\n' ORDER BY context.created_at)
+                    FROM (
+                      SELECT message.body, message.created_at
+                      FROM private_messages AS message
+                      WHERE message.conversation_id = private_message.conversation_id
+                      ORDER BY message.created_at DESC
+                      LIMIT 10
+                    ) AS context
+                  ) END,
                   channel_message.body,
                   CASE WHEN sos.id IS NOT NULL
                     THEN 'Alerte SOS · ' || sos.emergency_type END,
@@ -75,7 +91,7 @@ export const getAdminDashboard = async (request, response, next) => {
       ? request.query.status
       : "PENDING";
   try {
-    const [reports, events, counts] = await Promise.all([
+    const [reports, events, counts, uploadEvents, uploadCounts] = await Promise.all([
       pool.query(
         `${reportSelect}
          WHERE ($1 = 'ALL' OR report.status = $1)
@@ -100,11 +116,38 @@ export const getAdminDashboard = async (request, response, next) => {
          FROM reports
          GROUP BY status`,
       ),
+      pool.query(
+        `SELECT event.id, event.post_id, event.author_id, event.media_type,
+                event.media_id, event.score::float8 AS score, event.status,
+                event.appeal_reason, event.appealed_at, event.created_at,
+                account.full_name AS author_name,
+                CASE WHEN event.status = 'CHILD_SAFETY_ALERT'
+                     THEN NULL ELSE post.media_url END AS media_url
+         FROM post_moderation_events AS event
+         LEFT JOIN posts AS post ON post.id = event.post_id
+         JOIN users AS account ON account.id = event.author_id
+         WHERE event.status IN (
+           'PENDING_REVIEW', 'BLOCKED', 'CHILD_SAFETY_ALERT', 'APPEALED'
+         )
+         ORDER BY CASE WHEN event.status = 'CHILD_SAFETY_ALERT' THEN 0
+                       WHEN event.status = 'APPEALED' THEN 1 ELSE 2 END,
+                  event.created_at ASC
+         LIMIT 100`,
+      ),
+      pool.query(
+        `SELECT status, COUNT(*)::int AS count
+         FROM post_moderation_events
+         GROUP BY status`,
+      ),
     ]);
     return response.status(200).json({
       reports: reports.rows,
       live_events: events.rows,
       counts: Object.fromEntries(counts.rows.map(({ status: key, count }) => [key, count])),
+      upload_moderation_events: uploadEvents.rows,
+      upload_moderation_counts: Object.fromEntries(
+        uploadCounts.rows.map(({ status: key, count }) => [key, count]),
+      ),
     });
   } catch (error) {
     return next(error);
@@ -249,6 +292,190 @@ export const actOnReport = async (request, response, next) => {
   }
 };
 
+export const appealPostModerationEvent = async (request, response, next) => {
+  const eventId = request.params.eventId;
+  const reason =
+    typeof request.body?.reason === "string" ? request.body.reason.trim() : "";
+  if (!UUID_PATTERN.test(eventId) || reason.length < 10 || reason.length > 500) {
+    return response.status(400).json({
+      error: "Un recours doit contenir entre 10 et 500 caractères.",
+    });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE post_moderation_events
+       SET status = 'APPEALED', appeal_reason = $3, appealed_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND author_id = $2
+         AND status IN ('PENDING_REVIEW', 'BLOCKED')
+       RETURNING id, status, appealed_at`,
+      [eventId, request.auth.userId, reason],
+    );
+    if (!result.rowCount) {
+      return response.status(404).json({
+        error: "Ce contenu ne peut pas faire l'objet d'un recours ou est introuvable.",
+      });
+    }
+    return response.status(200).json({ appealed: true, event: result.rows[0] });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const resolvePostModerationEvent = async (request, response, next) => {
+  const eventId = request.params.eventId;
+  const action = request.body?.action;
+  const suspensionDays = Number(request.body?.days ?? 7);
+  if (
+    !UUID_PATTERN.test(eventId) ||
+    !["approve", "remove", "warn", "suspend"].includes(action) ||
+    (action === "suspend" &&
+      (!Number.isInteger(suspensionDays) ||
+        suspensionDays < 1 ||
+        suspensionDays > 365))
+  ) {
+    return response.status(400).json({ error: "Action de modération invalide." });
+  }
+
+  const client = await pool.connect();
+  let notificationUserId = null;
+  let transactionCommitted = false;
+  try {
+    await client.query("BEGIN");
+    const selected = await client.query(
+      `SELECT event.id, event.post_id, event.author_id, event.media_type,
+              event.media_id, event.score, event.status,
+              post.id AS available_post_id
+       FROM post_moderation_events AS event
+       LEFT JOIN posts AS post ON post.id = event.post_id
+       WHERE event.id = $1
+         AND event.status IN ('PENDING_REVIEW', 'BLOCKED', 'CHILD_SAFETY_ALERT', 'APPEALED')
+       FOR UPDATE OF event`,
+      [eventId],
+    );
+    const event = selected.rows[0];
+    if (!event) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Contenu introuvable ou déjà traité." });
+    }
+    if (action === "approve" && event.status === "CHILD_SAFETY_ALERT") {
+      await client.query("ROLLBACK");
+      return response.status(409).json({
+        error: "Une alerte de protection de l’enfance ne peut pas être publiée.",
+      });
+    }
+    if (action === "approve") {
+      await client.query(
+        `UPDATE post_moderation_events
+         SET status = 'CLEARED', reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [eventId, request.auth.userId],
+      );
+      const outstanding = await client.query(
+        `SELECT 1 FROM post_moderation_events
+         WHERE post_id = $1 AND id <> $2
+           AND status IN ('PENDING_REVIEW', 'BLOCKED', 'CHILD_SAFETY_ALERT', 'APPEALED')
+         LIMIT 1`,
+        [event.post_id, eventId],
+      );
+      if (!outstanding.rowCount && event.available_post_id) {
+        await client.query(
+          "UPDATE posts SET status = 'ACTIVE' WHERE id = $1",
+          [event.post_id],
+        );
+      }
+    } else if (action === "remove") {
+      const assets = await client.query(
+        `SELECT media_type, media_id
+         FROM post_moderation_events
+         WHERE post_id = $1
+         UNION
+         SELECT 'image', media_public_id
+         FROM post_media_items
+         WHERE post_id = $1`,
+        [event.post_id],
+      );
+      for (const asset of assets.rows) {
+        await deleteCloudinaryAsset(asset.media_type, asset.media_id);
+      }
+      await client.query("DELETE FROM posts WHERE id = $1", [event.post_id]);
+      await client.query(
+        `UPDATE post_moderation_events
+         SET status = 'CONFIRMED', reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP
+         WHERE post_id = $1
+           AND status IN ('PENDING_REVIEW', 'BLOCKED', 'CHILD_SAFETY_ALERT', 'APPEALED')`,
+        [event.post_id, request.auth.userId],
+      );
+    } else {
+      if (event.author_id === request.auth.userId) {
+        await client.query("ROLLBACK");
+        return response.status(400).json({
+          error: "Cette action ne peut pas viser votre propre compte.",
+        });
+      }
+      if (action === "suspend") {
+        await client.query(
+          `UPDATE users SET suspended_until = NOW() + ($2 * INTERVAL '1 day')
+           WHERE id = $1`,
+          [event.author_id, suspensionDays],
+        );
+        if (event.available_post_id) {
+          await client.query(
+            "UPDATE posts SET status = 'HIDDEN' WHERE id = $1",
+            [event.post_id],
+          );
+        }
+      }
+      await client.query(
+        `UPDATE post_moderation_events
+         SET status = 'CONFIRMED', reviewed_by = $2, reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [eventId, request.auth.userId],
+      );
+      notificationUserId = event.author_id;
+    }
+    await audit(
+      client,
+      request.auth.userId,
+      action,
+      "POST_MODERATION",
+      event.post_id,
+      { event_id: eventId, media_type: event.media_type, score: event.score },
+    );
+    await client.query("COMMIT");
+    transactionCommitted = true;
+
+    if (notificationUserId) {
+      const tokenRows = await pool.query(
+        "SELECT token FROM push_tokens WHERE user_id = $1",
+        [notificationUserId],
+      );
+      const result = await sendExpoPushNotifications(
+        tokenRows.rows.map(({ token }) => token),
+        {
+          title: action === "warn" ? "Avertissement de modération" : "Compte suspendu",
+          body:
+            action === "warn"
+              ? "Une publication doit respecter les règles de QuartierPlus. Vous pouvez contester cette décision depuis votre activité."
+              : `Votre compte est suspendu pour ${suspensionDays} jour(s). Vous pouvez contester cette décision.`,
+          data: { screen: "MyActivity", activity: "alerts" },
+        },
+      );
+      if (result.failedCount) {
+        console.error("Unable to deliver moderation warning notification:", {
+          userId: notificationUserId,
+          failedCount: result.failedCount,
+        });
+      }
+    }
+    return response.status(200).json({ updated: true, action });
+  } catch (error) {
+    if (!transactionCommitted) await client.query("ROLLBACK");
+    return next(error);
+  } finally {
+    client.release();
+  }
+};
+
 export const appealReport = async (request, response, next) => {
   const reportId = request.params.reportId;
   const reason =
@@ -306,15 +533,38 @@ export const appealReport = async (request, response, next) => {
 
 export const listAppealableReports = async (request, response, next) => {
   try {
-    const result = await pool.query(
-      `${reportSelect}
-       WHERE report.moderation_target_user_id = $1
-         AND report.status = 'RESOLVED'
-       ORDER BY report.reviewed_at DESC
-       LIMIT 50`,
-      [request.auth.userId],
-    );
-    return response.status(200).json({ reports: result.rows });
+    const [reports, moderationEvents, conflicts] = await Promise.all([
+      pool.query(
+        `${reportSelect}
+         WHERE report.moderation_target_user_id = $1
+           AND report.status = 'RESOLVED'
+         ORDER BY report.reviewed_at DESC
+         LIMIT 50`,
+        [request.auth.userId],
+      ),
+      pool.query(
+        `SELECT id, media_type, score::float8 AS score, status, created_at
+         FROM post_moderation_events
+         WHERE author_id = $1 AND status IN ('PENDING_REVIEW', 'BLOCKED')
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [request.auth.userId],
+      ),
+      pool.query(
+        `SELECT id, category, target_type, created_at
+         FROM moderation_conflicts
+         WHERE actor_id = $1 AND status IN ('PENDING', 'WARNED', 'SUSPENDED')
+           AND appeal_reason IS NULL
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [request.auth.userId],
+      ),
+    ]);
+    return response.status(200).json({
+      reports: reports.rows,
+      moderation_events: moderationEvents.rows,
+      conflicts: conflicts.rows,
+    });
   } catch (error) {
     return next(error);
   }

@@ -165,6 +165,61 @@ test("upload moderation is disabled by default and requires worker and email con
   assert.match(incomplete.stderr, /MODERATION_SERVICE_URL/);
 });
 
+test("public text moderation and conflict protection remain opt-in with explicit dependencies", () => {
+  const loadTextModeration = (overrides = {}) =>
+    spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "import { env } from './config/env.js'; console.log(JSON.stringify([env.textModerationEnabled, env.conflictProtectionEnabled]))",
+      ],
+      {
+        cwd: serverDirectory,
+        env: {
+          ...productionEnv,
+          ...overrides,
+          DOTENV_CONFIG_PATH: "/dev/null",
+        },
+        encoding: "utf8",
+      },
+    );
+
+  const disabled = loadTextModeration();
+  assert.equal(disabled.status, 0, disabled.stderr);
+  assert.deepEqual(JSON.parse(disabled.stdout.trim()), [false, false]);
+
+  const missingLiveReview = loadTextModeration({
+    TEXT_MODERATION_ENABLED: "true",
+  });
+  assert.notEqual(missingLiveReview.status, 0);
+  assert.match(missingLiveReview.stderr, /GRIN_MODERATION_ENABLED/);
+
+  const enabled = loadTextModeration({
+    GRIN_MODERATION_ENABLED: "true",
+    GRIN_MODERATION_WEBHOOK_SECRET:
+      "production-grin-moderation-webhook-secret-over-32-characters",
+    GRIN_MODERATOR_IDS: "7b490a29-02dd-44ad-8c9f-81d9cadc0007",
+    TEXT_MODERATION_ENABLED: "true",
+    CONFLICT_PROTECTION_ENABLED: "true",
+    SUPPORT_NOTIFY_EMAIL: "support@example.test",
+    EMAIL_PROVIDER: "smtp",
+    SMTP_HOST: "smtp.example.test",
+    SMTP_PORT: "587",
+    SMTP_USER: "support",
+    SMTP_PASS: "test-password",
+    MAIL_FROM: "QuartierPlus <noreply@example.test>",
+  });
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.deepEqual(JSON.parse(enabled.stdout.trim()), [true, true]);
+
+  const incomplete = loadTextModeration({
+    CONFLICT_PROTECTION_ENABLED: "true",
+  });
+  assert.notEqual(incomplete.status, 0);
+  assert.match(incomplete.stderr, /TEXT_MODERATION_ENABLED/);
+});
+
 test("Cloudinary and LiveKit values are trimmed and unquoted", () => {
   const result = spawnSync(
     process.execPath,

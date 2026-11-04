@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import uuid
@@ -27,6 +28,9 @@ UPLOAD_MODERATION_ENABLED = (
     os.environ.get("MODERATION_UPLOADS_WORKER_ENABLED", "").strip().lower()
     == "true"
 )
+TEXT_MODERATION_ENABLED = (
+    os.environ.get("TEXT_MODERATION_ENABLED", "").strip().lower() == "true"
+)
 UPLOAD_MODERATION_SECRET = os.environ.get(
     "GRIN_MODERATION_WEBHOOK_SECRET", ""
 ).strip()
@@ -41,22 +45,64 @@ FRAME_INTERVAL_SECONDS = 5
 FRAME_MIN_CONFIDENCE = 70
 EVENT_COOLDOWN_SECONDS = 60
 
-THREAT_PATTERNS = (
-    re.compile(r"\bje vais te tuer\b"),
-    re.compile(r"\bje vais vous tuer\b"),
-    re.compile(r"\bje vais te frapper\b"),
-    re.compile(r"\bje vais vous frapper\b"),
-    re.compile(r"\bje vais te faire du mal\b"),
-    re.compile(r"\bje vais vous faire du mal\b"),
-)
-INSULT_PATTERN = re.compile(
-    r"\b(connard|connasse|salaud|salope|idiot|idiote|imbécile)\b",
-    re.IGNORECASE,
-)
-
 server = AgentServer()
 rekognition = boto3.client("rekognition", region_name=AWS_REGION) if AWS_REGION else None
 last_reported: dict[tuple[str, str], float] = {}
+lexicon_cache: list[dict] = []
+lexicon_cache_updated = 0.0
+lexicon_cache_lock = threading.Lock()
+
+
+def moderation_lexicon_url() -> str:
+    parsed = urllib.parse.urlsplit(EVENT_URL)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("GRIN_MODERATION_EVENT_URL must be configured for text moderation.")
+    path = parsed.path.rsplit("/", 1)[0] + "/lexicon"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def fetch_moderation_lexicon() -> list[dict]:
+    request = urllib.request.Request(
+        moderation_lexicon_url(),
+        headers={"x-grin-moderation-token": EVENT_SECRET},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        payload = json.loads(response.read(256 * 1024))
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("The moderation lexicon response is invalid.")
+    return [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("term"), str)
+        and entry.get("category") in ("INSULT", "THREAT")
+    ]
+
+
+def get_moderation_lexicon() -> list[dict]:
+    global lexicon_cache, lexicon_cache_updated
+    with lexicon_cache_lock:
+        if time.monotonic() - lexicon_cache_updated < 60:
+            return lexicon_cache
+        lexicon_cache = fetch_moderation_lexicon()
+        lexicon_cache_updated = time.monotonic()
+        return lexicon_cache
+
+
+def normalize_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFD", value.casefold())
+    return "".join(character for character in decomposed if not unicodedata.combining(character))
+
+
+def text_category(text: str, entries: list[dict]) -> str | None:
+    normalized_text = normalize_text(text)
+    for entry in entries:
+        term = normalize_text(entry["term"]).strip()
+        phrase = r"\s+".join(re.escape(part) for part in term.split())
+        if re.search(rf"(?<!\w){phrase}(?!\w)", normalized_text, re.UNICODE):
+            return entry["category"]
+    return None
 
 
 def frame_as_jpeg(frame: rtc.VideoFrame) -> bytes:
@@ -331,6 +377,8 @@ async def monitor_audio(
     participant_id: str,
     track_sid: str,
 ) -> None:
+    if not TEXT_MODERATION_ENABLED:
+        return
     speech_stream = aws.STT(
         region=AWS_REGION,
         language=TRANSCRIBE_LANGUAGE,
@@ -346,8 +394,16 @@ async def monitor_audio(
                 alternative.text
                 for alternative in event.alternatives
                 if alternative.text
-            ).casefold()
-            if any(pattern.search(text) for pattern in THREAT_PATTERNS):
+            )
+            try:
+                entries = await asyncio.to_thread(get_moderation_lexicon)
+                category = await asyncio.to_thread(
+                    text_category, text, entries
+                )
+            except Exception:
+                logger.exception("Unable to load the public-text moderation lexicon.")
+                continue
+            if category == "THREAT":
                 await report_once(
                     participant_id,
                     track_sid,
@@ -355,7 +411,7 @@ async def monitor_audio(
                     "Threat",
                     85,
                 )
-            elif INSULT_PATTERN.search(text):
+            elif category == "INSULT":
                 await report_once(
                     participant_id,
                     track_sid,

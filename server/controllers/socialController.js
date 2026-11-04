@@ -1,6 +1,8 @@
 import { pool } from "../db/pool.js";
+import { env } from "../config/env.js";
 import { sendExpoPushNotifications } from "../services/pushNotifications.js";
 import { normalizePhoneNumberE164 } from "../services/phoneNumber.js";
+import { evaluateConfirmedPublicText } from "./conflictController.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -435,6 +437,65 @@ export const listBlockedUsers = async (request, response, next) => {
   }
 };
 
+export const listMutedUsers = async (request, response, next) => {
+  if (!env.conflictProtectionEnabled) {
+    return response.status(200).json({ enabled: false, muted_users: [] });
+  }
+  try {
+    const result = await pool.query(
+      `SELECT users.id, users.full_name AS name, user_mutes.created_at AS muted_at
+       FROM user_mutes JOIN users ON users.id = user_mutes.muted_id
+       WHERE user_mutes.muter_id = $1
+       ORDER BY user_mutes.created_at DESC`,
+      [request.auth.userId],
+    );
+    return response.status(200).json({ enabled: true, muted_users: result.rows });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const muteUser = async (request, response, next) => {
+  const mutedId = request.params.userId;
+  if (!env.conflictProtectionEnabled) {
+    return response.status(503).json({ error: "La mise en sourdine n'est pas activée." });
+  }
+  if (!validId(mutedId) || mutedId === request.auth.userId) {
+    return response.status(400).json({ error: "Profil à mettre en sourdine invalide." });
+  }
+  try {
+    const user = await pool.query("SELECT id FROM users WHERE id = $1", [mutedId]);
+    if (!user.rowCount) return response.status(404).json({ error: "Profil introuvable." });
+    await pool.query(
+      `INSERT INTO user_mutes (muter_id, muted_id)
+       VALUES ($1, $2) ON CONFLICT (muter_id, muted_id) DO NOTHING`,
+      [request.auth.userId, mutedId],
+    );
+    return response.status(200).json({ muted: true });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const unmuteUser = async (request, response, next) => {
+  const mutedId = request.params.userId;
+  if (!env.conflictProtectionEnabled) {
+    return response.status(503).json({ error: "La mise en sourdine n'est pas activée." });
+  }
+  if (!validId(mutedId) || mutedId === request.auth.userId) {
+    return response.status(400).json({ error: "Profil à rétablir invalide." });
+  }
+  try {
+    await pool.query(
+      "DELETE FROM user_mutes WHERE muter_id = $1 AND muted_id = $2",
+      [request.auth.userId, mutedId],
+    );
+    return response.status(204).end();
+  } catch (error) {
+    return next(error);
+  }
+};
+
 export const blockUser = async (request, response, next) => {
   const blockedId = request.params.userId;
   if (!validId(blockedId) || blockedId === request.auth.userId) {
@@ -580,6 +641,34 @@ export const createPostComment = async (request, response, next) => {
     return response.status(400).json({ error: "Commentaire invalide (1 à 1 000 caractères)." });
   }
   try {
+    const post = await pool.query(
+      `SELECT post.author_id,
+              COALESCE(parent.user_id, post.author_id) AS target_user_id
+       FROM posts AS post
+       LEFT JOIN post_comments AS parent
+         ON parent.id = $2 AND parent.post_id = post.id
+       WHERE post.id = $1 AND post.status = 'ACTIVE'
+         AND ($2::uuid IS NULL OR parent.id IS NOT NULL)`,
+      [postId, parentCommentId],
+    );
+    if (!post.rowCount) {
+      return response.status(404).json({ error: "Publication ou commentaire parent introuvable." });
+    }
+    const textModeration = await evaluateConfirmedPublicText({
+      userId: request.auth.userId,
+      targetUserId: post.rows[0].target_user_id,
+      targetType: "COMMENT",
+      text: content,
+      confirmed: request.body?.confirmed_hostile === true,
+    });
+    if (!textModeration.allowed) {
+      return response.status(textModeration.status).json({
+        code: textModeration.code,
+        error: textModeration.error,
+        ...(textModeration.warning ? { warning: textModeration.warning } : {}),
+        ...(textModeration.pause_until ? { pause_until: textModeration.pause_until } : {}),
+      });
+    }
     const result = await pool.query(
       `INSERT INTO post_comments (post_id, user_id, content, parent_comment_id)
        SELECT post.id, $2, $3, $4 FROM posts post
@@ -592,6 +681,12 @@ export const createPostComment = async (request, response, next) => {
       [postId, request.auth.userId, content, parentCommentId],
     );
     if (!result.rowCount) return response.status(404).json({ error: "Publication ou commentaire parent introuvable." });
+    if (textModeration.conflictId) {
+      await pool.query(
+        "UPDATE moderation_conflicts SET target_id = $2 WHERE id = $1",
+        [textModeration.conflictId, result.rows[0].id],
+      );
+    }
     return response.status(201).json({ comment: result.rows[0] });
   } catch (error) {
     return next(error);
@@ -607,6 +702,30 @@ export const updatePostComment = async (request, response, next) => {
     return response.status(400).json({ error: "Commentaire invalide (1 à 1 000 caractères)." });
   }
   try {
+    const comment = await pool.query(
+      `SELECT comment.post_id, post.author_id AS target_user_id
+       FROM post_comments AS comment
+       JOIN posts AS post ON post.id = comment.post_id
+       WHERE comment.id = $1 AND comment.user_id = $2`,
+      [commentId, request.auth.userId],
+    );
+    if (!comment.rowCount) return response.status(404).json({ error: "Commentaire introuvable." });
+    const textModeration = await evaluateConfirmedPublicText({
+      userId: request.auth.userId,
+      targetUserId: comment.rows[0].target_user_id,
+      targetType: "COMMENT",
+      targetId: commentId,
+      text: content,
+      confirmed: request.body?.confirmed_hostile === true,
+    });
+    if (!textModeration.allowed) {
+      return response.status(textModeration.status).json({
+        code: textModeration.code,
+        error: textModeration.error,
+        ...(textModeration.warning ? { warning: textModeration.warning } : {}),
+        ...(textModeration.pause_until ? { pause_until: textModeration.pause_until } : {}),
+      });
+    }
     const result = await pool.query(
       `UPDATE post_comments SET content = $3, edited_at = CURRENT_TIMESTAMP
        WHERE id = $1 AND user_id = $2
@@ -614,6 +733,12 @@ export const updatePostComment = async (request, response, next) => {
       [commentId, request.auth.userId, content],
     );
     if (!result.rowCount) return response.status(404).json({ error: "Commentaire introuvable." });
+    if (textModeration.conflictId) {
+      await pool.query(
+        "UPDATE moderation_conflicts SET target_id = $2 WHERE id = $1",
+        [textModeration.conflictId, commentId],
+      );
+    }
     return response.status(200).json({ comment: result.rows[0] });
   } catch (error) {
     return next(error);

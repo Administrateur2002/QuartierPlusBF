@@ -219,6 +219,30 @@ if (
   throw new Error("MODERATION_UPLOADS_ENABLED must be true or false.");
 }
 const moderationUploadsEnabled = moderationUploadsEnabledValue === "true";
+const textModerationEnabledValue = optional("TEXT_MODERATION_ENABLED");
+const conflictProtectionEnabledValue = optional("CONFLICT_PROTECTION_ENABLED");
+if (
+  (textModerationEnabledValue &&
+    !["true", "false"].includes(textModerationEnabledValue)) ||
+  (conflictProtectionEnabledValue &&
+    !["true", "false"].includes(conflictProtectionEnabledValue))
+) {
+  throw new Error(
+    "TEXT_MODERATION_ENABLED and CONFLICT_PROTECTION_ENABLED must be true or false.",
+  );
+}
+const textModerationEnabled = textModerationEnabledValue === "true";
+const conflictProtectionEnabled = conflictProtectionEnabledValue === "true";
+if (textModerationEnabled && !grinModerationEnabled) {
+  throw new Error(
+    "TEXT_MODERATION_ENABLED requires GRIN_MODERATION_ENABLED=true for live-text review.",
+  );
+}
+if (conflictProtectionEnabled && !textModerationEnabled) {
+  throw new Error(
+    "CONFLICT_PROTECTION_ENABLED requires TEXT_MODERATION_ENABLED=true.",
+  );
+}
 const moderationServiceUrl = optional("MODERATION_SERVICE_URL");
 const moderationDailyAnalysisLimit = positiveInteger(
   "MODERATION_DAILY_ANALYSIS_LIMIT",
@@ -279,7 +303,7 @@ if (
 ) {
   throw new Error("SUPPORT_NOTIFY_EMAIL must be a valid email address.");
 }
-if (moderationUploadsEnabled) {
+if (moderationUploadsEnabled || textModerationEnabled) {
   const supportEmailDeliveryReady =
     Boolean(supportNotifyEmail) &&
     Boolean(mailFrom || optional("EMAIL_FROM")) &&
@@ -287,7 +311,7 @@ if (moderationUploadsEnabled) {
       (emailProvider === "resend" && Boolean(optional("EMAIL_API_KEY"))));
   if (!supportEmailDeliveryReady) {
     throw new Error(
-      "MODERATION_UPLOADS_ENABLED requires SUPPORT_NOTIFY_EMAIL and a configured SMTP or Resend email provider.",
+      "Enabled moderation features require SUPPORT_NOTIFY_EMAIL and a configured SMTP or Resend email provider.",
     );
   }
 }
@@ -365,6 +389,8 @@ export const env = Object.freeze({
   grinModerationWebhookSecret,
   grinModeratorIds,
   moderationUploadsEnabled,
+  textModerationEnabled,
+  conflictProtectionEnabled,
   moderationServiceUrl,
   moderationDailyAnalysisLimit,
   moderationHighThreshold,
