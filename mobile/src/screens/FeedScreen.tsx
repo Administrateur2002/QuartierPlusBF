@@ -379,6 +379,8 @@ export default function FeedScreen() {
   const [feedSettingsOpen, setFeedSettingsOpen] = useState(false);
   const [blockedUsers, setBlockedUsers] = useState<Array<{ id: string; name: string }>>([]);
   const [blockedUsersError, setBlockedUsersError] = useState<string | null>(null);
+  const [mutedUsers, setMutedUsers] = useState<Array<{ id: string; name: string }>>([]);
+  const [conflictProtectionEnabled, setConflictProtectionEnabled] = useState(false);
   const lowDataMode = dataSaverEnabled || autoDataSaver;
   const [pageOffsets, setPageOffsets] = useState({ marketplace: 0, feed: 0 });
   const [hasMoreMarketplace, setHasMoreMarketplace] = useState(true);
@@ -1177,7 +1179,34 @@ export default function FeedScreen() {
     }
   };
 
-  const sendComment = async () => {
+  const checkPublicText = async (
+    text: string,
+    targetType: "POST" | "COMMENT",
+    targetUserId: string | null = null,
+  ) => {
+    if (!API_BASE_URL) throw new Error("Le service de modération n'est pas configuré.");
+    const response = await apiFetch(`${API_BASE_URL}/v1/social/moderation/check-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        target_type: targetType,
+        target_user_id: targetUserId,
+      }),
+    });
+    const payload: unknown = await response.json();
+    if (!isRecord(payload)) throw new Error("La réponse de modération est invalide.");
+    if (!response.ok) {
+      throw new Error(
+        typeof payload.error === "string" ? payload.error : `Vérification refusée (HTTP ${response.status}).`,
+      );
+    }
+    return payload.warning_required === true && typeof payload.warning === "string"
+      ? payload.warning
+      : null;
+  };
+
+  const sendComment = async (confirmedHostile = false) => {
     const post = selectedPost;
     const content = commentDraft.trim();
     if (!post || !content || sendingComment) return;
@@ -1187,6 +1216,28 @@ export default function FeedScreen() {
     }
     if (!API_BASE_URL) return;
 
+    if (!isOffline && !confirmedHostile) {
+      setSendingComment(true);
+      try {
+        const warning = await checkPublicText(content, "COMMENT", post.authorId ?? null);
+        if (warning) {
+          Alert.alert("Attention au ton du message", warning, [
+            { text: "Modifier", style: "cancel" },
+            { text: "Envoyer quand même", onPress: () => void sendComment(true) },
+          ]);
+          return;
+        }
+      } catch (moderationError) {
+        Alert.alert(
+          "Vérification impossible",
+          moderationError instanceof Error ? moderationError.message : "Réessayez.",
+        );
+        return;
+      } finally {
+        setSendingComment(false);
+      }
+    }
+
     if (editingComment) {
       setSendingComment(true);
       try {
@@ -1195,10 +1246,17 @@ export default function FeedScreen() {
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content }),
+            body: JSON.stringify({ content, confirmed_hostile: confirmedHostile }),
           },
         );
-        if (!response.ok) throw new Error(`Modification refusée (HTTP ${response.status}).`);
+        if (!response.ok) {
+          const errorPayload: unknown = await response.json();
+          throw new Error(
+            isRecord(errorPayload) && typeof errorPayload.error === "string"
+              ? errorPayload.error
+              : `Modification refusée (HTTP ${response.status}).`,
+          );
+        }
         const payload: unknown = await response.json();
         if (!isRecord(payload) || !isRecord(payload.comment)) {
           throw new Error("La réponse de modification est invalide.");
@@ -1278,10 +1336,18 @@ export default function FeedScreen() {
           body: JSON.stringify({
             content,
             parent_comment_id: replyingToComment?.id ?? null,
+            confirmed_hostile: confirmedHostile,
           }),
         },
       );
-      if (!response.ok) throw new Error(`Commentaire refusé (HTTP ${response.status}).`);
+      if (!response.ok) {
+        const errorPayload: unknown = await response.json();
+        throw new Error(
+          isRecord(errorPayload) && typeof errorPayload.error === "string"
+            ? errorPayload.error
+            : `Commentaire refusé (HTTP ${response.status}).`,
+        );
+      }
       const payload: unknown = await response.json();
       if (!isRecord(payload) || !isRecord(payload.comment) || typeof payload.comment.id !== "string") {
         throw new Error("La réponse du commentaire est invalide.");
@@ -1471,7 +1537,7 @@ export default function FeedScreen() {
     setActionPost(null);
   };
 
-  const loadBlockedUsers = async () => {
+  const loadBlockedUsers = useCallback(async () => {
     if (!API_BASE_URL || authStatus !== "connected") {
       setBlockedUsers([]);
       setBlockedUsersError("Connectez-vous pour gérer les comptes bloqués.");
@@ -1489,10 +1555,30 @@ export default function FeedScreen() {
         (item): item is { id: string; name: string } =>
           isRecord(item) && typeof item.id === "string" && typeof item.name === "string",
       ));
+      const mutedResponse = await apiFetch(`${API_BASE_URL}/v1/social/muted-users`);
+      if (!mutedResponse.ok) throw new Error(`Chargement des comptes en sourdine refusé (HTTP ${mutedResponse.status}).`);
+      const mutedPayload: unknown = await mutedResponse.json();
+      if (!isRecord(mutedPayload) || !Array.isArray(mutedPayload.muted_users)) {
+        throw new Error("La liste des comptes en sourdine est invalide.");
+      }
+      setConflictProtectionEnabled(mutedPayload.enabled === true);
+      setMutedUsers(mutedPayload.muted_users.filter(
+        (item): item is { id: string; name: string } =>
+          isRecord(item) && typeof item.id === "string" && typeof item.name === "string",
+      ));
     } catch (blockedError) {
       setBlockedUsersError(blockedError instanceof Error ? blockedError.message : "Réessayez.");
     }
-  };
+  }, [authStatus]);
+
+  useEffect(() => {
+    if (authStatus === "connected") {
+      void loadBlockedUsers();
+    } else {
+      setConflictProtectionEnabled(false);
+      setMutedUsers([]);
+    }
+  }, [authStatus, loadBlockedUsers]);
 
   const unblockAuthor = async (blockedId: string) => {
     if (!API_BASE_URL) return;
@@ -1506,6 +1592,50 @@ export default function FeedScreen() {
       refresh();
     } catch (unblockError) {
       Alert.alert("Déblocage impossible", unblockError instanceof Error ? unblockError.message : "Réessayez.");
+    }
+  };
+
+  const unmuteAuthor = async (mutedId: string) => {
+    if (!API_BASE_URL) return;
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/users/${encodeURIComponent(mutedId)}/mute`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) throw new Error(`Réactivation refusée (HTTP ${response.status}).`);
+      setMutedUsers((current) => current.filter((muted) => muted.id !== mutedId));
+      refresh();
+    } catch (unmuteError) {
+      Alert.alert("Réactivation impossible", unmuteError instanceof Error ? unmuteError.message : "Réessayez.");
+    }
+  };
+
+  const muteAuthor = async (entry: FeedEntry) => {
+    if (!entry.authorId || entry.authorId === user?.id) return;
+    if (authStatus !== "connected") {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    setActionPost(null);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/social/users/${encodeURIComponent(entry.authorId)}/mute`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        const payload: unknown = await response.json();
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `Mise en sourdine refusée (HTTP ${response.status}).`,
+        );
+      }
+      setEntries((current) => current.filter((item) => item.authorId !== entry.authorId));
+      refresh();
+      Alert.alert("Compte mis en sourdine", "Ses publications ne seront plus affichées dans votre fil.");
+    } catch (muteError) {
+      Alert.alert("Mise en sourdine impossible", muteError instanceof Error ? muteError.message : "Réessayez.");
     }
   };
 
@@ -1599,6 +1729,39 @@ export default function FeedScreen() {
     );
   };
 
+  const createRepost = (caption: string, confirmedHostile: boolean) => {
+    if (!API_BASE_URL) return;
+    setIsReposting(true);
+    void apiFetch(`${API_BASE_URL}/v1/posts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        caption,
+        scope: draftScope,
+        media_type: null,
+        confirmed_hostile: confirmedHostile,
+      }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const payload: unknown = await response.json();
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `Publication refusée (HTTP ${response.status}).`,
+        );
+      }
+      setRepostPost(null);
+      setRepostCaption("");
+      refresh();
+      Alert.alert("Publication créée", "Le repartage est visible dans votre fil.");
+    }).catch((repostError: unknown) => {
+      Alert.alert(
+        "Repartage impossible",
+        repostError instanceof Error ? repostError.message : "Réessayez.",
+      );
+    }).finally(() => setIsReposting(false));
+  };
+
   const confirmRepost = (entry: FeedEntry) => {
     const caption = [
       repostCaption.trim(),
@@ -1619,22 +1782,28 @@ export default function FeedScreen() {
           text: "Confirmer et publier",
           onPress: () => {
             setIsReposting(true);
-            void apiFetch(`${API_BASE_URL}/v1/posts`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ caption, scope: draftScope, media_type: null }),
-            }).then((response) => {
-              if (!response.ok) throw new Error(`Publication refusée (HTTP ${response.status}).`);
-              setRepostPost(null);
-              setRepostCaption("");
-              refresh();
-              Alert.alert("Publication créée", "Le repartage est visible dans votre fil.");
-            }).catch((repostError: unknown) => {
-              Alert.alert(
-                "Repartage impossible",
-                repostError instanceof Error ? repostError.message : "Réessayez.",
-              );
-            }).finally(() => setIsReposting(false));
+            void checkPublicText(caption, "POST")
+              .then((warning) => {
+                setIsReposting(false);
+                if (warning) {
+                  Alert.alert("Attention au ton de la publication", warning, [
+                    { text: "Modifier", style: "cancel" },
+                    {
+                      text: "Publier quand même",
+                      onPress: () => createRepost(caption, true),
+                    },
+                  ]);
+                } else {
+                  createRepost(caption, false);
+                }
+              })
+              .catch((moderationError: unknown) => {
+                setIsReposting(false);
+                Alert.alert(
+                  "Vérification impossible",
+                  moderationError instanceof Error ? moderationError.message : "Réessayez.",
+                );
+              });
           },
         },
       ],
@@ -1796,7 +1965,7 @@ export default function FeedScreen() {
     setAdditionalDraftMedia([]);
   };
 
-  const publishMedia = async () => {
+  const publishMedia = async (confirmedHostile = false) => {
     if (!draftMedia || !API_BASE_URL || !countryCode) {
       Alert.alert(
         "Publication indisponible",
@@ -1814,6 +1983,27 @@ export default function FeedScreen() {
           "Ajoutez une légende pour mettre en file une publication texte. Le média sera ignoré.",
         );
         return;
+      }
+      if (!confirmedHostile && draftCaption.trim()) {
+        setIsPublishing(true);
+        try {
+          const warning = await checkPublicText(draftCaption.trim(), "POST");
+          if (warning) {
+            Alert.alert("Attention au ton de la publication", warning, [
+              { text: "Modifier", style: "cancel" },
+              { text: "Publier quand même", onPress: () => void publishMedia(true) },
+            ]);
+            return;
+          }
+        } catch (moderationError) {
+          Alert.alert(
+            "Vérification impossible",
+            moderationError instanceof Error ? moderationError.message : "Réessayez.",
+          );
+          return;
+        } finally {
+          setIsPublishing(false);
+        }
       }
       if (
         (draftScope === "neighborhood" || draftScope === "region") &&
@@ -2084,6 +2274,7 @@ export default function FeedScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           caption: draftCaption.trim(),
+          confirmed_hostile: confirmedHostile,
           scope: draftScope,
           media_type: draftMedia.resourceType,
           media_public_id: uploaded.publicId,
@@ -2156,6 +2347,7 @@ export default function FeedScreen() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             caption: draftCaption.trim(),
+            confirmed_hostile: confirmedHostile,
             scope: draftScope,
             media_type: null,
             ...(position
@@ -3257,6 +3449,30 @@ export default function FeedScreen() {
                 </ScrollView>
               )}
             </View>
+            {conflictProtectionEnabled ? (
+              <View style={styles.blockedUsersSection}>
+                <Text style={[styles.preferenceLabel, { color: colors.text }]}>Comptes en sourdine</Text>
+                {mutedUsers.length === 0 ? (
+                  <Text style={[styles.preferenceDescription, { color: colors.secondaryText }]}>Aucun compte en sourdine.</Text>
+                ) : (
+                  <ScrollView keyboardShouldPersistTaps="handled" style={styles.blockedUsersList}>
+                    {mutedUsers.map((muted) => (
+                      <View key={muted.id} style={styles.blockedUserRow}>
+                        <Text numberOfLines={1} style={[styles.preferenceDescription, { color: colors.text }]}>{muted.name}</Text>
+                        <Pressable
+                          accessibilityLabel={`Retirer ${muted.name} de la sourdine`}
+                          accessibilityRole="button"
+                          onPress={() => void unmuteAuthor(muted.id)}
+                          style={styles.preferenceClose}
+                        >
+                          <Text style={[styles.actionText, { color: colors.primary }]}>Réactiver</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+              </View>
+            ) : null}
           </View>
         </View>
       </Modal>
@@ -3427,6 +3643,17 @@ export default function FeedScreen() {
                   style={styles.actionOption}
                 >
                   <Text style={[styles.actionOptionText, styles.destructiveAction]}>Bloquer cet utilisateur</Text>
+                </Pressable>
+              ) : null}
+              {conflictProtectionEnabled &&
+              actionPost?.authorId &&
+              actionPost.authorId !== user?.id ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => actionPost && void muteAuthor(actionPost)}
+                  style={styles.actionOption}
+                >
+                  <Text style={[styles.actionOptionText, { color: colors.text }]}>Mettre en sourdine</Text>
                 </Pressable>
               ) : null}
               <Pressable

@@ -42,6 +42,42 @@ type LiveEvent = {
   created_at: string;
 };
 
+type UploadModerationEvent = {
+  id: string;
+  post_id: string;
+  author_id: string;
+  author_name?: string | null;
+  media_type: "image" | "video";
+  media_id: string;
+  score: number | null;
+  status: string;
+  appeal_reason?: string | null;
+  created_at: string;
+  media_url?: string | null;
+};
+
+type Conflict = {
+  id: string;
+  actor_id: string;
+  actor_name?: string | null;
+  target_user_id?: string | null;
+  target_name?: string | null;
+  target_type: string;
+  target_id?: string | null;
+  category: string;
+  status: string;
+  public_text?: string | null;
+  appeal_reason?: string | null;
+  created_at: string;
+};
+
+type LexiconEntry = {
+  id: string;
+  term: string;
+  language: string;
+  category: "INSULT" | "THREAT";
+};
+
 type Flash = {
   id: string;
   title: string;
@@ -56,7 +92,7 @@ type Flash = {
   error_message?: string | null;
 };
 
-type Panel = "reports" | "flash" | "history";
+type Panel = "reports" | "content" | "conflicts" | "flash" | "history";
 type TargetType = "ALL" | "COUNTRY" | "NEIGHBORHOOD" | "REGION";
 
 const errorMessage = (error: unknown) =>
@@ -75,6 +111,16 @@ export default function AdminScreen() {
   const [severityFilter, setSeverityFilter] = useState("ALL");
   const [reports, setReports] = useState<Report[]>([]);
   const [events, setEvents] = useState<LiveEvent[]>([]);
+  const [uploadEvents, setUploadEvents] = useState<UploadModerationEvent[]>([]);
+  const [uploadCounts, setUploadCounts] = useState<Record<string, number>>({});
+  const [uploadFilter, setUploadFilter] = useState("ALL");
+  const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const [conflictCounts, setConflictCounts] = useState<Record<string, number>>({});
+  const [conflictFilter, setConflictFilter] = useState("PENDING");
+  const [lexicon, setLexicon] = useState<LexiconEntry[]>([]);
+  const [lexiconTerm, setLexiconTerm] = useState("");
+  const [lexiconLanguage, setLexiconLanguage] = useState("fr");
+  const [lexiconCategory, setLexiconCategory] = useState<"INSULT" | "THREAT">("INSULT");
   const [history, setHistory] = useState<Record<string, unknown>[]>([]);
   const [flashes, setFlashes] = useState<Flash[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -96,17 +142,34 @@ export default function AdminScreen() {
     setLoading(true);
     setError(null);
     try {
-      if (panel === "reports") {
+      if (panel === "reports" || panel === "content") {
         const result = await api.get<{
           reports: Report[];
           live_events: LiveEvent[];
           counts: Record<string, number>;
+          upload_moderation_events: UploadModerationEvent[];
+          upload_moderation_counts: Record<string, number>;
         }>(`/v1/admin/dashboard?status=${filter}`, {
           headers: { "Cache-Control": "no-cache" },
         });
         setReports(result.data.reports);
         setEvents(result.data.live_events);
         setCounts(result.data.counts);
+        setUploadEvents(result.data.upload_moderation_events);
+        setUploadCounts(result.data.upload_moderation_counts);
+      } else if (panel === "conflicts") {
+        const [conflictResult, lexiconResult] = await Promise.all([
+          api.get<{ conflicts: Conflict[]; counts: Record<string, number> }>(
+            `/v1/admin/conflicts?status=${conflictFilter}`,
+            { headers: { "Cache-Control": "no-cache" } },
+          ),
+          api.get<{ entries: LexiconEntry[] }>("/v1/admin/moderation-lexicon", {
+            headers: { "Cache-Control": "no-cache" },
+          }),
+        ]);
+        setConflicts(conflictResult.data.conflicts);
+        setConflictCounts(conflictResult.data.counts);
+        setLexicon(lexiconResult.data.entries);
       } else if (panel === "flash") {
         const result = await api.get<{ broadcasts: Flash[] }>("/v1/admin/flashes", {
           headers: { "Cache-Control": "no-cache" },
@@ -124,7 +187,7 @@ export default function AdminScreen() {
     } finally {
       setLoading(false);
     }
-  }, [filter, panel]);
+  }, [conflictFilter, filter, panel]);
 
   useEffect(() => {
     void reload();
@@ -173,6 +236,97 @@ export default function AdminScreen() {
             .then(() => setRefreshKey((key) => key + 1))
             .catch((actionError: unknown) =>
               Alert.alert("Action impossible", errorMessage(actionError)),
+            );
+        },
+      },
+    ]);
+  };
+
+  const moderateUploadEvent = (
+    event: UploadModerationEvent,
+    action: "approve" | "remove" | "warn" | "suspend",
+  ) => {
+    const actionLabel =
+      action === "approve" ? "approuver le contenu" :
+        action === "remove" ? "retirer le contenu et son média" :
+          action === "warn" ? "avertir l’auteur" : "suspendre l’auteur 7 jours";
+    Alert.alert("Confirmer l'action", `Voulez-vous ${actionLabel} ?`, [
+      { text: "Annuler", style: "cancel" },
+      {
+        text: "Confirmer",
+        style: action === "remove" || action === "suspend" ? "destructive" : "default",
+        onPress: () => {
+          void api
+            .post(`/v1/admin/post-moderation-events/${event.id}/action`, {
+              action,
+              ...(action === "suspend" ? { days: 7 } : {}),
+            })
+            .then(() => setRefreshKey((key) => key + 1))
+            .catch((actionError: unknown) =>
+              Alert.alert("Action impossible", errorMessage(actionError)),
+            );
+        },
+      },
+    ]);
+  };
+
+  const moderateConflict = (
+    conflict: Conflict,
+    action: "approve" | "remove" | "warn" | "suspend" | "dismiss",
+  ) => {
+    const labels = {
+      approve: "approuver le contenu",
+      remove: "retirer le contenu",
+      warn: "avertir le compte",
+      suspend: "suspendre le compte 7 jours",
+      dismiss: "classer sans suite",
+    };
+    Alert.alert("Confirmer l'action", `Voulez-vous ${labels[action]} ?`, [
+      { text: "Annuler", style: "cancel" },
+      {
+        text: "Confirmer",
+        style: action === "remove" || action === "suspend" ? "destructive" : "default",
+        onPress: () => {
+          void api
+            .post(`/v1/admin/conflicts/${conflict.id}/action`, {
+              action,
+              ...(action === "suspend" ? { days: 7 } : {}),
+            })
+            .then(() => setRefreshKey((key) => key + 1))
+            .catch((actionError: unknown) =>
+              Alert.alert("Action impossible", errorMessage(actionError)),
+            );
+        },
+      },
+    ]);
+  };
+
+  const addLexiconEntry = async () => {
+    try {
+      const result = await api.post<{ entry: LexiconEntry }>("/v1/admin/moderation-lexicon", {
+        term: lexiconTerm.trim(),
+        language: lexiconLanguage.trim().toLowerCase(),
+        category: lexiconCategory,
+      });
+      setLexicon((current) => [...current, result.data.entry].sort((a, b) => a.term.localeCompare(b.term, "fr")));
+      setLexiconTerm("");
+    } catch (addError) {
+      Alert.alert("Ajout impossible", errorMessage(addError));
+    }
+  };
+
+  const removeLexiconEntry = (entry: LexiconEntry) => {
+    Alert.alert("Retirer du lexique", `Retirer « ${entry.term} » ?`, [
+      { text: "Annuler", style: "cancel" },
+      {
+        text: "Retirer",
+        style: "destructive",
+        onPress: () => {
+          void api
+            .delete(`/v1/admin/moderation-lexicon/${entry.id}`)
+            .then(() => setLexicon((current) => current.filter((item) => item.id !== entry.id)))
+            .catch((removeError: unknown) =>
+              Alert.alert("Retrait impossible", errorMessage(removeError)),
             );
         },
       },
@@ -303,9 +457,12 @@ export default function AdminScreen() {
       </View>
 
       <View style={styles.navigation}>
-        {(["reports", "flash", "history"] as const).map((value) =>
+        {(["reports", "content", "conflicts", "flash", "history"] as const).map((value) =>
           pill(
-            value === "reports" ? "Signalements" : value === "flash" ? "Message flash" : "Historique",
+            value === "reports" ? "Signalements" :
+              value === "content" ? "Contenus à revoir" :
+                value === "conflicts" ? "Conflits" :
+                value === "flash" ? "Message flash" : "Historique",
             panel === value,
             () => setPanel(value),
           ),
@@ -341,6 +498,37 @@ export default function AdminScreen() {
                 value === "ALL" ? "Toutes gravités" : value === "HIGH" ? "Élevé+" : "Modéré",
                 severityFilter === value,
                 () => setSeverityFilter(value),
+              ),
+            )}
+          </View>
+        </View>
+      )}
+
+      {panel === "content" && (
+        <View>
+          <View style={styles.counts}>
+            <View style={[styles.countCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.countNumber, { color: colors.primary }]}>{uploadCounts.PENDING_REVIEW ?? 0}</Text>
+              <Text style={{ color: colors.secondaryText }}>À revoir</Text>
+            </View>
+            <View style={[styles.countCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.countNumber, { color: "#b91c1c" }]}>{uploadCounts.BLOCKED ?? 0}</Text>
+              <Text style={{ color: colors.secondaryText }}>Bloqués</Text>
+            </View>
+            <View style={[styles.countCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.countNumber, { color: "#b91c1c" }]}>{uploadCounts.CHILD_SAFETY_ALERT ?? 0}</Text>
+              <Text style={{ color: colors.secondaryText }}>Prioritaires</Text>
+            </View>
+          </View>
+          <View style={styles.filters}>
+            {(["ALL", "PENDING_REVIEW", "BLOCKED", "CHILD_SAFETY_ALERT", "APPEALED"] as const).map((value) =>
+              pill(
+                value === "ALL" ? "Tous" :
+                  value === "PENDING_REVIEW" ? "En revue" :
+                    value === "BLOCKED" ? "Bloqués" :
+                      value === "CHILD_SAFETY_ALERT" ? "Prioritaires" : "Recours",
+                uploadFilter === value,
+                () => setUploadFilter(value),
               ),
             )}
           </View>
@@ -445,6 +633,179 @@ export default function AdminScreen() {
           {visibleReports.length === 0 && events.length === 0 ? (
             <Text style={[styles.empty, { color: colors.secondaryText }]}>Aucun dossier dans cette file.</Text>
           ) : null}
+        </ScrollView>
+      ) : panel === "content" ? (
+        <ScrollView contentContainerStyle={styles.list}>
+          {uploadEvents
+            .filter((event) => uploadFilter === "ALL" || event.status === uploadFilter)
+            .map((event) => (
+              <View key={event.id} style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <View style={styles.cardHeading}>
+                  <ShieldAlert color={event.status === "CHILD_SAFETY_ALERT" ? "#dc2626" : "#f59e0b"} size={18} />
+                  <Text style={[styles.cardTitle, { color: colors.text }]}>
+                    {event.media_type === "video" ? "Vidéo" : "Photo"} · {event.status}
+                  </Text>
+                  <Text style={styles.severity}>{event.score === null ? "—" : `${event.score}%`}</Text>
+                </View>
+                {event.status === "CHILD_SAFETY_ALERT" ? (
+                  <Text style={[styles.appeal, { color: "#b91c1c" }]}>
+                    Alerte prioritaire : suivez la loi applicable et signalez le cas aux autorités compétentes. Le média n’est pas conservé dans la file.
+                  </Text>
+                ) : event.media_url ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      const url = event.media_url;
+                      if (!url?.startsWith("https://")) {
+                        Alert.alert("Média indisponible", "L'adresse du média n'est pas valide.");
+                        return;
+                      }
+                      void Linking.openURL(url).catch(() =>
+                        Alert.alert("Média indisponible", "Impossible d'ouvrir ce média."),
+                      );
+                    }}
+                    style={styles.secondaryButton}
+                  >
+                    <Text style={{ color: colors.text, fontWeight: "700" }}>Consulter le média</Text>
+                  </Pressable>
+                ) : null}
+                <Text style={[styles.meta, { color: colors.secondaryText }]}>
+                  {event.author_name ?? event.author_id} · {dateLabel(event.created_at)}
+                </Text>
+                {event.appeal_reason ? (
+                  <Text style={[styles.appeal, { color: colors.primary }]}>Recours : {event.appeal_reason}</Text>
+                ) : null}
+                <View style={styles.actions}>
+                  {event.status !== "CHILD_SAFETY_ALERT" ? (
+                    <Pressable onPress={() => moderateUploadEvent(event, "approve")} style={styles.secondaryButton}>
+                      <Text style={[styles.secondaryText, { color: colors.text }]}>Approuver</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable onPress={() => moderateUploadEvent(event, "remove")} style={styles.dangerButton}>
+                    <Text style={styles.primaryText}>Retirer</Text>
+                  </Pressable>
+                  <Pressable onPress={() => moderateUploadEvent(event, "warn")} style={styles.secondaryButton}>
+                    <Text style={[styles.secondaryText, { color: colors.text }]}>Avertir</Text>
+                  </Pressable>
+                  <Pressable onPress={() => moderateUploadEvent(event, "suspend")} style={styles.dangerButton}>
+                    <Text style={styles.primaryText}>Suspendre</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          {uploadEvents.filter((event) => uploadFilter === "ALL" || event.status === uploadFilter).length === 0 ? (
+            <Text style={[styles.empty, { color: colors.secondaryText }]}>Aucun contenu à revoir.</Text>
+          ) : null}
+        </ScrollView>
+      ) : panel === "conflicts" ? (
+        <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
+          <View style={styles.counts}>
+            <View style={[styles.countCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.countNumber, { color: colors.primary }]}>{conflictCounts.PENDING ?? 0}</Text>
+              <Text style={{ color: colors.secondaryText }}>À traiter</Text>
+            </View>
+            <View style={[styles.countCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.countNumber, { color: "#b91c1c" }]}>{conflicts.filter((item) => item.appeal_reason).length}</Text>
+              <Text style={{ color: colors.secondaryText }}>Recours</Text>
+            </View>
+          </View>
+          <View style={styles.filters}>
+            {(["PENDING", "APPEALED", "ALL"] as const).map((value) =>
+              pill(
+                value === "PENDING" ? "À traiter" : value === "APPEALED" ? "Recours" : "Tous",
+                conflictFilter === value,
+                () => setConflictFilter(value),
+              ),
+            )}
+          </View>
+          {conflicts.map((conflict) => (
+            <View key={conflict.id} style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <View style={styles.cardHeading}>
+                <ShieldAlert color={conflict.category === "THREAT" ? "#dc2626" : "#f59e0b"} size={18} />
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  {conflict.category === "THREAT" ? "Menace" : conflict.category === "REPEATED_REPORTS" ? "Signalements multiples" : "Propos hostiles"}
+                </Text>
+                <Text style={styles.severity}>{conflict.status}</Text>
+              </View>
+              <Text style={[styles.meta, { color: colors.secondaryText }]}>
+                {conflict.actor_name ?? conflict.actor_id} · {conflict.target_type} · {dateLabel(conflict.created_at)}
+              </Text>
+              {conflict.target_name ? (
+                <Text style={[styles.meta, { color: colors.secondaryText }]}>Compte ciblé : {conflict.target_name}</Text>
+              ) : null}
+              {conflict.public_text ? (
+                <Text style={[styles.content, { color: colors.text }]}>{conflict.public_text}</Text>
+              ) : null}
+              {conflict.appeal_reason ? (
+                <Text style={[styles.appeal, { color: colors.primary }]}>Recours : {conflict.appeal_reason}</Text>
+              ) : null}
+              {conflict.status !== "RESOLVED" && conflict.status !== "DISMISSED" ? (
+                <View style={styles.actions}>
+                  {conflict.target_type === "POST" ? (
+                    <Pressable onPress={() => moderateConflict(conflict, "approve")} style={styles.secondaryButton}>
+                      <Text style={[styles.secondaryText, { color: colors.text }]}>Approuver</Text>
+                    </Pressable>
+                  ) : null}
+                  {["POST", "COMMENT"].includes(conflict.target_type) ? (
+                    <Pressable onPress={() => moderateConflict(conflict, "remove")} style={styles.dangerButton}>
+                      <Text style={styles.primaryText}>Retirer</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable onPress={() => moderateConflict(conflict, "warn")} style={styles.secondaryButton}>
+                    <Text style={[styles.secondaryText, { color: colors.text }]}>Avertir</Text>
+                  </Pressable>
+                  <Pressable onPress={() => moderateConflict(conflict, "suspend")} style={styles.dangerButton}>
+                    <Text style={styles.primaryText}>Suspendre</Text>
+                  </Pressable>
+                  <Pressable onPress={() => moderateConflict(conflict, "dismiss")} style={styles.secondaryButton}>
+                    <Text style={[styles.secondaryText, { color: colors.text }]}>Classer</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          ))}
+          {conflicts.length === 0 ? (
+            <Text style={[styles.empty, { color: colors.secondaryText }]}>Aucun conflit dans cette file.</Text>
+          ) : null}
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Lexique de modération</Text>
+            <Text style={[styles.meta, { color: colors.secondaryText }]}>
+              Les termes sont comparés aux textes publics uniquement. Utilisez fr, mos (mooré), dyu (dioula) ou ff (fulfulde).
+            </Text>
+            <TextInput
+              value={lexiconTerm}
+              onChangeText={setLexiconTerm}
+              maxLength={100}
+              placeholder="Mot ou expression"
+              placeholderTextColor={colors.secondaryText}
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+            />
+            <TextInput
+              value={lexiconLanguage}
+              onChangeText={setLexiconLanguage}
+              autoCapitalize="none"
+              maxLength={12}
+              placeholder="Langue (fr, mo, dy, ff)"
+              placeholderTextColor={colors.secondaryText}
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+            />
+            <View style={styles.filters}>
+              {(["INSULT", "THREAT"] as const).map((value) =>
+                pill(value === "INSULT" ? "Insulte" : "Menace", lexiconCategory === value, () => setLexiconCategory(value)),
+              )}
+              <Pressable disabled={!lexiconTerm.trim()} onPress={() => void addLexiconEntry()} style={styles.secondaryButton}>
+                <Text style={[styles.secondaryText, { color: colors.text }]}>Ajouter</Text>
+              </Pressable>
+            </View>
+            {lexicon.map((entry) => (
+              <View key={entry.id} style={styles.cardHeading}>
+                <Text style={[styles.content, { color: colors.text }]}>{entry.term} · {entry.language} · {entry.category}</Text>
+                <Pressable accessibilityRole="button" onPress={() => removeLexiconEntry(entry)}>
+                  <Text style={styles.severity}>Retirer</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
         </ScrollView>
       ) : panel === "flash" ? (
         <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">

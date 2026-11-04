@@ -29,6 +29,10 @@ type AppealableReport = {
   content: string;
   reason: string;
   reviewed_at: string;
+  media_type?: string;
+  score?: number | null;
+  is_media_moderation?: boolean;
+  is_conflict?: boolean;
 };
 
 const TITLES: Record<Activity, string> = {
@@ -87,7 +91,8 @@ export default function MyActivityScreen() {
             { headers: { "Cache-Control": "no-cache" } },
           );
           if (appealResponse.ok) {
-            appealable = getRows(await appealResponse.json(), "reports").filter(
+            const appealPayload: unknown = await appealResponse.json();
+            const reportRows = getRows(appealPayload, "reports").filter(
               (entry): entry is AppealableReport =>
                 isRecord(entry) &&
                 typeof entry.id === "string" &&
@@ -95,6 +100,42 @@ export default function MyActivityScreen() {
                 typeof entry.reason === "string" &&
                 typeof entry.reviewed_at === "string",
             );
+            const moderationRows = getRows(
+              appealPayload,
+              "moderation_events",
+            ).flatMap((entry): AppealableReport[] =>
+              isRecord(entry) &&
+              typeof entry.id === "string" &&
+              typeof entry.media_type === "string" &&
+              typeof entry.status === "string" &&
+              typeof entry.created_at === "string"
+                ? [{
+                    id: entry.id,
+                    content: `${entry.media_type === "video" ? "Vidéo" : "Photo"} · score ${typeof entry.score === "number" ? `${entry.score}%` : "indisponible"}`,
+                    reason: "Décision de modération du média",
+                    reviewed_at: entry.created_at,
+                    media_type: entry.media_type,
+                    score: typeof entry.score === "number" ? entry.score : null,
+                    is_media_moderation: true,
+                  }]
+                : [],
+            );
+            const conflictRows = getRows(appealPayload, "conflicts").flatMap(
+              (entry): AppealableReport[] =>
+                isRecord(entry) &&
+                typeof entry.id === "string" &&
+                typeof entry.category === "string" &&
+                typeof entry.created_at === "string"
+                  ? [{
+                      id: entry.id,
+                      content: `Décision de modération du texte public · ${entry.category}`,
+                      reason: "Décision de modération d’un conflit",
+                      reviewed_at: entry.created_at,
+                      is_conflict: true,
+                    }]
+                  : [],
+            );
+            appealable = [...reportRows, ...moderationRows, ...conflictRows];
           } else {
             throw new Error("Impossible de charger les recours.");
           }
@@ -159,14 +200,17 @@ export default function MyActivityScreen() {
       return;
     }
     try {
-      const response = await apiFetch(
-        `${API_BASE_URL}/v1/admin/reports/${appealReportId}/appeal`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: appealReason.trim() }),
-        },
-      );
+      const appealable = appealableReports.find((entry) => entry.id === appealReportId);
+      const appealUrl = appealable?.is_conflict
+        ? `${API_BASE_URL}/v1/admin/conflicts/${encodeURIComponent(appealReportId)}/appeal`
+        : appealable?.is_media_moderation
+          ? `${API_BASE_URL}/v1/admin/post-moderation-events/${encodeURIComponent(appealReportId)}/appeal`
+          : `${API_BASE_URL}/v1/admin/reports/${encodeURIComponent(appealReportId)}/appeal`;
+      const response = await apiFetch(appealUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: appealReason.trim() }),
+      });
       if (!response.ok) {
         const result: unknown = await response.json();
         throw new Error(
