@@ -38,6 +38,18 @@ test("production environment accepts a complete valid configuration", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("administrator identities are normalized and must be valid UUIDs", () => {
+  const valid = loadProductionConfig({
+    ADMIN_EMAIL: "AdministrateurQuartierPlus@gmail.com",
+    ADMIN_USER_IDS: "7b490a29-02dd-44ad-8c9f-81d9cadc0007",
+  });
+  assert.equal(valid.status, 0, valid.stderr);
+
+  const malformed = loadProductionConfig({ ADMIN_USER_IDS: "not-a-uuid" });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /ADMIN_USER_IDS/);
+});
+
 test("live Grin moderation requires a strong webhook secret when enabled", () => {
   const enabled = loadProductionConfig({
     GRIN_MODERATION_ENABLED: "true",

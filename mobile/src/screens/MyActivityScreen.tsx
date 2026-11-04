@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import { useNavigation, useRoute, type NavigationProp, type RouteProp } from "@react-navigation/native";
 import {
   ActivityIndicator,
+  Modal,
   Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { ArrowLeft, Plus } from "lucide-react-native";
@@ -21,6 +23,12 @@ type ActivityItem = {
   status: string;
   createdAt: string;
   imageUrl?: string;
+};
+type AppealableReport = {
+  id: string;
+  content: string;
+  reason: string;
+  reviewed_at: string;
 };
 
 const TITLES: Record<Activity, string> = {
@@ -45,6 +53,10 @@ export default function MyActivityScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [appealableReports, setAppealableReports] = useState<AppealableReport[]>([]);
+  const [appealReportId, setAppealReportId] = useState<string | null>(null);
+  const [appealReason, setAppealReason] = useState("");
+  const [appealError, setAppealError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -63,8 +75,30 @@ export default function MyActivityScreen() {
         const response = await apiFetch(url, {
           headers: { "Cache-Control": "no-cache" },
         });
-        if (!response.ok) throw new Error("Chargement refusé.");
-        const payload: unknown = await response.json();
+        let payload: unknown = {};
+        if (response.ok) payload = await response.json();
+        else if (activity !== "alerts" || response.status !== 403) {
+          throw new Error("Chargement refusé.");
+        }
+        let appealable: AppealableReport[] = [];
+        if (activity === "alerts") {
+          const appealResponse = await apiFetch(
+            `${API_BASE_URL}/v1/admin/appealable-reports`,
+            { headers: { "Cache-Control": "no-cache" } },
+          );
+          if (appealResponse.ok) {
+            appealable = getRows(await appealResponse.json(), "reports").filter(
+              (entry): entry is AppealableReport =>
+                isRecord(entry) &&
+                typeof entry.id === "string" &&
+                typeof entry.content === "string" &&
+                typeof entry.reason === "string" &&
+                typeof entry.reviewed_at === "string",
+            );
+          } else {
+            throw new Error("Impossible de charger les recours.");
+          }
+        }
         const source = activity === "alerts"
           ? [...getRows(payload, "alerts"), ...getRows(payload, "reports")]
           : getRows(payload, "items");
@@ -90,6 +124,7 @@ export default function MyActivityScreen() {
         });
         if (active) {
           setItems(normalized);
+          setAppealableReports(appealable);
           setError(null);
         }
       } catch {
@@ -118,6 +153,41 @@ export default function MyActivityScreen() {
     });
   };
 
+  const submitAppeal = async () => {
+    if (!appealReportId || appealReason.trim().length < 10 || appealReason.trim().length > 500) {
+      setAppealError("Le recours doit contenir entre 10 et 500 caractères.");
+      return;
+    }
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/admin/reports/${appealReportId}/appeal`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: appealReason.trim() }),
+        },
+      );
+      if (!response.ok) {
+        const result: unknown = await response.json();
+        throw new Error(
+          isRecord(result) && typeof result.error === "string"
+            ? result.error
+            : "Le recours n'a pas pu être envoyé.",
+        );
+      }
+      setAppealableReports((current) =>
+        current.filter((entry) => entry.id !== appealReportId),
+      );
+      setAppealReportId(null);
+      setAppealReason("");
+      setAppealError(null);
+    } catch (submitError) {
+      setAppealError(
+        submitError instanceof Error ? submitError.message : "Le recours n'a pas pu être envoyé.",
+      );
+    }
+  };
+
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
@@ -141,7 +211,7 @@ export default function MyActivityScreen() {
             <Text style={styles.buttonText}>{activity === "alerts" ? "Créer une alerte" : "Créer"}</Text>
           </Pressable>
         </View>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && appealableReports.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>Rien à afficher pour le moment</Text>
           <Text style={styles.emptyCopy}>
@@ -154,6 +224,25 @@ export default function MyActivityScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
+          {appealableReports.map((report) => (
+            <View key={`appeal-${report.id}`} style={styles.card}>
+              <Text style={styles.itemTitle}>Décision de modération contestable</Text>
+              <Text style={styles.copy}>{report.content}</Text>
+              <Text style={styles.meta}>
+                {report.reason} · {new Date(report.reviewed_at).toLocaleDateString("fr-FR")}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setAppealReportId(report.id);
+                  setAppealError(null);
+                }}
+                style={styles.button}
+              >
+                <Text style={styles.buttonText}>Contester cette décision</Text>
+              </Pressable>
+            </View>
+          ))}
           {items.map((item) => (
             <View key={item.id} style={styles.card}>
               {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.image} /> : null}
@@ -172,6 +261,33 @@ export default function MyActivityScreen() {
           </Pressable>
         </ScrollView>
       )}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setAppealReportId(null)}
+        transparent
+        visible={appealReportId !== null}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.itemTitle}>Motif du recours</Text>
+            <TextInput
+              maxLength={500}
+              multiline
+              onChangeText={setAppealReason}
+              placeholder="Expliquez pourquoi cette décision doit être réexaminée (10 à 500 caractères)."
+              style={styles.appealInput}
+              value={appealReason}
+            />
+            {appealError ? <Text style={styles.error}>{appealError}</Text> : null}
+            <Pressable accessibilityRole="button" onPress={() => void submitAppeal()} style={styles.button}>
+              <Text style={styles.buttonText}>Envoyer le recours</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" onPress={() => setAppealReportId(null)} style={styles.cancelButton}>
+              <Text style={styles.cancelText}>Annuler</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -193,4 +309,9 @@ const styles = StyleSheet.create({
   meta: { color: "#64748b", fontSize: 12, marginTop: 9 },
   button: { alignItems: "center", alignSelf: "stretch", backgroundColor: "#2563eb", borderRadius: 10, flexDirection: "row", gap: 8, justifyContent: "center", marginTop: 14, minHeight: 48 },
   buttonText: { color: "#fff", fontWeight: "700" },
+  modalBackdrop: { backgroundColor: "rgba(15,23,42,0.6)", flex: 1, justifyContent: "flex-end" },
+  modalCard: { backgroundColor: "#fff", borderTopLeftRadius: 18, borderTopRightRadius: 18, gap: 12, padding: 20, paddingBottom: 34 },
+  appealInput: { borderColor: "#cbd5e1", borderRadius: 10, borderWidth: 1, color: "#172b4d", minHeight: 120, padding: 12, textAlignVertical: "top" },
+  cancelButton: { alignItems: "center", minHeight: 42, justifyContent: "center" },
+  cancelText: { color: "#334155", fontWeight: "700" },
 });

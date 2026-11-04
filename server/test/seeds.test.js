@@ -32,6 +32,10 @@ const grinModerationMigration = readFileSync(
   new URL("../../migrations/034_grin_live_moderation.sql", import.meta.url),
   "utf8",
 );
+const adminWorkspaceMigration = readFileSync(
+  new URL("../../migrations/035_secure_admin_workspace.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -118,6 +122,9 @@ test("profile photos and feed carousel migrations are additive and documented fo
   assert.match(grinModerationMigration, /CREATE TABLE IF NOT EXISTS grin_moderation_events/);
   assert.match(grinModerationMigration, /PAUSED_PENDING_REVIEW/);
   assert.match(grinModerationMigration, /APPEALED/);
+  assert.match(adminWorkspaceMigration, /CREATE TABLE IF NOT EXISTS admin_audit_log/);
+  assert.match(adminWorkspaceMigration, /CREATE TABLE IF NOT EXISTS admin_flash_broadcasts/);
+  assert.match(adminWorkspaceMigration, /ADD COLUMN IF NOT EXISTS suspended_until/);
   assert.doesNotMatch(
     grinModerationMigration,
     /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
@@ -129,6 +136,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     [voyageMigration, "028_voyage_station_reservations.sql"],
     [postMediaMigration, "029_post_media_carousel.sql"],
     [grinModerationMigration, "034_grin_live_moderation.sql"],
+    [adminWorkspaceMigration, "035_secure_admin_workspace.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -141,6 +149,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "028_voyage_station_reservations.sql",
     "029_post_media_carousel.sql",
     "034_grin_live_moderation.sql",
+    "035_secure_admin_workspace.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));

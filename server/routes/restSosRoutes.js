@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { createSosAlert } from "../controllers/restSosController.js";
-import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { authMiddlewareAllowSuspended } from "../middlewares/authMiddleware.js";
 
 const router = Router();
-router.post("/", authMiddleware, createSosAlert);
+router.post("/", authMiddlewareAllowSuspended, createSosAlert);
 
 export default router;

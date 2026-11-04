@@ -10,6 +10,7 @@ process.env.JWT_SECRET ??=
 const { authenticateSocket, readSocketToken } = await import(
   "../sockets/authSocket.js"
 );
+const { pool } = await import("../db/pool.js");
 
 const socketFor = (auth = {}, headers = {}) => ({
   handshake: { auth, headers },
@@ -52,4 +53,23 @@ test("socket authentication rejects absent and invalid JWTs", async () => {
     assert.ok(error instanceof Error);
     assert.match(error.message, /Authentification|Jeton/);
   }
+});
+
+test("socket authentication rejects suspended accounts", async (context) => {
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [{ id: "user-123", suspended_until: new Date(Date.now() + 60_000) }],
+  }));
+  const socket = socketFor({
+    token: jwt.sign(
+      { sub: "user-123" },
+      process.env.JWT_SECRET,
+      { algorithm: "HS256" },
+    ),
+  });
+  const error = await new Promise((resolve) => {
+    authenticateSocket(socket, resolve);
+  });
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /suspendu/i);
 });

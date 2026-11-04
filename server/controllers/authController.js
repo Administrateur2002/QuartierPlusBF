@@ -22,8 +22,8 @@ const hashOtp = (phoneNumber, code) =>
     .update(`${phoneNumber}:${code}`)
     .digest("hex");
 
-const issueToken = (user) =>
-  jwt.sign({}, env.jwtSecret, {
+const issueToken = (user, authMethod) =>
+  jwt.sign({ auth_method: authMethod }, env.jwtSecret, {
     algorithm: "HS256",
     subject: user.id,
     expiresIn: env.jwtExpiresIn,
@@ -647,7 +647,7 @@ export const verifyOtp = async (request, response, next) => {
     await client.query("COMMIT");
     const user = result.rows[0];
     return response.status(200).json({
-      token: issueToken(user),
+      token: issueToken(user, channel === "sms" ? "sms_otp" : "email_otp"),
       user: userProfile(user),
     });
   } catch (error) {
@@ -791,6 +791,7 @@ export const googleAuth = async (request, response, next) => {
               `UPDATE users
                SET google_id = $1,
                    email = $2,
+                   email_verified_at = COALESCE(email_verified_at, NOW()),
                    full_name = COALESCE($3, full_name),
                    is_verified = TRUE
                WHERE id = $4
@@ -805,8 +806,10 @@ export const googleAuth = async (request, response, next) => {
               ],
             )
           : await client.query(
-              `INSERT INTO users (google_id, email, full_name, is_verified)
-               VALUES ($1, $2, $3, TRUE)
+              `INSERT INTO users (
+                 google_id, email, email_verified_at, full_name, is_verified
+               )
+               VALUES ($1, $2, NOW(), $3, TRUE)
                RETURNING id, phone_number, email, google_id, full_name, role,
                          neighborhood, country_code, reputation_score, is_verified,
                          phone_verified_at`,
@@ -821,7 +824,7 @@ export const googleAuth = async (request, response, next) => {
       client.release();
     }
     return response.status(200).json({
-      token: issueToken(user),
+      token: issueToken(user, "google_oauth"),
       user: userProfile(user),
     });
   } catch (error) {

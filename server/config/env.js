@@ -219,6 +219,16 @@ const grinModeratorIds = [
       .filter(Boolean),
   ),
 ];
+const adminEmail = (optional("ADMIN_EMAIL") || "administrateurquartierplus@gmail.com")
+  .toLowerCase();
+const adminUserIds = [
+  ...new Set(
+    optional("ADMIN_USER_IDS")
+      .split(",")
+      .map((userId) => userId.trim())
+      .filter(Boolean),
+  ),
+].map((userId) => userId.toLowerCase());
 const moderatorIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 if (grinModeratorIds.some((userId) => !moderatorIdPattern.test(userId))) {
@@ -228,6 +238,12 @@ if (grinModerationEnabled && grinModeratorIds.length === 0) {
   throw new Error(
     "GRIN_MODERATOR_IDS is required when GRIN_MODERATION_ENABLED=true.",
   );
+}
+if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+  throw new Error("ADMIN_EMAIL must be a valid email address.");
+}
+if (adminUserIds.some((userId) => !moderatorIdPattern.test(userId))) {
+  throw new Error("ADMIN_USER_IDS must contain comma-separated user UUIDs.");
 }
 if (isProduction) {
   if (!googleClientId) {
@@ -267,6 +283,8 @@ export const env = Object.freeze({
   smtpConfigured,
   smtpPartiallyConfigured,
   adminTestEmailToken,
+  adminEmail,
+  adminUserIds,
   livekitApiKey,
   livekitApiSecret,
   livekitUrl,

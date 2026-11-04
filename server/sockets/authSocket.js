@@ -35,13 +35,19 @@ export const authenticateSocket = async (socket, next) => {
       return next(new Error("Jeton invalide."));
     }
     const result = await pool.query(
-      `SELECT id, full_name, role, profile_photo_url, badge
+      `SELECT id, full_name, role, profile_photo_url, badge, suspended_until
        FROM users
        WHERE id = $1`,
       [payload.sub],
     );
     if (result.rowCount === 0) {
       return next(new Error("Compte utilisateur introuvable."));
+    }
+    if (
+      result.rows[0].suspended_until &&
+      new Date(result.rows[0].suspended_until).getTime() > Date.now()
+    ) {
+      return next(new Error("Ce compte est suspendu."));
     }
     socket.data.user = result.rows[0];
     return next();

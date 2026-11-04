@@ -205,6 +205,7 @@ export const appealModerationEvent = async (request, response, next) => {
 };
 
 const isModerator = (request) =>
+  request.adminAuthorized === true ||
   env.grinModeratorIds.includes(request.auth?.userId);
 
 export const listModerationQueue = async (request, response, next) => {
@@ -292,6 +293,18 @@ export const resolveModerationEvent = async (request, response, next) => {
         );
         throw error;
       }
+    }
+    if (request.adminAuthorized === true) {
+      await pool.query(
+        `INSERT INTO admin_audit_log (actor_id, action, target_type, target_id, details)
+         VALUES ($1, $2, 'GRIN_EVENT', $3, $4::jsonb)`,
+        [
+          request.auth.userId,
+          outcome,
+          event.id,
+          JSON.stringify({ status: event.status }),
+        ],
+      );
     }
     return response.status(200).json({ resolved: true, event });
   } catch (error) {

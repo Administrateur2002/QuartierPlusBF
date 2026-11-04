@@ -31,6 +31,7 @@ import { ensureDefaultChannels } from "./services/defaultChannels.js";
 import { verifySmtpTransport } from "./services/email.js";
 import { captureFedaPayRawBody } from "./middlewares/fedapayRawBody.js";
 import { scheduleProDeliveryLocationCleanup } from "./services/proCommerceCleanup.js";
+import { processScheduledFlashes } from "./controllers/adminController.js";
 
 const app = express();
 
@@ -130,6 +131,14 @@ const server = createServer(app);
 const io = attachSocketServer(server);
 app.set("io", io);
 scheduleProDeliveryLocationCleanup();
+if (env.adminUserIds.length > 0) {
+  const adminFlashInterval = setInterval(() => {
+    void processScheduledFlashes().catch((error) => {
+      console.error("Unable to process scheduled admin flashes:", error.message);
+    });
+  }, 30_000);
+  adminFlashInterval.unref();
+}
 
 void verifySmtpTransport();
 

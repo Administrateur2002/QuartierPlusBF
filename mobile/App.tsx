@@ -13,6 +13,7 @@ import {
   Mic,
   MessageSquare,
   ShoppingBag,
+  ShieldCheck,
   Store,
   User,
 } from "lucide-react-native";
@@ -66,6 +67,7 @@ import AlliancePlusScreen from "./src/screens/AlliancePlusScreen";
 import AlliancePeopleScreen from "./src/screens/AlliancePeopleScreen";
 import WalkieTalkieScreen from "./src/screens/WalkieTalkieScreen";
 import ProCommerceScreen from "./src/screens/pro/ProCommerceScreen";
+import AdminScreen from "./src/screens/AdminScreen";
 import { LockKeyhole, X } from "lucide-react-native";
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -91,6 +93,7 @@ function MainTabs() {
   const { colors, t } = useTheme();
   const { user } = useAuth();
   const [activeSpaces, setActiveSpaces] = useState<string[]>([]);
+  const [adminEnabled, setAdminEnabled] = useState(false);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -121,6 +124,30 @@ function MainTabs() {
             setActiveSpaces([]);
             console.warn("Unable to load active Pro spaces:", error);
           }
+        });
+      return () => {
+        active = false;
+      };
+    }, [user?.id]),
+  );
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      if (!user) {
+        setAdminEnabled(false);
+        return () => {
+          active = false;
+        };
+      }
+      void api
+        .get<{ authorized?: boolean }>("/v1/admin/me", {
+          headers: { "Cache-Control": "no-cache" },
+        })
+        .then((response) => {
+          if (active) setAdminEnabled(response.data.authorized === true);
+        })
+        .catch(() => {
+          if (active) setAdminEnabled(false);
         });
       return () => {
         active = false;
@@ -228,6 +255,16 @@ function MainTabs() {
           options={{
             tabBarLabel: renderTabLabel("Pro"),
             tabBarIcon: ({ color, size }) => <Store color={color} size={size} />,
+          }}
+        />
+      )}
+      {adminEnabled && (
+        <Tab.Screen
+          name="Admin"
+          component={AdminScreen}
+          options={{
+            tabBarLabel: renderTabLabel("Admin"),
+            tabBarIcon: ({ color, size }) => <ShieldCheck color={color} size={size} />,
           }}
         />
       )}

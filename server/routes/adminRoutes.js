@@ -1,9 +1,42 @@
 import { timingSafeEqual } from "node:crypto";
+import { rateLimit } from "express-rate-limit";
 import { Router } from "express";
+import {
+  actOnReport,
+  appealReport,
+  createFlash,
+  getAdminDashboard,
+  getAdminHistory,
+  listAppealableReports,
+  listFlashes,
+} from "../controllers/adminController.js";
+import { resolveModerationEvent } from "../controllers/grinModerationController.js";
 import { env } from "../config/env.js";
+import { authMiddleware, authMiddlewareAllowSuspended } from "../middlewares/authMiddleware.js";
+import { adminAuthMiddleware } from "../middlewares/adminAuthMiddleware.js";
 import { sendSmtpDiagnosticEmail } from "../services/email.js";
 
 const router = Router();
+const admin = [authMiddleware, adminAuthMiddleware];
+const flashLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Trop de messages flash. Réessayez plus tard." },
+});
+
+router.get("/me", ...admin, (_request, response) =>
+  response.status(200).json({ authorized: true }),
+);
+router.get("/dashboard", ...admin, getAdminDashboard);
+router.get("/history", ...admin, getAdminHistory);
+router.post("/reports/:reportId/action", ...admin, actOnReport);
+router.post("/live-events/:eventId/action", ...admin, resolveModerationEvent);
+router.post("/reports/:reportId/appeal", authMiddlewareAllowSuspended, appealReport);
+router.get("/appealable-reports", authMiddlewareAllowSuspended, listAppealableReports);
+router.get("/flashes", ...admin, listFlashes);
+router.post("/flashes", ...admin, flashLimiter, createFlash);
 
 router.post("/test-email", async (request, response) => {
   const configuredToken = env.adminTestEmailToken;

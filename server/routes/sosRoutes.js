@@ -4,12 +4,12 @@ import {
 	reportSosAlert,
 } from "../controllers/sosController.js";
 import { listNearbyAlerts } from "../controllers/publicController.js";
-import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { authMiddlewareAllowSuspended } from "../middlewares/authMiddleware.js";
 
 const router = Router();
 
-router.get("/alerts", authMiddleware, listNearbyAlerts);
-router.post("/:id/assist", authMiddleware, assistSosAlert);
-router.post("/:id/report-fake", authMiddleware, reportSosAlert);
+router.get("/alerts", authMiddlewareAllowSuspended, listNearbyAlerts);
+router.post("/:id/assist", authMiddlewareAllowSuspended, assistSosAlert);
+router.post("/:id/report-fake", authMiddlewareAllowSuspended, reportSosAlert);
 
 export default router;

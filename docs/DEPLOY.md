@@ -84,6 +84,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 36. `migrations/032_pro_reviews.sql`
 37. `migrations/033_sponsored_pin_impressions.sql`
 38. `migrations/034_grin_live_moderation.sql`
+39. `migrations/035_secure_admin_workspace.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -137,6 +138,40 @@ carte Pro, les avis et les statistiques des épingles sponsorisées; appliquez-l
 dans l'ordre avant 034.
 La migration 034 crée la file de revue du Grin et les recours; elle ne stocke
 ni image ni transcription. Appliquez-la avant d'activer la modération en direct.
+La migration 035 ajoute les sanctions vérifiées, les recours sur les décisions
+de modération, l'historique administratif et les messages flash différés.
+Appliquez-la après 034 avant de déployer le nouvel espace administrateur.
+
+## Espace Administrateur sécurisé
+
+L'accès est désactivé tant qu'aucun UUID n'est explicitement autorisé. Après
+avoir créé le compte `administrateurquartierplus@gmail.com`, vérifiez son
+identité Google ou son e-mail, puis liez et vérifiez également un numéro de
+téléphone par OTP. Relevez l'UUID du compte dans la base :
+
+```sql
+SELECT id FROM users
+WHERE LOWER(email) = 'administrateurquartierplus@gmail.com';
+```
+
+Configurez ensuite `ADMIN_EMAIL=administrateurquartierplus@gmail.com` et
+`ADMIN_USER_IDS=<UUID>` dans l'environnement serveur (UUID seulement, jamais
+dans l'application mobile). L'API exige simultanément l'UUID autorisé, l'e-mail
+vérifié, le téléphone vérifié et une session ouverte par OTP SMS;
+l'adresse seule ou une session Google seule ne confère aucun privilège.
+Pour ouvrir l'espace, l'administrateur doit donc se reconnecter avec son numéro
+vérifié et le code SMS.
+Ne réutilisez pas un jeton d'administration partagé. Toute action de
+modération est journalisée; les comptes suspendus gardent accès au dépôt d'un
+recours et aux fonctions SOS de sécurité.
+
+Les messages flash utilisent les jetons Expo Push enregistrés par les
+applications. La diffusion régionale cible un rayon géographique (centre +
+rayon, de 1 à 300 km), les quartiers utilisent le nom de quartier enregistré,
+et les pays le code ISO. Les envois programmés sont traités périodiquement par
+l'API; l'historique indique les tickets acceptés et en échec par Expo. Une
+absence de jetons d'appareil est enregistrée comme zéro destinataire, et ne
+constitue pas une distribution réussie.
 
 ## Agent de modération du Grin (AWS)
 
