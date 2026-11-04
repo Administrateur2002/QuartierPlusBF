@@ -1936,14 +1936,18 @@ export default function FeedScreen() {
         throw new Error("La limite de durée vidéo renvoyée par le serveur est invalide.");
       }
       let uploadMedia = draftMedia;
+      const maxAllowedBytes =
+        draftMedia.resourceType === "image"
+          ? Math.min(MAX_PHOTO_BYTES, signature.max_bytes)
+          : signature.max_bytes;
       if (draftMedia.resourceType === "video") {
         setIsCompressingVideo(true);
         try {
-          const compressedUri = await compressVideoForUpload(
+          let compressedUri = await compressVideoForUpload(
             draftMedia.uri,
             (progress) => {
               setUploadProgress(
-                Math.min(20, Math.max(0, Math.round(progress * 20))),
+                Math.min(10, Math.max(0, Math.round(progress * 10))),
               );
             },
           );
@@ -1954,19 +1958,34 @@ export default function FeedScreen() {
             mimeType: "video/mp4",
             size: new File(compressedUri).size,
           };
+          if (uploadMedia.size > maxAllowedBytes) {
+            compressedUri = await compressVideoForUpload(
+              draftMedia.uri,
+              (progress) => {
+                setUploadProgress(
+                  10 + Math.min(10, Math.max(0, Math.round(progress * 10))),
+                );
+              },
+              480,
+              900_000,
+            );
+            uploadMedia = {
+              ...draftMedia,
+              uri: compressedUri,
+              filename: `quartierplus-${Date.now()}.mp4`,
+              mimeType: "video/mp4",
+              size: new File(compressedUri).size,
+            };
+          }
         } finally {
           setIsCompressingVideo(false);
         }
         setUploadProgress(20);
       }
-      const maxAllowedBytes =
-        uploadMedia.resourceType === "image"
-          ? Math.min(MAX_PHOTO_BYTES, signature.max_bytes)
-          : signature.max_bytes;
       if (uploadMedia.size > maxAllowedBytes) {
         throw new PublicationApiError(
           uploadMedia.resourceType === "video"
-            ? `La vidéo compressée pèse ${(uploadMedia.size / (1024 * 1024)).toFixed(1)} Mo et dépasse la limite serveur de ${(maxAllowedBytes / (1024 * 1024)).toFixed(1)} Mo. Elle ne peut pas être envoyée.`
+            ? `Même optimisée en 480p, la vidéo pèse ${(uploadMedia.size / (1024 * 1024)).toFixed(1)} Mo et dépasse la limite serveur de ${(maxAllowedBytes / (1024 * 1024)).toFixed(1)} Mo. Coupez-la dans la galerie de votre téléphone, puis sélectionnez le segment obtenu.`
             : "Le média optimisé dépasse la limite de taille autorisée.",
         );
       }

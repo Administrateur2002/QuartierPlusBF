@@ -24,3 +24,24 @@ test("compresses videos to a maximum 720p before upload and reports progress", a
     onProgress,
   );
 });
+
+test("supports a lower-resolution fallback profile", async () => {
+  const onProgress = jest.fn();
+
+  await compressVideoForUpload(
+    "file:///original.mp4",
+    onProgress,
+    480,
+    900_000,
+  );
+
+  expect(Video.compress).toHaveBeenCalledWith(
+    "file:///original.mp4",
+    {
+      compressionMethod: "manual",
+      maxSize: 480,
+      bitrate: 900_000,
+    },
+    onProgress,
+  );
+});

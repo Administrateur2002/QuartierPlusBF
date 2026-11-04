@@ -147,6 +147,8 @@ test("video signatures include timestamp, folder and public ID without exposing 
   const { folder, public_id: publicId, timestamp, signature } = response.payload;
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.resource_type, "video");
+  assert.equal(response.payload.max_duration_seconds, 420);
+  assert.equal(response.payload.max_bytes, 100 * 1024 * 1024);
   assert.ok(Math.abs(Math.floor(Date.now() / 1000) - timestamp) <= 1);
   assert.equal(
     signature,
@@ -504,6 +506,57 @@ test("server rejects oversized photos and videos that exceed the configured dura
   );
   assert.equal(videoResponse.statusCode, 400);
   assert.match(videoResponse.payload.error, /420 secondes/);
+});
+
+test("server accepts and stores a seven-minute video within the default upload limit", async (context) => {
+  let insertedValues;
+  const asset = {
+    public_id: `${USER_ID}_seven_minutes`,
+    secure_url:
+      "https://res.cloudinary.com/quartierplus-test/video/upload/seven-minutes.mp4",
+    format: "mp4",
+    bytes: 80 * 1024 * 1024,
+    resource_type: "video",
+    duration: 420,
+  };
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return asset;
+    },
+  }));
+  const transaction = createTransactionClient({
+    query(statement, values) {
+      if (statement.includes("INSERT INTO posts")) insertedValues = values;
+      return undefined;
+    },
+  });
+  context.mock.method(pool, "connect", async () => transaction);
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "video",
+        media_public_id: asset.public_id,
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(insertedValues[10], 80 * 1024 * 1024);
+  assert.equal(insertedValues[11], 420);
 });
 
 test("server publishes only the first 420 seconds when an overlong video has a signed trim request", async (context) => {

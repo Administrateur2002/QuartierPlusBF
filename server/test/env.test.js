@@ -85,33 +85,36 @@ test("live Grin moderation requires at least one valid moderator UUID", () => {
   assert.match(malformed.stderr, /GRIN_MODERATOR_IDS/);
 });
 
-test("video duration limit defaults to 420 seconds and can be configured", () => {
-  const loadLimit = (value) =>
+test("video limits default to 420 seconds and 100 MiB and can be configured", () => {
+  const loadLimits = (overrides = {}) =>
     spawnSync(
       process.execPath,
       [
         "--input-type=module",
         "-e",
-        "import { env } from './config/env.js'; console.log(env.postMaxVideoSeconds)",
+        "import { env } from './config/env.js'; console.log(JSON.stringify([env.postMaxVideoSeconds, env.postMaxVideoBytes]))",
       ],
       {
         cwd: serverDirectory,
         env: {
           ...productionEnv,
-          POST_MAX_VIDEO_SECONDS: value,
+          ...overrides,
           DOTENV_CONFIG_PATH: "/dev/null",
         },
         encoding: "utf8",
       },
     );
 
-  const defaultLimit = loadLimit("");
+  const defaultLimit = loadLimits();
   assert.equal(defaultLimit.status, 0, defaultLimit.stderr);
-  assert.equal(defaultLimit.stdout.trim(), "420");
+  assert.deepEqual(JSON.parse(defaultLimit.stdout.trim()), [420, 104857600]);
 
-  const configuredLimit = loadLimit("240");
+  const configuredLimit = loadLimits({
+    POST_MAX_VIDEO_SECONDS: "240",
+    POST_MAX_VIDEO_BYTES: "50000000",
+  });
   assert.equal(configuredLimit.status, 0, configuredLimit.stderr);
-  assert.equal(configuredLimit.stdout.trim(), "240");
+  assert.deepEqual(JSON.parse(configuredLimit.stdout.trim()), [240, 50000000]);
 });
 
 test("Cloudinary and LiveKit values are trimmed and unquoted", () => {
