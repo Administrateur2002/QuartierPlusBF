@@ -40,21 +40,6 @@ jobs:
             }
             return normalized;
           };
-          const encodedSecret = cleanInput(process.env.GOOGLE_SERVICES_JSON_B64 ?? "");
-          let jsonSecret = cleanInput(process.env.GOOGLE_SERVICES_JSON ?? "");
-          let jsonSource = "JSON brut";
-          if (!encodedSecret && !jsonSecret) {
-            try {
-              jsonSecret = cleanInput(
-                fs.readFileSync("mobile/google-services.json", "utf8"),
-              );
-              jsonSource = "fichier versionné";
-            } catch {
-              console.error("::error::Configuration Firebase Android absente : secrets GitHub et fichier du dépôt indisponibles.");
-              process.exit(1);
-            }
-          }
-
           const decodeBase64 = (value) => {
             const compact = value.replace(/\s/gu, "");
             if (
@@ -76,97 +61,111 @@ jobs:
           };
           const parseJson = (value) => {
             try {
-              return { value: JSON.parse(value), valid: true };
+              return JSON.parse(value);
             } catch {
-              return { value: null, valid: false };
+              return null;
             }
           };
-
-          let contents;
-          let config;
-          let detectedFormat;
-          if (encodedSecret) {
-            contents = cleanInput(decodeBase64(encodedSecret) ?? "");
-            if (!contents) {
-              console.error("::error::GOOGLE_SERVICES_JSON_B64 n’est pas un Base64 UTF-8 valide.");
-              process.exit(1);
-            }
-            const parsedEncoded = parseJson(contents);
-            if (!parsedEncoded.valid) {
-              console.error("::error::GOOGLE_SERVICES_JSON_B64 ne contient pas un JSON valide.");
-              process.exit(1);
-            }
-            config = parsedEncoded.value;
-            detectedFormat = "Base64";
-          } else {
-            const parsedRaw = parseJson(jsonSecret);
-            if (parsedRaw.valid) {
-              contents = jsonSecret;
-              config = parsedRaw.value;
-              detectedFormat = jsonSource;
-            } else {
-              const decoded = decodeBase64(jsonSecret);
-              const parsedDecoded = decoded === null
-                ? { value: null, valid: false }
-                : parseJson(cleanInput(decoded));
-              if (!parsedDecoded.valid) {
-                console.error("::error::GOOGLE_SERVICES_JSON n’est ni un JSON valide ni un Base64 UTF-8 contenant du JSON valide.");
-                process.exit(1);
-              }
-              contents = cleanInput(decoded);
-              config = parsedDecoded.value;
-              detectedFormat = "Base64 détecté";
-            }
-          }
-
-          if (config === null || typeof config !== "object" || Array.isArray(config)) {
-            console.error("::error::Le JSON Firebase doit être un objet.");
-            process.exit(1);
-          }
-
           const expectedPackage = require("./mobile/app.json").expo?.android?.package;
-          const projectId = config.project_info?.project_id;
-          const projectNumber = config.project_info?.project_number;
-          const matchingClient = (Array.isArray(config.client) ? config.client : [])
-            .find((client) =>
-              Boolean(expectedPackage) &&
-              client?.client_info?.android_client_info?.package_name === expectedPackage
+          const validateCandidate = (raw, format, allowBase64) => {
+            let contents = cleanInput(raw);
+            let detectedFormat = format;
+            if (format === "Base64") {
+              const decoded = decodeBase64(contents);
+              if (decoded === null) return null;
+              contents = cleanInput(decoded);
+            }
+
+            let config = parseJson(contents);
+            if (config === null && allowBase64) {
+              const decoded = decodeBase64(contents);
+              if (decoded !== null) {
+                contents = cleanInput(decoded);
+                config = parseJson(contents);
+                detectedFormat = `${format} (Base64 détecté)`;
+              }
+            }
+            if (config === null || typeof config !== "object" || Array.isArray(config)) {
+              return null;
+            }
+
+            const projectId = config.project_info?.project_id;
+            const projectNumber = config.project_info?.project_number;
+            const matchingClient = (Array.isArray(config.client) ? config.client : [])
+              .find((client) =>
+                Boolean(expectedPackage) &&
+                client?.client_info?.android_client_info?.package_name === expectedPackage
+              );
+            const androidOAuthClient = (
+              Array.isArray(matchingClient?.oauth_client) ? matchingClient.oauth_client : []
+            ).some(
+              (client) =>
+                client?.client_type === 1 &&
+                client?.android_info?.package_name === expectedPackage &&
+                typeof client?.client_id === "string" &&
+                client.client_id.trim(),
             );
-          const missingFields = [];
-          if (
-            (typeof projectNumber !== "string" && typeof projectNumber !== "number") ||
-            !String(projectNumber).trim()
-          ) {
-            missingFields.push("project_number");
+            const valid =
+              ((typeof projectNumber === "string" || typeof projectNumber === "number") &&
+                Boolean(String(projectNumber).trim())) &&
+              typeof projectId === "string" &&
+              Boolean(projectId.trim()) &&
+              Boolean(matchingClient) &&
+              typeof matchingClient.client_info?.mobilesdk_app_id === "string" &&
+              Boolean(matchingClient.client_info.mobilesdk_app_id.trim()) &&
+              Array.isArray(matchingClient.api_key) &&
+              matchingClient.api_key.some(
+                (entry) => typeof entry?.current_key === "string" && entry.current_key.trim(),
+              ) &&
+              androidOAuthClient;
+            return valid
+              ? { contents, config, projectId, projectNumber, detectedFormat }
+              : null;
+          };
+
+          const encodedSecret = cleanInput(process.env.GOOGLE_SERVICES_JSON_B64 ?? "");
+          const jsonSecret = cleanInput(process.env.GOOGLE_SERVICES_JSON ?? "");
+          const candidates = [];
+          if (encodedSecret) {
+            candidates.push({
+              source: "GOOGLE_SERVICES_JSON_B64",
+              result: validateCandidate(encodedSecret, "Base64", false),
+            });
           }
-          if (typeof projectId !== "string" || !projectId.trim()) {
-            missingFields.push("project_id");
+          if (jsonSecret) {
+            candidates.push({
+              source: "GOOGLE_SERVICES_JSON",
+              result: validateCandidate(jsonSecret, "JSON brut", true),
+            });
           }
-          if (!expectedPackage || !matchingClient) {
-            missingFields.push("package_name (doit correspondre au package Android de l’application)");
+
+          let repositoryConfig = "";
+          try {
+            repositoryConfig = fs.readFileSync("mobile/google-services.json", "utf8");
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
           }
-          if (
-            typeof matchingClient?.client_info?.mobilesdk_app_id !== "string" ||
-            !matchingClient.client_info.mobilesdk_app_id.trim()
-          ) {
-            missingFields.push("mobilesdk_app_id");
+          if (repositoryConfig) {
+            candidates.push({
+              source: "fichier du dépôt",
+              result: validateCandidate(repositoryConfig, "fichier versionné", true),
+            });
           }
-          if (
-            !Array.isArray(matchingClient?.api_key) ||
-            !matchingClient.api_key.some(
-              (entry) => typeof entry?.current_key === "string" && entry.current_key.trim(),
-            )
-          ) {
-            missingFields.push("api_key.current_key");
-          }
-          if (missingFields.length) {
-            console.error(`::error::Configuration Firebase incomplète ou incompatible : ${missingFields.join(", ")}.`);
+
+          const selected = candidates.find((candidate) => candidate.result !== null);
+          if (!selected) {
+            console.error("::error::Aucune configuration Firebase Android valide : les secrets fournis sont invalides ou incompatibles et le fichier du dépôt est absent ou invalide.");
             process.exit(1);
           }
 
+          const { contents, projectId, projectNumber, detectedFormat } = selected.result;
+          if (selected.source === "fichier du dépôt" && (encodedSecret || jsonSecret)) {
+            console.log("Configuration du secret absente ou invalide; utilisation du fichier Firebase validé du dépôt.");
+          }
+          console.log(`Source de configuration Firebase : ${selected.source}.`);
           console.log(`Format de configuration détecté : ${detectedFormat}.`);
           console.log("Syntaxe JSON : valide.");
-          console.log("Champs Firebase obligatoires : project_number, project_id, package_name, mobilesdk_app_id et api_key présents.");
+          console.log("Champs Firebase Android obligatoires, client OAuth et package vérifiés.");
           console.log("package_name correspond à mobile/app.json : oui.");
           fs.writeFileSync("mobile/google-services.json", contents, { mode: 0o600 });
           fs.chmodSync("mobile/google-services.json", 0o600);
