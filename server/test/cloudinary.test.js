@@ -13,6 +13,7 @@ process.env.DOTENV_CONFIG_PATH = "/dev/null";
 const {
   createCloudinaryUploadSignature,
   getCloudinaryAsset,
+  getCloudinaryAssetReference,
   hasGpsMetadata,
   isCloudinaryPublicIdOwnedByUser,
 } = await import("../services/cloudinary.js");
@@ -73,6 +74,31 @@ test("Cloudinary public IDs may use dynamic folders but must retain the user's I
   assert.equal(isCloudinaryPublicIdOwnedByUser("user-123", "dynamic-folder/user-123_asset"), true);
   assert.equal(isCloudinaryPublicIdOwnedByUser("user-123", "dynamic-folder/other_asset"), false);
   assert.equal(isCloudinaryPublicIdOwnedByUser("user-123", "other_asset"), false);
+});
+
+test("Cloudinary asset URLs are reduced to upload resource and owned public ID", () => {
+  assert.deepEqual(
+    getCloudinaryAssetReference(
+      "https://res.cloudinary.com/quartierplus-test/image/upload/v123/quartierplus/posts/user-123_photo.webp",
+    ),
+    {
+      resourceType: "image",
+      publicId: "quartierplus/posts/user-123_photo",
+    },
+  );
+  assert.deepEqual(
+    getCloudinaryAssetReference(
+      "https://res.cloudinary.com/quartierplus-test/video/upload/f_auto/v456/quartierplus/sos/user-123_audio.m4a",
+    ),
+    {
+      resourceType: "video",
+      publicId: "quartierplus/sos/user-123_audio",
+    },
+  );
+  assert.equal(
+    getCloudinaryAssetReference("https://example.com/user-123_photo.webp"),
+    null,
+  );
 });
 
 test("Cloudinary refusals are logged and returned with their exact reason", async () => {

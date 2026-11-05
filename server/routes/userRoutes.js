@@ -1,6 +1,8 @@
 import { Router } from "express";
 import {
   getCurrentUser,
+  deleteCurrentUser,
+  exportUserData,
   listMyAlertsAndReports,
   listMyMarketplaceItems,
   signProfilePhotoUpload,
@@ -8,6 +10,10 @@ import {
   updateCurrentUser,
 } from "../controllers/userController.js";
 import { authMiddleware } from "../middlewares/authMiddleware.js";
+import {
+  accountDataRateLimit,
+  mediaSignatureRateLimit,
+} from "../middlewares/sensitiveRateLimits.js";
 import {
   registerPushToken,
   removePushToken,
@@ -17,8 +23,10 @@ const router = Router();
 
 router.use(authMiddleware);
 router.get("/me", getCurrentUser);
+router.get("/me/export", accountDataRateLimit, exportUserData);
+router.delete("/me", accountDataRateLimit, deleteCurrentUser);
 router.put("/me", updateCurrentUser);
-router.post("/me/photo-signature", signProfilePhotoUpload);
+router.post("/me/photo-signature", mediaSignatureRateLimit, signProfilePhotoUpload);
 router.put("/me/photo", updateCurrentUserPhoto);
 router.get("/me/marketplace-items", listMyMarketplaceItems);
 router.get("/me/activities", listMyAlertsAndReports);

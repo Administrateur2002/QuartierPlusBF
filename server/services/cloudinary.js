@@ -120,17 +120,55 @@ export const deleteCloudinaryAsset = async (resourceType, publicId) => {
   const response = await fetch(url, {
     method: "DELETE",
     headers: { Authorization: `Basic ${authorization}` },
+    signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
     const message = await getCloudinaryErrorMessage(response);
     const error = new Error(
-      `Cloudinary a refusé la suppression des métadonnées GPS (HTTP ${response.status}) : ${message}`,
+      `Cloudinary a refusé la suppression du média (HTTP ${response.status}) : ${message}`,
     );
     error.status = 502;
     error.code = `CLOUDINARY_HTTP_${response.status}`;
     error.reason = `${error.message} (code ${error.code}).`;
     throw error;
   }
+};
+
+export const getCloudinaryAssetReference = (value) => {
+  if (typeof value !== "string" || !env.cloudinaryCloudName) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "res.cloudinary.com"
+  ) {
+    return null;
+  }
+  const prefix = `/${env.cloudinaryCloudName}/`;
+  if (!url.pathname.startsWith(prefix)) return null;
+  const match = url.pathname
+    .slice(prefix.length)
+    .match(/^(image|video)\/upload\/(.+)$/);
+  if (!match) return null;
+  const pathParts = match[2].split("/");
+  const versionIndex = pathParts.findIndex((part) => /^v\d+$/.test(part));
+  const assetParts = versionIndex >= 0
+    ? pathParts.slice(versionIndex + 1)
+    : pathParts.filter(
+        (part) => !/^(?:a|ar|b|c|d|e|fl|f|g|h|l|o|q|r|t|u|w|x|y|z)_[^/]+(?:,.*)?$/.test(part),
+      );
+  const publicId = assetParts
+    .join("/")
+    .replace(/\.(?:jpe?g|png|webp|mp4|mov|m4a|mp3|wav|avi|mkv)$/i, "");
+  if (!publicId) return null;
+  return {
+    resourceType: match[1],
+    publicId,
+  };
 };
 
 export const hasGpsMetadata = (metadata) => {

@@ -14,22 +14,28 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import boto3
 from livekit import rtc
 from livekit.agents import AgentServer, AutoSubscribe, JobContext, cli, stt
-from livekit.plugins import aws
 from PIL import Image
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("grin-moderator")
 
 AWS_REGION = os.environ.get("AWS_REGION", "").strip()
+AWS_REKOGNITION_ENABLED = (
+    os.environ.get("AWS_REKOGNITION_ENABLED", "").strip().lower() == "true"
+)
+AWS_TRANSCRIBE_ENABLED = (
+    os.environ.get("AWS_TRANSCRIBE_ENABLED", "").strip().lower() == "true"
+)
 UPLOAD_MODERATION_ENABLED = (
     os.environ.get("MODERATION_UPLOADS_WORKER_ENABLED", "").strip().lower()
     == "true"
+    and AWS_REKOGNITION_ENABLED
 )
 TEXT_MODERATION_ENABLED = (
     os.environ.get("TEXT_MODERATION_ENABLED", "").strip().lower() == "true"
+    and AWS_TRANSCRIBE_ENABLED
 )
 UPLOAD_MODERATION_SECRET = os.environ.get(
     "GRIN_MODERATION_WEBHOOK_SECRET", ""
@@ -46,7 +52,12 @@ FRAME_MIN_CONFIDENCE = 70
 EVENT_COOLDOWN_SECONDS = 60
 
 server = AgentServer()
-rekognition = boto3.client("rekognition", region_name=AWS_REGION) if AWS_REGION else None
+if AWS_REKOGNITION_ENABLED:
+    import boto3
+
+    rekognition = boto3.client("rekognition", region_name=AWS_REGION)
+else:
+    rekognition = None
 last_reported: dict[tuple[str, str], float] = {}
 lexicon_cache: list[dict] = []
 lexicon_cache_updated = 0.0
@@ -379,6 +390,8 @@ async def monitor_audio(
 ) -> None:
     if not TEXT_MODERATION_ENABLED:
         return
+    from livekit.plugins import aws
+
     speech_stream = aws.STT(
         region=AWS_REGION,
         language=TRANSCRIBE_LANGUAGE,
@@ -436,17 +449,25 @@ def subscribe_to_consented_tracks(
     if participant.attributes.get("grin_moderation_consent") != "true":
         return
     for publication in participant.track_publications.values():
-        if publication.kind not in (
-            rtc.TrackKind.KIND_AUDIO,
-            rtc.TrackKind.KIND_VIDEO,
-        ):
+        if not should_subscribe_to_track(publication.kind):
             continue
         publication.set_subscribed(True)
 
 
+def should_subscribe_to_track(kind: rtc.TrackKind) -> bool:
+    return (
+        kind == rtc.TrackKind.KIND_VIDEO and AWS_REKOGNITION_ENABLED
+    ) or (
+        kind == rtc.TrackKind.KIND_AUDIO and TEXT_MODERATION_ENABLED
+    )
+
+
 @server.rtc_session(agent_name="grin-moderator")
 async def moderate_grin(ctx: JobContext) -> None:
-    if not AWS_REGION or not EVENT_URL or len(EVENT_SECRET) < 32:
+    moderation_enabled = AWS_REKOGNITION_ENABLED or TEXT_MODERATION_ENABLED
+    if moderation_enabled and (
+        not AWS_REGION or not EVENT_URL or len(EVENT_SECRET) < 32
+    ):
         raise RuntimeError("Grin moderation agent configuration is incomplete.")
 
     jobs: set[asyncio.Task] = set()
@@ -458,11 +479,11 @@ async def moderate_grin(ctx: JobContext) -> None:
     ) -> None:
         if participant.attributes.get("grin_moderation_consent") != "true":
             return
-        if track.kind == rtc.TrackKind.KIND_VIDEO:
+        if track.kind == rtc.TrackKind.KIND_VIDEO and AWS_REKOGNITION_ENABLED:
             task = asyncio.create_task(
                 monitor_video(track, participant.identity, publication.sid)
             )
-        elif track.kind == rtc.TrackKind.KIND_AUDIO:
+        elif track.kind == rtc.TrackKind.KIND_AUDIO and TEXT_MODERATION_ENABLED:
             task = asyncio.create_task(
                 monitor_audio(track, participant.identity, publication.sid)
             )
@@ -500,7 +521,10 @@ async def moderate_grin(ctx: JobContext) -> None:
         publication: rtc.RemoteTrackPublication,
         participant: rtc.RemoteParticipant,
     ) -> None:
-        if participant.attributes.get("grin_moderation_consent") == "true":
+        if (
+            participant.attributes.get("grin_moderation_consent") == "true"
+            and should_subscribe_to_track(publication.kind)
+        ):
             publication.set_subscribed(True)
 
     await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_NONE)

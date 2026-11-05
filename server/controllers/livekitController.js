@@ -75,13 +75,7 @@ export const createLiveKitToken = async (request, response) => {
     });
   }
   const moderationConsent = request.body?.moderationConsent === true;
-  if (roomName === "grin" && moderationConsent) {
-    if (!env.grinModerationEnabled) {
-      return response.status(503).json({
-        error: "La modération en direct n'est pas encore configurée.",
-        code: "GRIN_MODERATION_UNAVAILABLE",
-      });
-    }
+  if (roomName === "grin" && moderationConsent && env.grinModerationEnabled) {
     try {
       await ensureGrinModerator();
     } catch (error) {
@@ -145,21 +139,29 @@ export const createLiveKitToken = async (request, response) => {
         ...(roomName === "grin"
           ? {
               attributes: {
-                grin_moderation_consent: moderationConsent ? "true" : "false",
-              },
-            }
+                  grin_moderation_consent:
+                    env.grinModerationEnabled && moderationConsent
+                      ? "true"
+                      : "false",
+                },
+              }
           : {}),
       },
     );
     accessToken.addGrant({
       room: roomName,
       roomJoin: true,
-      canPublish: roomName !== "grin" || moderationConsent,
+      canPublish:
+        roomName !== "grin" ||
+        !env.grinModerationEnabled ||
+        moderationConsent,
       canPublishSources:
-        roomName === "grin" && moderationConsent
-          ? [TrackSource.MICROPHONE, TrackSource.CAMERA]
+        roomName === "grin" &&
+        env.grinModerationEnabled &&
+        !moderationConsent
+          ? []
           : roomName === "grin"
-            ? []
+            ? [TrackSource.MICROPHONE, TrackSource.CAMERA]
             : [TrackSource.MICROPHONE],
       canSubscribe: true,
       canPublishData: false,

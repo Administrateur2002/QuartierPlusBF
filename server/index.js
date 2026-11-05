@@ -25,6 +25,7 @@ import adminRoutes from "./routes/adminRoutes.js";
 import proCommerceRoutes from "./routes/proCommerceRoutes.js";
 import voyageRoutes from "./routes/voyageRoutes.js";
 import legalRoutes from "./routes/legalRoutes.js";
+import { runtimeGate } from "./middlewares/runtimeGate.js";
 import { createServer } from "node:http";
 import { attachSocketServer } from "./sockets/index.js";
 import { handleHealth } from "./health.js";
@@ -33,6 +34,7 @@ import { verifySmtpTransport } from "./services/email.js";
 import { captureFedaPayRawBody } from "./middlewares/fedapayRawBody.js";
 import { scheduleProDeliveryLocationCleanup } from "./services/proCommerceCleanup.js";
 import { processScheduledFlashes } from "./controllers/adminController.js";
+import { scheduleAuditLogCleanup } from "./services/auditLogCleanup.js";
 
 const app = express();
 
@@ -45,6 +47,7 @@ app.use(
   }),
 );
 app.get(["/health", "/v1/health"], handleHealth);
+app.use(runtimeGate);
 app.get(
   ["/api/v1/monetization/config", "/v1/monetization/config"],
   getMonetizationConfig,
@@ -133,6 +136,7 @@ const server = createServer(app);
 const io = attachSocketServer(server);
 app.set("io", io);
 scheduleProDeliveryLocationCleanup();
+scheduleAuditLogCleanup();
 if (env.adminUserIds.length > 0) {
   const adminFlashInterval = setInterval(() => {
     void processScheduledFlashes().catch((error) => {

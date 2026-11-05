@@ -53,6 +53,7 @@ test("administrator identities are normalized and must be valid UUIDs", () => {
 test("live Grin moderation requires a strong webhook secret when enabled", () => {
   const enabled = loadProductionConfig({
     GRIN_MODERATION_ENABLED: "true",
+    AWS_REKOGNITION_ENABLED: "true",
     GRIN_MODERATION_WEBHOOK_SECRET:
       "production-grin-moderation-webhook-secret-over-32-characters",
     GRIN_MODERATOR_IDS: "7b490a29-02dd-44ad-8c9f-81d9cadc0007",
@@ -61,6 +62,7 @@ test("live Grin moderation requires a strong webhook secret when enabled", () =>
 
   const weakSecret = loadProductionConfig({
     GRIN_MODERATION_ENABLED: "true",
+    AWS_REKOGNITION_ENABLED: "true",
     GRIN_MODERATION_WEBHOOK_SECRET: "short",
   });
   assert.notEqual(weakSecret.status, 0);
@@ -70,6 +72,7 @@ test("live Grin moderation requires a strong webhook secret when enabled", () =>
 test("live Grin moderation requires at least one valid moderator UUID", () => {
   const enabled = {
     GRIN_MODERATION_ENABLED: "true",
+    AWS_REKOGNITION_ENABLED: "true",
     GRIN_MODERATION_WEBHOOK_SECRET:
       "production-grin-moderation-webhook-secret-over-32-characters",
   };
@@ -143,6 +146,7 @@ test("upload moderation is disabled by default and requires worker and email con
 
   const enabled = loadModeration({
     MODERATION_UPLOADS_ENABLED: "true",
+    AWS_REKOGNITION_ENABLED: "true",
     MODERATION_SERVICE_URL: "https://moderator.example.test",
     MODERATION_DAILY_ANALYSIS_LIMIT: "25",
     GRIN_MODERATION_WEBHOOK_SECRET:
@@ -160,9 +164,33 @@ test("upload moderation is disabled by default and requires worker and email con
 
   const incomplete = loadModeration({
     MODERATION_UPLOADS_ENABLED: "true",
+    AWS_REKOGNITION_ENABLED: "true",
   });
   assert.notEqual(incomplete.status, 0);
   assert.match(incomplete.stderr, /MODERATION_SERVICE_URL/);
+});
+
+test("AWS moderation flags default off and requested services degrade to manual review", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      "import { env } from './config/env.js'; console.log(JSON.stringify([env.awsRekognitionEnabled, env.awsTranscribeEnabled, env.grinModerationEnabled, env.moderationUploadsEnabled]))",
+    ],
+    {
+      cwd: serverDirectory,
+      env: {
+        ...productionEnv,
+        GRIN_MODERATION_ENABLED: "true",
+        MODERATION_UPLOADS_ENABLED: "true",
+        DOTENV_CONFIG_PATH: "/dev/null",
+      },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), [false, false, false, false]);
 });
 
 test("public text moderation and conflict protection remain opt-in with explicit dependencies", () => {

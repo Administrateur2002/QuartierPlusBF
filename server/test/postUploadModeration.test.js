@@ -7,6 +7,7 @@ process.env.JWT_SECRET = "test-secret-that-is-long-enough-for-jwt";
 process.env.CLOUDINARY_CLOUD_NAME = "quartierplus-test";
 process.env.CLOUDINARY_API_KEY = "test-api-key";
 process.env.CLOUDINARY_API_SECRET = "test-api-secret";
+process.env.AWS_REKOGNITION_ENABLED = "true";
 process.env.MODERATION_UPLOADS_ENABLED = "true";
 process.env.MODERATION_SERVICE_URL = "https://moderator.example.test";
 process.env.GRIN_MODERATION_WEBHOOK_SECRET =

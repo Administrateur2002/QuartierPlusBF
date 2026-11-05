@@ -137,15 +137,38 @@ Pour la configuration Firebase Android du workflow APK, fournissez soit
 `GOOGLE_SERVICES_JSON` avec le contenu JSON brut, soit
 `GOOGLE_SERVICES_JSON_B64` avec le fichier JSON encodé en base64 standard.
 Si les deux secrets sont définis, `GOOGLE_SERVICES_JSON_B64` est prioritaire.
-Le workflow retire les espaces périphériques, le BOM et les guillemets
-englobants avant de valider le JSON. En cas d'échec, il n'affiche jamais le
-contenu du secret, uniquement des métadonnées de diagnostic.
-La valeur normalisée est écrite temporairement dans `mobile/google-services.json` ;
-le contenu n'est pas imprimé. Le client OAuth Android
-client_type 1 du package `expo.android.package`, le client Web client_type 3,
-`project_number` et `project_id` de ce fichier font autorité. Les deux identifiants
-Google et `EXPO_PUBLIC_FIREBASE_PROJECT_ID` sont exportés depuis ce fichier et
-leur origine est consignée sans afficher leur valeur complète.
+Le workflow détecte aussi un JSON encodé en Base64 accidentellement placé dans
+`GOOGLE_SERVICES_JSON`. Il retire uniquement les espaces, U+200E, U+200F et BOM
+périphériques du JSON brut/décodé ; les espaces internes du Base64 sont ignorés
+pour permettre son formatage sur plusieurs lignes. Un parseur JSON valide le
+contenu, puis le workflow exige `project_info.project_number`,
+`project_info.project_id`,
+`client_info.android_client_info.package_name`,
+`client_info.mobilesdk_app_id` et `api_key[].current_key` sur le client Android
+dont le package correspond exactement à `expo.android.package`.
+Pour remplacer une configuration incorrecte, ouvrez le dépôt GitHub puis
+**Settings → Secrets and variables → Actions**, sélectionnez le secret
+`GOOGLE_SERVICES_JSON` (ou `GOOGLE_SERVICES_JSON_B64` si vous utilisez Base64),
+choisissez **Update secret** et collez le nouveau fichier téléchargé depuis
+Firebase Console ou son encodage Base64. Si vous changez de format, supprimez
+l'autre secret pour éviter que le secret `_B64` prioritaire soit utilisé.
+N'inventez ni ne modifiez manuellement les valeurs Firebase.
+En cas d'échec, le workflow n'affiche jamais le contenu du secret. La valeur
+normalisée est écrite temporairement dans `mobile/google-services.json` sans
+être imprimée.
+Le client OAuth Android client_type 1 du package `expo.android.package`, le
+client Web client_type 3, `project_number` et `project_id` de ce fichier font
+autorité. Les deux identifiants Google et `EXPO_PUBLIC_FIREBASE_PROJECT_ID`
+sont exportés depuis ce fichier et leur origine est consignée sans afficher
+leur valeur.
+Le workflow EAS Update utilise les mêmes secrets ; au contrôle initial, si ces
+secrets sont absents, il valide le fichier déjà présent à
+`mobile/google-services.json`, mais la publication requiert toujours au moins
+l'un des deux secrets. Il restaure la valeur normalisée à cet emplacement avant
+l'export Android. Un JSON absent, mal formé ou sans structure/client OAuth
+Android correspondant au package bloque la publication.
+`EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` absent ou mal formé n'est qu'un avertissement :
+l'authentification Google iOS est omise et la publication Android continue.
 `EXPO_TOKEN` est passé à EAS et n'est pas affiché. Les workflows ne doivent jamais
 activer `set -x` ou imprimer une valeur de secret.
 Le workflow écrit le secret après le checkout et valide ensuite ce fichier ;
@@ -158,6 +181,14 @@ transmise.
 une valeur d'exemple. Le workflow consigne uniquement si chaque identifiant
 Google/EAS provient d'une variable GitHub, d'un secret GitHub ou de `app.json`,
 jamais sa valeur.
+
+Les mises à jour OTA ne peuvent pas installer de changements natifs. Avant de
+publier, le workflow EAS Update compare l'empreinte native Android de chaque ABI
+avec celle du dernier APK `preview-arm64` et `preview-armv7`. Une empreinte
+différente ou indisponible bloque la publication : lancez d'abord
+« Build Android Preview APK ». La politique `runtimeVersion: appVersion`
+continue également d'exiger que le binaire installé et l'OTA ciblent la même
+version runtime.
 
 ## Configuration Google requise
 

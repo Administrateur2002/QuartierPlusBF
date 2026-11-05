@@ -5,9 +5,11 @@ import {
   createCloudinaryUploadSignature,
   deleteCloudinaryAsset,
   getCloudinaryAsset,
+  getCloudinaryAssetReference,
   hasGpsMetadata,
   isCloudinaryPublicIdOwnedByUser,
 } from "../services/cloudinary.js";
+import { reserveDailyMediaUpload } from "../services/usageLimits.js";
 
 const profileQuery = `
   SELECT id, phone_number, email, google_id, full_name, neighborhood, role,
@@ -44,6 +46,12 @@ export const signProfilePhotoUpload = async (request, response, next) => {
       public_id: publicId,
       timestamp,
     });
+    if (!(await reserveDailyMediaUpload(userId))) {
+      return response.status(429).json({
+        error: "Vous avez atteint la limite quotidienne de téléversements.",
+        code: "UPLOAD_DAILY_LIMIT_REACHED",
+      });
+    }
     return response.status(200).json({
       ...signature,
       folder,
@@ -56,6 +64,313 @@ export const signProfilePhotoUpload = async (request, response, next) => {
     return next(error);
   }
 };
+
+const quoteIdentifier = (identifier) =>
+  `"${String(identifier).replaceAll('"', '""')}"`;
+
+const getUserForeignKeys = async (client) => {
+  const result = await client.query(
+    `SELECT constraint_name, table_schema, table_name, column_name,
+            ordinal_position
+     FROM information_schema.key_column_usage
+     WHERE table_schema = 'public'
+       AND referenced_table_schema = 'public'
+       AND referenced_table_name = 'users'
+       AND referenced_column_name = 'id'
+     ORDER BY table_name, constraint_name, ordinal_position`,
+  );
+  const tables = new Map();
+  for (const row of result.rows) {
+    if (row.table_name === "users") continue;
+    const table = tables.get(row.table_name) ?? {
+      schema: row.table_schema,
+      constraints: new Map(),
+    };
+    const columns = table.constraints.get(row.constraint_name) ?? [];
+    columns.push(row.column_name);
+    table.constraints.set(row.constraint_name, columns);
+    tables.set(row.table_name, table);
+  }
+  return tables;
+};
+
+const getUserLinkedRows = async (client, userId, mediaOnly = false) => {
+  const tables = await getUserForeignKeys(client);
+  const related = {};
+  for (const [tableName, table] of tables) {
+    let columns = null;
+    if (mediaOnly) {
+      const mediaColumnResult = await client.query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = $2
+           AND column_name ~* '(media|image|photo|asset|public_id|avatar|icon|url)'`,
+        [table.schema, tableName],
+      );
+      columns = mediaColumnResult.rows.map((row) => row.column_name);
+      if (columns.length === 0) continue;
+    }
+    const tableReference =
+      `${quoteIdentifier(table.schema)}.${quoteIdentifier(tableName)}`;
+    const where = [...table.constraints.values()]
+      .map((columns) =>
+        columns
+          .map((column) => `record_data.${quoteIdentifier(column)} = $1`)
+          .join(" AND "),
+      )
+      .map((constraint) => `(${constraint})`)
+      .join(" OR ");
+    const selectedColumns = mediaOnly
+      ? columns.map(quoteIdentifier).join(", ")
+      : "*";
+    const result = await client.query(
+      `SELECT to_jsonb(record_data) AS data
+       FROM (
+         SELECT ${selectedColumns}
+         FROM ${tableReference} AS record_data
+         WHERE ${where}
+       ) AS record_data`,
+      [userId],
+    );
+    related[tableName] = result.rows.map((row) => row.data);
+  }
+  return related;
+};
+
+const exportUserData = async (request, response, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const user = await client.query(
+      `SELECT (to_jsonb(account) - 'last_location') ||
+                jsonb_build_object(
+                  'last_location',
+                  CASE WHEN account.last_location IS NULL
+                    THEN NULL
+                    ELSE ST_AsGeoJSON(account.last_location)::jsonb
+                  END
+                ) AS data
+       FROM users AS account
+       WHERE account.id = $1`,
+      [request.auth.userId],
+    );
+    if (!user.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Utilisateur introuvable." });
+    }
+    const related = await getUserLinkedRows(client, request.auth.userId);
+    const ownedProducts = await client.query(
+      `SELECT to_jsonb(product) AS data
+       FROM pro_products AS product
+       JOIN pro_wholesalers AS wholesaler
+         ON wholesaler.id = product.wholesaler_id
+       WHERE wholesaler.user_id = $1`,
+      [request.auth.userId],
+    );
+    related.owned_pro_products = ownedProducts.rows.map((row) => row.data);
+    const messages = await client.query(
+      `SELECT to_jsonb(message) AS data
+       FROM private_messages AS message
+       WHERE message.conversation_id IN (
+         SELECT participant.conversation_id
+         FROM conversation_participants AS participant
+         WHERE participant.user_id = $1
+       )
+       ORDER BY message.created_at`,
+      [request.auth.userId],
+    );
+    related.private_messages = messages.rows.map((row) => row.data);
+    await client.query("COMMIT");
+    response.set("Cache-Control", "no-store");
+    response.set(
+      "Content-Disposition",
+      `attachment; filename="quartierplus-data-${request.auth.userId}.json"`,
+    );
+    return response.status(200).json({
+      exported_at: new Date().toISOString(),
+      app: "QuartierPlus",
+      user: user.rows[0].data,
+      related,
+    });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    return next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const collectCloudinaryReferences = (userId, record, references) => {
+  if (!record || typeof record !== "object") return;
+  const mediaType = String(
+    record.media_type ?? record.resource_type ?? record.media_format ?? "",
+  ).toLowerCase();
+  for (const [key, value] of Object.entries(record)) {
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      if (typeof item !== "string") continue;
+      if (key.toLowerCase().endsWith("public_id")) {
+        if (isCloudinaryPublicIdOwnedByUser(userId, item)) {
+          references.set(`${mediaType === "video" || mediaType === "mp4" ? "video" : "image"}:${item}`, {
+            resourceType:
+              mediaType === "video" || mediaType === "mp4" ? "video" : "image",
+            publicId: item,
+          });
+        }
+      } else if (key.toLowerCase().includes("url")) {
+        const reference = getCloudinaryAssetReference(item);
+        if (
+          reference &&
+          isCloudinaryPublicIdOwnedByUser(userId, reference.publicId)
+        ) {
+          references.set(
+            `${reference.resourceType}:${reference.publicId}`,
+            reference,
+          );
+        }
+      }
+    }
+  }
+};
+
+export const deleteCurrentUser = async (request, response, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const account = await client.query(
+      "SELECT profile_photo_public_id FROM users WHERE id = $1 FOR UPDATE",
+      [request.auth.userId],
+    );
+    if (!account.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Utilisateur introuvable." });
+    }
+
+    const mediaRows = await getUserLinkedRows(
+      client,
+      request.auth.userId,
+      true,
+    );
+    const ownedProductMedia = await client.query(
+      `SELECT to_jsonb(product) AS data
+       FROM pro_products AS product
+       JOIN pro_wholesalers AS wholesaler
+         ON wholesaler.id = product.wholesaler_id
+       WHERE wholesaler.user_id = $1`,
+      [request.auth.userId],
+    );
+    const ownedWholesalerIds = [
+      ...new Set(
+        ownedProductMedia.rows
+          .map((row) => row.data.wholesaler_id)
+          .filter((id) => typeof id === "string"),
+      ),
+    ];
+    const references = new Map();
+    if (account.rows[0].profile_photo_public_id) {
+      collectCloudinaryReferences(
+        request.auth.userId,
+        { profile_photo_public_id: account.rows[0].profile_photo_public_id },
+        references,
+      );
+    }
+    for (const rows of Object.values(mediaRows)) {
+      for (const row of rows) {
+        collectCloudinaryReferences(request.auth.userId, row, references);
+      }
+    }
+    for (const row of ownedProductMedia.rows) {
+      collectCloudinaryReferences(request.auth.userId, row.data, references);
+    }
+    for (const reference of references.values()) {
+      await deleteCloudinaryAsset(reference.resourceType, reference.publicId);
+    }
+
+    await client.query(
+      `UPDATE pro_orders
+       SET buyer_id = NULL,
+           address = '',
+           delivery_latitude = NULL,
+           delivery_longitude = NULL,
+           notes = '',
+           handoff_code_hash = repeat('0', 64)
+       WHERE buyer_id = $1`,
+      [request.auth.userId],
+    );
+    await client.query(
+      "UPDATE pro_orders SET deliverer_id = NULL WHERE deliverer_id = $1",
+      [request.auth.userId],
+    );
+    await client.query(
+      "UPDATE pro_wholesalers SET user_id = NULL, is_active = FALSE WHERE user_id = $1",
+      [request.auth.userId],
+    );
+    if (ownedWholesalerIds.length > 0) {
+      await client.query(
+        `UPDATE pro_products SET photo_url = NULL
+         WHERE wholesaler_id = ANY($1::uuid[])`,
+        [ownedWholesalerIds],
+      );
+    }
+    const ownedVoyageCompanies = await client.query(
+      "SELECT id FROM voy_companies WHERE owner_id = $1",
+      [request.auth.userId],
+    );
+    const companyIds = ownedVoyageCompanies.rows.map((row) => row.id);
+    if (companyIds.length > 0) {
+      await client.query(
+        `UPDATE voy_routes SET is_active = FALSE
+         WHERE company_id = ANY($1::uuid[])`,
+        [companyIds],
+      );
+      await client.query(
+        `UPDATE voy_tickets
+         SET status = 'CANCELLED', signature = ''
+         WHERE trip_id IN (
+           SELECT trips.id
+           FROM voy_trips AS trips
+           JOIN voy_routes AS routes ON routes.id = trips.route_id
+           WHERE routes.company_id = ANY($1::uuid[])
+         )`,
+        [companyIds],
+      );
+      await client.query(
+        "UPDATE voy_companies SET owner_id = NULL WHERE id = ANY($1::uuid[])",
+        [companyIds],
+      );
+    }
+    await client.query(
+      `UPDATE voy_tickets
+       SET traveler_id = NULL, status = 'CANCELLED', signature = ''
+       WHERE traveler_id = $1`,
+      [request.auth.userId],
+    );
+    await client.query(
+      `UPDATE voy_parcels
+       SET sender_id = NULL, status = 'CANCELLED', pickup_code_hash = repeat('0', 64)
+       WHERE sender_id = $1`,
+      [request.auth.userId],
+    );
+    const deleted = await client.query(
+      "DELETE FROM users WHERE id = $1 RETURNING id",
+      [request.auth.userId],
+    );
+    if (!deleted.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Utilisateur introuvable." });
+    }
+    await client.query("COMMIT");
+    response.set("Cache-Control", "no-store");
+    return response.status(204).end();
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    return next(error);
+  } finally {
+    client.release();
+  }
+};
+
+export { exportUserData };
 
 export const updateCurrentUserPhoto = async (request, response, next) => {
   const publicId =

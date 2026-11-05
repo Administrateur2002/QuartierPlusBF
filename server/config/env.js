@@ -197,6 +197,18 @@ const livekitConfigurationProblemDetails = [
     : []),
 ];
 const livekitConfigurationIsUsable = livekitConfigurationProblems.length === 0;
+const awsRekognitionEnabledValue = optional("AWS_REKOGNITION_ENABLED");
+const awsTranscribeEnabledValue = optional("AWS_TRANSCRIBE_ENABLED");
+if (
+  (awsRekognitionEnabledValue &&
+    !["true", "false"].includes(awsRekognitionEnabledValue)) ||
+  (awsTranscribeEnabledValue &&
+    !["true", "false"].includes(awsTranscribeEnabledValue))
+) {
+  throw new Error("AWS_REKOGNITION_ENABLED and AWS_TRANSCRIBE_ENABLED must be true or false.");
+}
+const awsRekognitionEnabled = awsRekognitionEnabledValue === "true";
+const awsTranscribeEnabled = awsTranscribeEnabledValue === "true";
 const grinModerationEnabledValue = optional("GRIN_MODERATION_ENABLED");
 if (
   grinModerationEnabledValue &&
@@ -204,7 +216,9 @@ if (
 ) {
   throw new Error("GRIN_MODERATION_ENABLED must be true or false.");
 }
-const grinModerationEnabled = grinModerationEnabledValue === "true";
+const grinModerationRequested = grinModerationEnabledValue === "true";
+const grinModerationEnabled =
+  grinModerationRequested && awsRekognitionEnabled;
 const grinModerationWebhookSecret = optional("GRIN_MODERATION_WEBHOOK_SECRET");
 if (grinModerationEnabled && grinModerationWebhookSecret.length < 32) {
   throw new Error(
@@ -218,7 +232,9 @@ if (
 ) {
   throw new Error("MODERATION_UPLOADS_ENABLED must be true or false.");
 }
-const moderationUploadsEnabled = moderationUploadsEnabledValue === "true";
+const moderationUploadsRequested = moderationUploadsEnabledValue === "true";
+const moderationUploadsEnabled =
+  moderationUploadsRequested && awsRekognitionEnabled;
 const textModerationEnabledValue = optional("TEXT_MODERATION_ENABLED");
 const conflictProtectionEnabledValue = optional("CONFLICT_PROTECTION_ENABLED");
 if (
@@ -233,7 +249,15 @@ if (
 }
 const textModerationEnabled = textModerationEnabledValue === "true";
 const conflictProtectionEnabled = conflictProtectionEnabledValue === "true";
-if (textModerationEnabled && !grinModerationEnabled) {
+const maintenanceModeValue = optional("MAINTENANCE_MODE");
+if (maintenanceModeValue && !["true", "false"].includes(maintenanceModeValue)) {
+  throw new Error("MAINTENANCE_MODE must be true or false.");
+}
+const minimumAppVersion = optional("MINIMUM_APP_VERSION") || "0.0.0";
+if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(minimumAppVersion)) {
+  throw new Error("MINIMUM_APP_VERSION must use the format major.minor.patch.");
+}
+if (textModerationEnabled && !grinModerationRequested) {
   throw new Error(
     "TEXT_MODERATION_ENABLED requires GRIN_MODERATION_ENABLED=true for live-text review.",
   );
@@ -402,6 +426,8 @@ export const env = Object.freeze({
   livekitConfigurationIsUsable,
   livekitConfigurationProblems,
   livekitConfigurationProblemDetails,
+  awsRekognitionEnabled,
+  awsTranscribeEnabled,
   grinModerationEnabled,
   grinModerationWebhookSecret,
   grinModeratorIds,
@@ -413,6 +439,11 @@ export const env = Object.freeze({
   moderationHighThreshold,
   moderationMediumThreshold,
   supportNotifyEmail,
+  maintenanceMode: maintenanceModeValue === "true",
+  minimumAppVersion,
+  smsDailyLimit: positiveInteger("SMS_DAILY_LIMIT", 500),
+  uploadsDailyLimit: positiveInteger("UPLOADS_DAILY_LIMIT", 20),
+  auditLogRetentionDays: positiveInteger("AUDIT_LOG_RETENTION_DAYS", 365),
   fedapaySecretKey: optional("FEDAPAY_SECRET_KEY"),
   fedapayPublicKey: optional("FEDAPAY_PUBLIC_KEY"),
   fedapayEnvironment,

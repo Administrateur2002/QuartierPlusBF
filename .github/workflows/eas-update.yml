@@ -32,6 +32,8 @@ jobs:
           EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ vars.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || secrets.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY }}
           EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL || secrets.EXPO_PUBLIC_API_URL || 'https://quartierplus-api.onrender.com' }}
           EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || secrets.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
           GITHUB_EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID || secrets.EXPO_PUBLIC_EAS_PROJECT_ID }}
           EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID_SOURCE: ${{ vars.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID != '' && 'variable GitHub' || secrets.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID != '' && 'secret GitHub' || 'absente' }}
           EXPO_PUBLIC_EAS_PROJECT_ID_SOURCE: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID != '' && 'variable GitHub' || secrets.EXPO_PUBLIC_EAS_PROJECT_ID != '' && 'secret GitHub' || 'absente' }}
@@ -40,15 +42,63 @@ jobs:
           GOOGLE_CLIENT_IDS="$(node <<'NODE'
           const fs = require("node:fs");
           const file = "mobile/google-services.json";
+          const encoded = process.env.GOOGLE_SERVICES_JSON_B64?.trim();
+          const raw = encoded
+            ? Buffer.from(encoded.replace(/\s+/g, ""), "base64").toString("utf8")
+            : process.env.GOOGLE_SERVICES_JSON;
+          let contents;
           let config;
+
+          const normalize = (value) => {
+            let normalized = value.replace(/\r\n?/g, "\n").replace(/^\uFEFF+/, "").trim();
+            const enclosingQuotes = new Map([
+              ['"', '"'],
+              ["'", "'"],
+              ["“", "”"],
+              ["‘", "’"],
+            ]);
+            while (
+              normalized.length >= 2 &&
+              enclosingQuotes.get(normalized[0]) === normalized.at(-1)
+            ) {
+              normalized = normalized.slice(1, -1).trim();
+            }
+            normalized = normalized.replace(/[“”‘’]/g, '"');
+
+            try {
+              JSON.parse(normalized);
+            } catch (error) {
+              const position = error.message.match(/position\s+(\d+)/i)?.[1];
+              throw new Error(`syntaxe JSON invalide à la position ${position ?? "inconnue"}`);
+            }
+            return normalized;
+          };
+
           try {
-            config = JSON.parse(fs.readFileSync(file, "utf8"));
-          } catch {
-            console.error(`::error::Le fichier ${file} est absent ou invalide.`);
+            if (raw?.trim()) {
+              contents = normalize(raw);
+              config = JSON.parse(contents);
+              fs.writeFileSync(file, contents, { mode: 0o600 });
+              console.error(`Configuration Firebase restaurée depuis le secret GitHub dans ${file}.`);
+            } else {
+              contents = fs.readFileSync(file, "utf8");
+              config = JSON.parse(contents);
+              console.error(`Configuration Firebase lue depuis le dépôt : ${file}.`);
+            }
+          } catch (error) {
+            console.error(`::error::Configuration Firebase absente ou invalide (${raw?.trim() ? "secret GitHub" : file}) : ${error.message}. Le contenu est masqué.`);
             process.exit(1);
           }
 
           const packageName = require("./mobile/app.json").expo?.android?.package;
+          if (
+            typeof config?.project_info?.project_id !== "string" ||
+            typeof config?.project_info?.project_number !== "string" ||
+            !Array.isArray(config?.client)
+          ) {
+            console.error(`::error::${file} est un JSON valide mais ne contient pas la structure Firebase attendue (project_info et client).`);
+            process.exit(1);
+          }
           const oauthClients = (Array.isArray(config?.client) ? config.client : []).flatMap(
             (client) => client && Array.isArray(client.oauth_client) ? client.oauth_client : [],
           );
@@ -81,8 +131,8 @@ jobs:
             process.env.GITHUB_ENV,
             `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID=${androidId}\nEXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=${webId}\n`,
           );
-          console.log(`EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID source: ${file}`);
-          console.log(
+          console.error(`EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID source: ${file}`);
+          console.error(
             `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID source: ${webClient ? file : `absente de ${file}`}`,
           );
           process.stdout.write(`${androidId}\n${webId}`);
@@ -103,6 +153,9 @@ jobs:
           echo "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID source: $EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID_SOURCE"
           if [ -z "$(printf '%s' "$EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" | tr -d '[:space:]')" ]; then
             echo "::warning::EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID absent; la publication Android continue sans cet identifiant."
+          elif [[ ! "$EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID" =~ ^[0-9]+-[a-zA-Z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
+            echo "::warning::EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID invalide; la publication Android continue sans la connexion Google iOS."
+            unset EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
           fi
 
           MISSING_CONFIG=""

@@ -32,6 +32,7 @@ import { proRoleGuard } from "../middlewares/proRoleGuard.js";
 import { env } from "../config/env.js";
 import { timingSafeEqual } from "node:crypto";
 import { updateWholesalerVerification } from "../controllers/proCommerceController.js";
+import { mediaSignatureRateLimit } from "../middlewares/sensitiveRateLimits.js";
 
 const router = Router();
 const proAdminGuard = (request, response, next) => {
@@ -74,7 +75,7 @@ router.get("/products", getProducts);
 router.get("/products/:productId", getProduct);
 router.post("/wholesalers", authMiddleware, proRoleGuard("WHOLESALER"), createWholesaler);
 router.post("/wholesalers/:wholesalerId/products", authMiddleware, proRoleGuard("WHOLESALER"), createProduct);
-router.post("/products/photo-signature", authMiddleware, proRoleGuard("WHOLESALER"), signProductPhotoUpload);
+router.post("/products/photo-signature", authMiddleware, mediaSignatureRateLimit, proRoleGuard("WHOLESALER"), signProductPhotoUpload);
 router.patch("/products/:productId", authMiddleware, proRoleGuard("WHOLESALER"), updateProduct);
 router.post("/wholesalers/:wholesalerId/members", authMiddleware, proRoleGuard("WHOLESALER"), addWholesalerMember);
 router.get("/favorites", authMiddleware, getFavorites);

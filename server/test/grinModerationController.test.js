@@ -10,6 +10,7 @@ process.env.LIVEKIT_API_KEY = "APITestUnitKey12345";
 process.env.LIVEKIT_API_SECRET =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 process.env.LIVEKIT_URL = "wss://quartierplus.livekit.cloud";
+process.env.AWS_REKOGNITION_ENABLED = "true";
 process.env.GRIN_MODERATION_ENABLED = "true";
 process.env.GRIN_MODERATION_WEBHOOK_SECRET =
   "unit-test-moderation-webhook-secret-over-32-characters";

@@ -4,6 +4,7 @@ import { OAuth2Client } from "google-auth-library";
 import { env } from "../config/env.js";
 import { isOtpTestPhone } from "../config/otp.js";
 import { pool } from "../db/pool.js";
+import { reserveDailySms } from "../services/usageLimits.js";
 import { deliverVerificationEmail, isEmailDeliveryConfigured } from "../services/email.js";
 import {
   detectPhoneCountry,
@@ -44,6 +45,16 @@ const userProfile = (user) => ({
 });
 
 const deliverOtp = async (phoneNumber, code) => {
+  if (!(await reserveDailySms())) {
+    throw Object.assign(
+      new Error("La limite quotidienne de SMS est atteinte. Réessayez demain."),
+      {
+        status: 429,
+        code: "SMS_DAILY_LIMIT_REACHED",
+        reason: "La limite quotidienne de SMS est atteinte.",
+      },
+    );
+  }
   if (!env.smsDeliveryUrl || !env.smsDeliveryToken) {
     throw new Error("Le service SMS n'est pas configuré.");
   }

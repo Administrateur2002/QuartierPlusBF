@@ -88,6 +88,8 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 40. `migrations/036_post_upload_moderation.sql`
 41. `migrations/037_public_text_conflicts.sql`
 42. `migrations/038_legal_document_acceptances.sql`
+43. `migrations/039_usage_limits.sql`
+44. `migrations/040_account_deletion_retention.sql`
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes
@@ -118,6 +120,13 @@ utilisateur, version et version de l’application. Appliquez-la avant de
 déployer le parcours de consentement. Les variables `LEGAL_*_VERSION` du
 serveur déterminent les versions en vigueur ; changer une valeur relance la
 demande d’acceptation pour le document correspondant.
+
+La migration 039 ajoute les compteurs quotidiens de SMS et de signatures
+d’upload. La migration 040 permet d’anonymiser les références acheteur/livreur
+et voyageur conservées pour les transactions lors de la suppression d’un
+compte. Appliquez les deux avant de déployer les routes d’export et de
+suppression, et avant d’activer les plafonds `SMS_DAILY_LIMIT` et
+`UPLOADS_DAILY_LIMIT`.
 
 Les migrations 015 à 017 ajoutent les champs utilisés par les publications
 Made in, les épingles sponsorisées et les détails d'offres Pro. Appliquez-les
@@ -184,21 +193,28 @@ constitue pas une distribution réussie.
 
 ## Agent de modération du Grin (AWS)
 
-La modération en direct est désactivée par défaut. Pour l'activer, déployez
-d'abord l'API et la migration 034, puis l'agent LiveKit séparé :
+La modération AWS en direct est désactivée par défaut et n'est pas nécessaire
+pour compiler, tester ou mettre à jour l'application. Sans Rekognition,
+le Grin reste utilisable et s'appuie sur les signalements manuels et la revue
+humaine. Pour activer volontairement l'analyse AWS, déployez d'abord l'API et
+la migration 034, puis l'agent LiveKit séparé :
 
 1. Utilisez un compte LiveKit Cloud et installez LiveKit CLI (`lk`), puis
    authentifiez-le avec `lk cloud auth`.
 2. Depuis `server/grin-moderator`, déployez l'agent avec `lk agent deploy`.
    L'agent doit être enregistré sous le nom exact `grin-moderator`.
-3. Configurez sur le service de l'agent `AWS_REGION`,
+3. Configurez `AWS_REKOGNITION_ENABLED=true` sur l'API et l'agent. Configurez
+   `AWS_TRANSCRIBE_ENABLED=true` uniquement si vous activez aussi la modération
+   vocale. Sans ces drapeaux, l'agent n'importe pas et n'appelle pas les
+   clients AWS. Configurez sur le service de l'agent `AWS_REGION`,
    `GRIN_MODERATION_EVENT_URL` (URL HTTPS de l'API suivie de
    `/v1/livekit/moderation/events`), `GRIN_MODERATION_WEBHOOK_SECRET` et
    `GRIN_TRANSCRIBE_LANGUAGE=fr-FR`. Les clés AWS ne vont que dans le gestionnaire
    de secrets du service agent; préférez un rôle IAM plutôt que des clés IAM
    longues durées.
-4. Accordez au rôle de l'agent uniquement `rekognition:DetectModerationLabels`
-   et `transcribe:StartStreamTranscription` dans la région AWS sélectionnée.
+4. Accordez au rôle de l'agent uniquement les actions AWS correspondant aux
+   fonctions activées (`rekognition:DetectModerationLabels` et, facultativement,
+   `transcribe:StartStreamTranscription`) dans la région choisie.
    L'API et l'agent doivent avoir la même valeur secrète aléatoire de 32
    caractères minimum pour `GRIN_MODERATION_WEBHOOK_SECRET`.
 5. Sur Render, configurez `GRIN_MODERATION_ENABLED=true`,
@@ -207,7 +223,9 @@ d'abord l'API et la migration 034, puis l'agent LiveKit séparé :
    d'activer cette variable.
 6. Fermez la room LiveKit `grin` existante avant l'activation pour déconnecter
    les anciennes sessions qui ne portaient pas d'attribut de consentement.
-   Les nouveaux jetons sans consentement ne permettent pas de publier.
+   Quand la modération AWS est activée, les jetons sans consentement ne
+   permettent pas de publier; quand elle est désactivée, le Grin utilise la
+   modération manuelle et les signalements restent disponibles.
 7. Recompilez puis distribuez un nouvel APK Android et vérifiez le Grin avec
    des comptes de test consentants et non consentants. Une OTA seule n'active
    pas les changements serveur.
@@ -325,7 +343,9 @@ invaliderait les signatures des billets déjà émis.
 | `LIVEKIT_API_KEY` | Clé API LiveKit au format `API...` (`^API[A-Za-z0-9_-]+$`) |
 | `LIVEKIT_API_SECRET` | Secret API correspondant de LiveKit |
 | `LIVEKIT_URL` | URL WebSocket LiveKit en `wss://` |
-| `GRIN_MODERATION_ENABLED` | `true` uniquement après déploiement de l'agent AWS et application de la migration 034 |
+| `AWS_REKOGNITION_ENABLED` | `false` par défaut; `true` active explicitement Rekognition sur l'API et l'agent |
+| `AWS_TRANSCRIBE_ENABLED` | `false` par défaut; `true` active explicitement Transcribe sur l'agent |
+| `GRIN_MODERATION_ENABLED` | `false` par défaut; effectif seulement si Rekognition est activé, l'agent est déployé et la migration 034 est appliquée |
 | `GRIN_MODERATION_WEBHOOK_SECRET` | Secret aléatoire partagé API/agent, 32 caractères minimum |
 | `GRIN_MODERATOR_IDS` | UUID de comptes QuartierPlus autorisés à examiner la file, séparés par des virgules |
 | `CLOUDINARY_CLOUD_NAME` | Nom du cloud Cloudinary utilisé par l'API de publication |
@@ -335,7 +355,7 @@ invaliderait les signatures des billets déjà émis.
 | `POST_MAX_VIDEO_SECONDS` | Durée maximale d’une vidéo; défaut `420` secondes |
 | `POST_MAX_VIDEO_BYTES` | Taille maximale d’une vidéo en octets; défaut `104857600` (100 Mio) |
 | `POST_DAILY_LIMIT` | Nombre maximal de publications par compte et par jour; défaut `10` |
-| `MODERATION_UPLOADS_ENABLED` | `false` par défaut; analyse les médias via l'agent AWS de Grin si activé |
+| `MODERATION_UPLOADS_ENABLED` | `false` par défaut; n'analyse les médias que si `AWS_REKOGNITION_ENABLED=true` |
 | `MODERATION_SERVICE_URL` | URL HTTPS du point `/v1/analyze-upload` servi par l'agent Grin |
 | `MODERATION_DAILY_ANALYSIS_LIMIT` | Plafond d'analyses Rekognition par jour UTC; défaut `100` |
 | `MODERATION_HIGH_THRESHOLD` / `MODERATION_MEDIUM_THRESHOLD` | Seuils de confiance en pourcentage; défaut `90` / `50` |

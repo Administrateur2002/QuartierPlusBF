@@ -9,6 +9,7 @@ import {
   hasGpsMetadata,
   isCloudinaryPublicIdOwnedByUser,
 } from "../services/cloudinary.js";
+import { reserveDailyMediaUpload } from "../services/usageLimits.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STATUS_TRANSITIONS = {
@@ -517,6 +518,13 @@ export const addWholesalerMember = withError(async (request, response) => {
 });
 
 export const signProductPhotoUpload = withError(async (request, response) => {
+  if (!(await reserveDailyMediaUpload(request.auth.userId))) {
+    throw httpError(
+      429,
+      "UPLOAD_DAILY_LIMIT_REACHED",
+      "Vous avez atteint la limite quotidienne de téléversements.",
+    );
+  }
   const timestamp = Math.floor(Date.now() / 1000);
   const folder = "quartierplus/pro-products";
   const publicId = `${request.auth.userId}_${randomUUID()}`;
@@ -901,9 +909,11 @@ export const getOrderReceipt = withError(async (request, response) => {
   const [items, names] = await Promise.all([
     pool.query("SELECT * FROM pro_order_items WHERE order_id = $1 ORDER BY id", [order.id]),
     pool.query(
-      `SELECT wholesalers.business_name, users.full_name AS buyer_name FROM pro_orders orders
+      `SELECT wholesalers.business_name,
+              COALESCE(users.full_name, 'Compte supprimé') AS buyer_name
+       FROM pro_orders orders
        JOIN pro_wholesalers wholesalers ON wholesalers.id = orders.wholesaler_id
-       JOIN users ON users.id = orders.buyer_id WHERE orders.id = $1`,
+       LEFT JOIN users ON users.id = orders.buyer_id WHERE orders.id = $1`,
       [order.id],
     ),
   ]);

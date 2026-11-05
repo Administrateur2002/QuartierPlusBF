@@ -4,6 +4,7 @@ import { test } from "node:test";
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET = "test-secret-that-is-long-enough-for-jwt";
+process.env.AWS_REKOGNITION_ENABLED = "true";
 process.env.MODERATION_UPLOADS_ENABLED = "true";
 process.env.MODERATION_SERVICE_URL = "https://moderator.example.test";
 process.env.GRIN_MODERATION_WEBHOOK_SECRET =

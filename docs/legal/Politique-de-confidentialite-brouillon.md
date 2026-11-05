@@ -103,8 +103,17 @@ ligne de base de données. Le compte et les contenus liés ne disposent pas tous
 d’une durée d’expiration automatique. Ils restent donc conservés jusqu’à
 suppression par l’utilisateur, exécution de règles d’exploitation ou obligation
 légale applicable. Le compte peut être supprimé depuis l’application ; la
-suppression en base entraîne l’effacement des enregistrements reliés par des
-clés étrangères avec suppression en cascade.
+suppression efface le profil, les contenus reliés avec suppression en cascade
+et les médias Cloudinary associés au compte. Pour préserver les opérations
+commerciales et les droits des autres parties, certaines données métier ne
+sont pas supprimées en bloc : les commandes Pro conservent les montants et
+articles, mais le lien vers l’acheteur, l’adresse, la position, les notes et le
+code de remise sont effacés; le compte grossiste est désactivé et ses photos
+produit sont supprimées. Les billets de voyage sont annulés et dissociés du
+voyageur; un colis en cours est annulé, dissocié de l’expéditeur et son code de
+retrait est invalidé. Des informations d’entreprise, de produits ou de
+destinataires peuvent donc subsister; leur nécessité et leur durée doivent
+être validées par un juriste avant publication.
 
 Les fichiers et rapports hébergés par des prestataires, les journaux
 d’infrastructure et les sauvegardes peuvent suivre des délais distincts. Les

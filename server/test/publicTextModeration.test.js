@@ -6,6 +6,7 @@ process.env.DATABASE_URL = "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET = "test-secret-that-is-long-enough-for-jwt";
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
 process.env.GRIN_MODERATION_ENABLED = "true";
+process.env.AWS_REKOGNITION_ENABLED = "true";
 process.env.GRIN_MODERATION_WEBHOOK_SECRET =
   "test-grin-moderation-webhook-secret-with-more-than-32-characters";
 process.env.GRIN_MODERATOR_IDS = "7b490a29-02dd-44ad-8c9f-81d9cadc0007";

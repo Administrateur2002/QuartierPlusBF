@@ -14,6 +14,7 @@ import {
   ModerationCapacityError,
 } from "../services/uploadModeration.js";
 import { evaluateConfirmedPublicText } from "./conflictController.js";
+import { reserveDailyMediaUpload } from "../services/usageLimits.js";
 
 const SCOPES = new Set(["neighborhood", "region", "country", "international"]);
 const IMAGE_FORMATS = new Set(["jpg", "jpeg", "png", "webp"]);
@@ -246,6 +247,13 @@ export const signMediaUpload = async (request, response, next) => {
     const trimVideo = request.body?.trim_video === true;
     if (trimVideo && mediaType !== "video") {
       return response.status(400).json({ error: "Le découpage est réservé aux vidéos." });
+    }
+    const signatureAllowed = await reserveDailyMediaUpload(user.id);
+    if (!signatureAllowed) {
+      return response.status(429).json({
+        error: "Vous avez atteint la limite quotidienne de téléversements.",
+        code: "UPLOAD_DAILY_LIMIT_REACHED",
+      });
     }
     const timestamp = Math.floor(Date.now() / 1000);
     const folder = "quartierplus/posts";
