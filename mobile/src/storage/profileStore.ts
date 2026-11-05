@@ -47,6 +47,7 @@ export type ProfileStore = {
   ) => Promise<void>;
   getPreferences: () => Promise<AppPreferences>;
   setPreferences: (preferences: AppPreferences) => Promise<void>;
+  clearPersonalData: () => Promise<void>;
 };
 
 const LEGACY_DATABASE_NAME = "quartierplus-profile.db";
@@ -196,6 +197,28 @@ const createMemoryProfileStore = (): ProfileStore => ({
   },
   async setPreferences(preferences) {
     memoryPreferences = normalizePreferences(preferences);
+  },
+  async clearPersonalData() {
+    memoryCountry = null;
+    memoryContacts = [];
+    memoryPreferences = defaultPreferences();
+    const failures: unknown[] = [];
+    try {
+      const { default: AsyncStorage } = await import(
+        "@react-native-async-storage/async-storage"
+      );
+      await AsyncStorage.removeItem(PREFERENCES_FALLBACK_KEY);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await SecureStore.deleteItemAsync(PREFERENCES_FALLBACK_KEY);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 2) {
+      throw new AggregateError(failures, "Les préférences locales n'ont pas pu être supprimées.");
+    }
   },
 });
 
@@ -440,6 +463,35 @@ export const openProfileStore = async (): Promise<ProfileStore> => {
             });
           }
         }
+      }
+    },
+    async clearPersonalData() {
+      memoryCountry = null;
+      memoryContacts = [];
+      memoryPreferences = defaultPreferences();
+      await retryProfileOperation("personal data deletion", () =>
+        initializedDatabase.withExclusiveTransactionAsync(async (transaction) => {
+          await transaction.execAsync(
+            "DELETE FROM trusted_contacts; DELETE FROM profile_settings; DELETE FROM app_preferences;",
+          );
+        }),
+      );
+      const failures: unknown[] = [];
+      try {
+        const { default: AsyncStorage } = await import(
+          "@react-native-async-storage/async-storage"
+        );
+        await AsyncStorage.removeItem(PREFERENCES_FALLBACK_KEY);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await SecureStore.deleteItemAsync(PREFERENCES_FALLBACK_KEY);
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 2) {
+        throw new AggregateError(failures, "Les préférences locales n'ont pas pu être supprimées.");
       }
     },
   };

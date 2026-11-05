@@ -197,6 +197,8 @@ export default function GrinScreen() {
   const [pipIdentity, setPipIdentity] = useState<string | null>(null);
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesAccepted, setRulesAccepted] = useState(false);
+  const [automatedModerationAvailable, setAutomatedModerationAvailable] =
+    useState<boolean | null>(null);
   const [moderationConsent, setModerationConsent] = useState<boolean | null>(null);
   const [lowDataMode, setLowDataMode] = useState(false);
   const [reportTarget, setReportTarget] = useState<GrinChair | null>(null);
@@ -237,6 +239,57 @@ export default function GrinScreen() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadModerationConfig = async () => {
+      if (!API_BASE_URL) {
+        setAutomatedModerationAvailable(false);
+        return;
+      }
+      try {
+        const response = await apiFetch(
+          `${API_BASE_URL}/v1/livekit/moderation/config`,
+          { method: "GET", headers: { "Cache-Control": "no-cache" } },
+        );
+        if (!response.ok) {
+          throw new Error(
+            `La configuration de modération a répondu HTTP ${response.status}.`,
+          );
+        }
+        const payload: unknown = await response.json();
+        if (
+          !payload ||
+          typeof payload !== "object" ||
+          !("automatedModerationAvailable" in payload) ||
+          typeof payload.automatedModerationAvailable !== "boolean"
+        ) {
+          throw new Error("La configuration de modération est invalide.");
+        }
+        if (active) {
+          setAutomatedModerationAvailable(
+            payload.automatedModerationAvailable,
+          );
+        }
+      } catch (configError) {
+        console.warn(
+          "Unable to load automated moderation config; using manual reports:",
+          configError,
+        );
+        if (active) setAutomatedModerationAvailable(false);
+      }
+    };
+    void loadModerationConfig();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (automatedModerationAvailable === false) {
+      setModerationConsent(false);
+    }
+  }, [automatedModerationAvailable]);
 
   useEffect(() => {
     if (!API_BASE_URL) return;
@@ -568,7 +621,7 @@ export default function GrinScreen() {
   };
 
   const joinChair = async () => {
-    if (moderationConsent !== true) {
+    if (automatedModerationAvailable && moderationConsent !== true) {
       setModerationConsent(null);
       return;
     }
@@ -729,7 +782,9 @@ export default function GrinScreen() {
       <View style={[styles.safetyBanner, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <ShieldCheck color={colors.primary} size={19} />
         <Text style={[styles.safetyText, { color: colors.secondaryText }]}>
-          Caméra et micro restent coupés jusqu’à votre prise de parole.
+          {automatedModerationAvailable === false
+            ? "La modération automatique AWS est désactivée. Signalez les comportements problématiques aux modérateurs."
+            : "Caméra et micro restent coupés jusqu’à votre prise de parole."}
         </Text>
       </View>
       {moderationNotice && (
@@ -880,7 +935,8 @@ export default function GrinScreen() {
             >
               <Camera color="#ffffff" size={18} />
               <Text style={styles.joinButtonText}>
-                {moderationConsent !== true
+                {automatedModerationAvailable &&
+                moderationConsent !== true
                   ? "Accepter l’analyse pour prendre une chaise"
                   : chairs.length >= MAX_CHAIRS
                   ? "Toutes les chaises sont prises"
@@ -967,7 +1023,12 @@ export default function GrinScreen() {
           if (moderationConsent === null) setModerationConsent(false);
         }}
         transparent
-        visible={rulesLoaded && rulesAccepted && moderationConsent === null}
+        visible={
+          rulesLoaded &&
+          rulesAccepted &&
+          automatedModerationAvailable === true &&
+          moderationConsent === null
+        }
       >
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { backgroundColor: colors.card }]}>

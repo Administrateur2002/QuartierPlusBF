@@ -14,7 +14,18 @@ import {
 } from "react-native";
 import api from "../../services/api";
 
-type PlanType = "ALLIANCE_PRO" | "SYNDIC" | "TOWN_HALL" | "SECURITY_AGENT";
+type PlanType =
+  | "ALLIANCE_PRO"
+  | "SYNDIC"
+  | "TOWN_HALL"
+  | "SECURITY_AGENT"
+  | "WHOLESALER"
+  | "TRANSPORT_COMPANY";
+
+type DashboardPlanType = Exclude<
+  PlanType,
+  "WHOLESALER" | "TRANSPORT_COMPANY"
+>;
 
 type Subscription = {
   plan_type: PlanType;
@@ -28,21 +39,21 @@ type DashboardData = {
   metrics: Record<string, number>;
 };
 
-const DASHBOARD_ENDPOINTS: Record<PlanType, string> = {
+const DASHBOARD_ENDPOINTS: Record<DashboardPlanType, string> = {
   ALLIANCE_PRO: "/v1/pro/merchant/dashboard",
   SYNDIC: "/v1/pro/syndic/dashboard",
   TOWN_HALL: "/v1/pro/townhall/dashboard",
   SECURITY_AGENT: "/v1/pro/security-agent/dashboard",
 };
 
-const PLAN_TITLES: Record<PlanType, string> = {
+const PLAN_TITLES: Record<DashboardPlanType, string> = {
   ALLIANCE_PRO: "Espace Alliance Pro",
   SYNDIC: "Espace Syndic",
   TOWN_HALL: "Espace Mairie",
   SECURITY_AGENT: "Console Agent de sécurité",
 };
 
-const REQUIRED_METRICS: Record<PlanType, string[]> = {
+const REQUIRED_METRICS: Record<DashboardPlanType, string[]> = {
   ALLIANCE_PRO: ["offers_count", "active_pins_count"],
   SYNDIC: [],
   TOWN_HALL: ["reports_count"],
@@ -52,9 +63,15 @@ const REQUIRED_METRICS: Record<PlanType, string[]> = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const isDashboardPlanType = (value: PlanType): value is DashboardPlanType =>
+  value === "ALLIANCE_PRO" ||
+  value === "SYNDIC" ||
+  value === "TOWN_HALL" ||
+  value === "SECURITY_AGENT";
+
 const readDashboardData = (
   value: unknown,
-  expectedPlan: PlanType,
+  expectedPlan: DashboardPlanType,
 ): DashboardData => {
   if (
     !isRecord(value) ||
@@ -106,18 +123,22 @@ function useDashboardData(subscription: Subscription) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isDashboardPlanType(subscription.plan_type)) {
+      setData(null);
+      setError(null);
+      return;
+    }
+
     let isActive = true;
+    const dashboardPlan = subscription.plan_type;
     setData(null);
     setError(null);
     void api
-      .get<unknown>(DASHBOARD_ENDPOINTS[subscription.plan_type], {
+      .get<unknown>(DASHBOARD_ENDPOINTS[dashboardPlan], {
         headers: { "Cache-Control": "no-cache" },
       })
       .then((response) => {
-        const dashboard = readDashboardData(
-          response.data,
-          subscription.plan_type,
-        );
+        const dashboard = readDashboardData(response.data, dashboardPlan);
         if (isActive) setData(dashboard);
       })
       .catch((requestError: unknown) => {
@@ -144,6 +165,10 @@ function DashboardFrame({
   children: (data: DashboardData) => React.ReactNode;
 }) {
   const { data, error } = useDashboardData(subscription);
+  if (!isDashboardPlanType(subscription.plan_type)) {
+    return null;
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={styles.title}>{PLAN_TITLES[subscription.plan_type]}</Text>

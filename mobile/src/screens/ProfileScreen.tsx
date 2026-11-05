@@ -1,4 +1,5 @@
 import {
+  Download,
   Bell,
   CheckCircle2,
   ChevronRight,
@@ -22,8 +23,10 @@ import {
 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import * as Updates from "expo-updates";
+import { File, Paths } from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import * as Sharing from "expo-sharing";
 import * as SecureStore from "expo-secure-store";
 import { useNavigation, type NavigationProp } from "@react-navigation/native";
 import {
@@ -59,9 +62,9 @@ import {
   EMERGENCY_COUNTRIES,
   type EmergencyCountry,
 } from "../services/emergencyServices";
-import { API_BASE_URL, apiFetch } from "../services/api";
+import api, { API_BASE_URL, apiFetch } from "../services/api";
 import { uploadProfilePhoto } from "../services/uploadProfilePhoto";
-import { clearCachedContent } from "../services/db";
+import { clearAccountLocalData, clearCachedContent } from "../services/db";
 import {
   checkServerContract,
   getServerHealth,
@@ -203,6 +206,8 @@ export default function ProfileScreen() {
   const [privacyVisible, setPrivacyVisible] = useState(false);
   const [profilePhotoVisible, setProfilePhotoVisible] = useState(false);
   const [isClearingLocalData, setIsClearingLocalData] = useState(false);
+  const [isExportingData, setIsExportingData] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [termsVisible, setTermsVisible] = useState(false);
   const [technicalStatus, setTechnicalStatus] = useState(getTechnicalAvailability);
   const [serverHealth, setServerHealth] = useState<ServerHealth | null>(
@@ -836,6 +841,104 @@ export default function ProfileScreen() {
               )
               .finally(() => setIsClearingLocalData(false));
           },
+        },
+      ],
+    );
+  };
+
+  const exportPersonalData = async () => {
+    if (!user?.id) {
+      Alert.alert("Connexion requise", "Connectez-vous pour exporter vos données.");
+      return;
+    }
+    setIsExportingData(true);
+    try {
+      const response = await api.get("/v1/users/me/export");
+      if (!(await Sharing.isAvailableAsync())) {
+        throw new Error("Le partage de fichiers n’est pas disponible sur cet appareil.");
+      }
+      const file = new File(
+        Paths.cache,
+        `quartierplus-data-${Date.now()}.json`,
+      );
+      try {
+        file.write(JSON.stringify(response.data, null, 2));
+        await Sharing.shareAsync(file.uri, {
+          mimeType: "application/json",
+          dialogTitle: "Exporter mes données QuartierPlus",
+        });
+      } finally {
+        if (file.exists) file.delete();
+      }
+    } catch (error) {
+      Alert.alert(
+        "Export impossible",
+        error instanceof Error ? error.message : "Impossible d’exporter vos données.",
+      );
+    } finally {
+      setIsExportingData(false);
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (!user?.id) return;
+    setIsDeletingAccount(true);
+    try {
+      await api.delete("/v1/users/me");
+      const cleanupIssues: string[] = [];
+      try {
+        await clearAccountLocalData(user.id);
+      } catch (error) {
+        console.error("Local account cache cleanup failed after server deletion:", error);
+        cleanupIssues.push("la file hors ligne ou le cache local");
+      }
+      try {
+        const profileStore =
+          databaseRef.current ?? (await openProfileStore());
+        await profileStore.clearPersonalData();
+      } catch (error) {
+        console.error("Local profile data cleanup failed after server deletion:", error);
+        cleanupIssues.push("les préférences et contacts locaux");
+      }
+      try {
+        await SecureStore.deleteItemAsync("quartierplus.feed.last-position");
+      } catch (error) {
+        console.error("Saved location cleanup failed after server deletion:", error);
+        cleanupIssues.push("la dernière position enregistrée");
+      }
+      try {
+        await signOut();
+      } catch (error) {
+        console.error("Session cleanup failed after account deletion:", error);
+        cleanupIssues.push("la session locale");
+      }
+      setPrivacyVisible(false);
+      Alert.alert(
+        "Compte supprimé",
+        cleanupIssues.length > 0
+          ? `Le compte est supprimé, mais certains éléments locaux n’ont pas pu être effacés (${cleanupIssues.join(", ")}). Contactez le support.`
+          : "Votre compte et les données associées ont été supprimés.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "Suppression impossible",
+        error instanceof Error ? error.message : "Impossible de supprimer le compte.",
+      );
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      "Supprimer le compte",
+      "Cette action est irréversible. Les données du compte seront supprimées ; certaines transactions pourront être conservées sous une forme anonymisée.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Supprimer définitivement",
+          style: "destructive",
+          onPress: () => void deleteAccount(),
         },
       ],
     );
@@ -1932,6 +2035,43 @@ export default function ProfileScreen() {
                   {isClearingLocalData ? "Suppression en cours…" : "Effacer le contenu local en cache"}
                 </Text>
               </Pressable>
+              {user && (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={isExportingData || isDeletingAccount}
+                    onPress={() => void exportPersonalData()}
+                    style={styles.privacyAction}
+                  >
+                    {isExportingData ? (
+                      <ActivityIndicator color={colors.primary} size="small" />
+                    ) : (
+                      <Download color={colors.primary} size={18} />
+                    )}
+                    <Text style={[styles.privacyActionText, { color: colors.text }]}>
+                      {isExportingData ? "Préparation de l’export…" : "Exporter mes données"}
+                    </Text>
+                    <ChevronRight color={colors.secondaryText} size={18} />
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: isDeletingAccount }}
+                    disabled={isDeletingAccount || isExportingData}
+                    onPress={confirmDeleteAccount}
+                    style={styles.privacyAction}
+                  >
+                    {isDeletingAccount ? (
+                      <ActivityIndicator color={colors.danger} size="small" />
+                    ) : (
+                      <Trash2 color={colors.danger} size={18} />
+                    )}
+                    <Text style={[styles.privacyActionText, { color: colors.danger }]}>
+                      {isDeletingAccount ? "Suppression du compte…" : "Supprimer mon compte"}
+                    </Text>
+                    <ChevronRight color={colors.secondaryText} size={18} />
+                  </Pressable>
+                </>
+              )}
             </ScrollView>
             <Pressable
               accessibilityRole="button"

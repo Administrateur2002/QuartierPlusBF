@@ -13,6 +13,7 @@ import {
   setApiCache,
 } from "./db";
 import { ensureServerContract } from "./serverContract";
+import appJson from "../../app.json";
 
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, "");
 export const API_TIMEOUT_MS = 60_000;
@@ -94,7 +95,10 @@ const responseFromCache = async (config: CachedRequestConfig) => {
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: API_TIMEOUT_MS,
-  headers: { Accept: "application/json" },
+  headers: {
+    Accept: "application/json",
+    "X-App-Version": appJson.expo.version,
+  },
 });
 
 api.interceptors.request.use(async (config: CachedRequestConfig) => {

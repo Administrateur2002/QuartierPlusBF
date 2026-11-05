@@ -413,18 +413,50 @@ export const clearPersistedQueryClient = async (): Promise<void> => {
 };
 
 export const clearCachedContent = async (): Promise<void> => {
-  const database = await getDatabase();
-  await database.withExclusiveTransactionAsync(async (transaction) => {
-    await transaction.execAsync(
-      `DELETE FROM cached_posts;
-       DELETE FROM cached_alerts;
-       DELETE FROM cached_messages;
-       DELETE FROM api_cache;
-       DELETE FROM query_cache;`,
-    );
-  });
-  memoryCollections.clear();
-  memoryMessages.clear();
-  memoryApiCache.clear();
-  memoryQueryClient = undefined;
+  try {
+    const database = await getDatabase();
+    await database.withExclusiveTransactionAsync(async (transaction) => {
+      await transaction.execAsync(
+        `DELETE FROM cached_posts;
+         DELETE FROM cached_alerts;
+         DELETE FROM cached_messages;
+         DELETE FROM api_cache;
+         DELETE FROM query_cache;`,
+      );
+    });
+  } catch (error) {
+    logCacheFailure(error);
+    throw error;
+  } finally {
+    memoryCollections.clear();
+    memoryMessages.clear();
+    memoryApiCache.clear();
+    memoryQueryClient = undefined;
+  }
 };
+
+export const clearAccountLocalData = async (ownerId: string): Promise<void> => {
+  if (!ownerId.trim()) throw new Error("Le compte local à supprimer est invalide.");
+  const failures: unknown[] = [];
+  try {
+    await clearCachedContent();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    const database = await getDatabase();
+    await database.runAsync(
+      "DELETE FROM sync_queue WHERE owner_id = ?",
+      ownerId,
+    );
+  } catch (error) {
+    logCacheFailure(error);
+    failures.push(error);
+  }
+  for (let index = memoryQueue.length - 1; index >= 0; index -= 1) {
+    if (memoryQueue[index].ownerId === ownerId) memoryQueue.splice(index, 1);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Les données locales du compte n'ont pas toutes été supprimées.");
+  }
+}

@@ -97,4 +97,9 @@ export const openProfileStore = async (): Promise<ProfileStore> => ({
       JSON.stringify(preferences),
     );
   },
+  async clearPersonalData() {
+    globalThis.localStorage.removeItem(COUNTRY_KEY);
+    globalThis.localStorage.removeItem(CONTACTS_KEY);
+    globalThis.localStorage.removeItem(PREFERENCES_KEY);
+  },
 });
