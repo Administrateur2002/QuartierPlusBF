@@ -33,24 +33,26 @@ type UploadOptions = {
   onProgress?: (progress: number) => void;
 };
 
-const VIDEO_CHUNK_SIZE = 5 * 1024 * 1024;
+type ReactNativeUploadFile = {
+  uri: string;
+  name: string;
+  type: string;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const createFormData = (
   signature: CloudinaryUploadSignature,
-  file: UploadFile,
-  payload: Blob | { uri: string; name: string; type: string },
+  file: ReactNativeUploadFile,
 ) => {
   const formData = new FormData();
   (formData as FormData & {
     append: (
       name: string,
-      value: string | Blob | { uri: string; name: string; type: string },
-      filename?: string,
+      value: string | ReactNativeUploadFile,
     ) => void;
-  }).append("file", payload, file.name);
+  }).append("file", file);
   formData.append("api_key", signature.apiKey);
   formData.append("timestamp", String(signature.timestamp));
   formData.append("folder", signature.folder);
@@ -120,59 +122,23 @@ export const uploadCloudinaryMedia = async (
   const uploadUrl = `https://api.cloudinary.com/v1_1/${signature.cloudName}/${signature.resource_type}/upload`;
   let result: { public_id?: string; secure_url?: string } | undefined;
   try {
-    const size = file.size || new File(file.uri).size;
-    if (signature.resource_type === "video") {
-      const source = new File(file.uri);
-      for (let start = 0; start < size; start += VIDEO_CHUNK_SIZE) {
-        const end = Math.min(start + VIDEO_CHUNK_SIZE, size);
-        const chunk = source.slice(start, end, file.type);
-        const formData = createFormData(signature, file, chunk);
-        const response = await axios.post<{
-          public_id?: string;
-          secure_url?: string;
-        }>(
-          uploadUrl,
-          formData,
-          {
-            signal: options.signal,
-            timeout: 60_000,
-            headers: {
-              "Content-Range": `bytes ${start}-${end - 1}/${size}`,
-              "X-Unique-Upload-Id": signature.public_id,
-            },
-            onUploadProgress(event) {
-              const loaded = Math.min(end - start, event.loaded);
-              options.onProgress?.(
-                Math.min(90, Math.round(((start + loaded) / size) * 90)),
-              );
-            },
-          },
-        );
-        result = response.data;
-        options.onProgress?.(Math.min(90, Math.round((end / size) * 90)));
-      }
-    } else {
-      const uploadFile = { uri: file.uri, name: file.name, type: file.type };
-      const response = await axios.post<{
-        public_id?: string;
-        secure_url?: string;
-      }>(
-        uploadUrl,
-        createFormData(signature, file, uploadFile),
-        {
-          signal: options.signal,
-          timeout: 60_000,
-          onUploadProgress(event) {
-            if (event.total) {
-              options.onProgress?.(
-                Math.min(90, Math.round((event.loaded / event.total) * 90)),
-              );
-            }
-          },
-        },
-      );
-      result = response.data;
-    }
+    const uploadFile = { uri: file.uri, name: file.name, type: file.type };
+    const response = await axios.post<{
+      public_id?: string;
+      secure_url?: string;
+    }>(uploadUrl, createFormData(signature, uploadFile), {
+      signal: options.signal,
+      timeout: signature.resource_type === "video" ? 600_000 : 60_000,
+      onUploadProgress(event) {
+        if (event.total) {
+          options.onProgress?.(
+            Math.min(90, Math.round((event.loaded / event.total) * 90)),
+          );
+        }
+      },
+    });
+    result = response.data;
+    options.onProgress?.(90);
     const expectedPublicId = signature.public_id;
     const receivedPublicId = result?.public_id;
     if (!result || typeof receivedPublicId !== "string" || !receivedPublicId) {

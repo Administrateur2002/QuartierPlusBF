@@ -47,6 +47,7 @@ import {
   type CloudinaryUploadSignature,
 } from "../services/cloudinaryUpload";
 import { compressVideoForUpload } from "../services/videoCompression";
+import { exceedsVideoDurationLimit } from "../services/videoDuration";
 
 type ChannelId = "emergency" | "announcements";
 type Channel = {
@@ -848,7 +849,10 @@ export default function MessagesScreen() {
         mediaType === "video" &&
         typeof signaturePayload.max_duration_seconds === "number" &&
         typeof asset.duration === "number" &&
-        asset.duration / 1000 > signaturePayload.max_duration_seconds
+        exceedsVideoDurationLimit(
+          asset.duration / 1000,
+          signaturePayload.max_duration_seconds,
+        )
       ) {
         throw new Error(`La vidéo doit durer au maximum ${signaturePayload.max_duration_seconds} secondes.`);
       }

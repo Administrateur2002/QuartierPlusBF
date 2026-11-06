@@ -12,10 +12,6 @@ jest.mock("expo-file-system", () => ({
       this.uri = uri;
       this.size = 20 * 1024 * 1024 + 1;
     }
-
-    slice(_start, _end, type) {
-      return new Blob(["video-part"], { type });
-    }
   },
 }));
 
@@ -24,18 +20,39 @@ jest.mock("./api", () => ({
   apiFetch: jest.fn(async () => ({ ok: true, status: 204 })),
 }));
 
+const OriginalFormData = global.FormData;
+class ReactNativeFormDataMock {
+  constructor() {
+    this.values = new Map();
+  }
+
+  append(name, value) {
+    this.values.set(name, value);
+  }
+
+  get(name) {
+    return this.values.get(name) ?? null;
+  }
+}
+
+global.FormData = ReactNativeFormDataMock;
+
 const axios = require("axios").default;
 const { apiFetch } = require("./api");
 const { uploadCloudinaryMedia } = require("./cloudinaryUpload");
 
 describe("Cloudinary signed uploads", () => {
+  afterAll(() => {
+    global.FormData = OriginalFormData;
+  });
+
   beforeEach(() => {
     axios.post.mockReset();
     axios.post.mockResolvedValue({ data: { public_id: "user_video" } });
     apiFetch.mockClear();
   });
 
-  it("sends large videos as chunks with identical signed parameters", async () => {
+  it("uploads MP4 videos as React Native URI form data and returns Cloudinary response", async () => {
     const signature = {
       apiKey: "public-api-key",
       cloudName: "test-cloud",
@@ -45,65 +62,70 @@ describe("Cloudinary signed uploads", () => {
       signature: "signed-value",
       timestamp: 123,
     };
-    const result = await uploadCloudinaryMedia(signature, {
-      uri: "file:///video.mp4",
-      name: "video.mp4",
-      type: "video/mp4",
-      size: 20 * 1024 * 1024 + 1,
-    });
-
-    expect(result).toEqual({ publicId: "user_video" });
-    expect(axios.post).toHaveBeenCalledTimes(5);
-    const firstCall = axios.post.mock.calls[0];
-    expect(firstCall[0]).toBe(
-      "https://api.cloudinary.com/v1_1/test-cloud/video/upload",
-    );
-    expect(firstCall[1].get("api_key")).toBe("public-api-key");
-    expect(firstCall[1].get("timestamp")).toBe("123");
-    expect(firstCall[1].get("folder")).toBe("quartierplus/posts");
-    expect(firstCall[1].get("public_id")).toBe("user_video");
-    expect(firstCall[1].get("signature")).toBe("signed-value");
-    expect(firstCall[2].headers).toEqual({
-      "Content-Range": "bytes 0-5242879/20971521",
-      "X-Unique-Upload-Id": "user_video",
-    });
-    expect(axios.post.mock.calls.at(-1)[2].headers["Content-Range"]).toBe(
-      "bytes 20971520-20971520/20971521",
-    );
-  });
-
-  it("chunks small videos and reports progress while each chunk uploads", async () => {
-    const signature = {
-      apiKey: "public-api-key",
-      cloudName: "test-cloud",
-      folder: "quartierplus/posts",
-      public_id: "user_video",
-      resource_type: "video",
-      signature: "signed-value",
-      timestamp: 123,
-    };
+    const secureUrl =
+      "https://res.cloudinary.com/test-cloud/video/upload/user_video.mp4";
     const onProgress = jest.fn();
-    axios.post.mockImplementation(async (_url, _formData, options) => {
-      options.onUploadProgress({ loaded: 3, total: 3 });
-      return { data: { public_id: "user_video" } };
+    axios.post.mockResolvedValue({
+      data: { public_id: "user_video", secure_url: secureUrl },
     });
-
-    await uploadCloudinaryMedia(
+    const result = await uploadCloudinaryMedia(
       signature,
       {
-        uri: "file:///small-video.mp4",
-        name: "small-video.mp4",
+        uri: "file:///video.mp4",
+        name: "video.mp4",
         type: "video/mp4",
-        size: 3,
+        size: 20 * 1024 * 1024 + 1,
       },
       { onProgress },
     );
 
+    expect(result).toEqual({ publicId: "user_video", secureUrl });
     expect(axios.post).toHaveBeenCalledTimes(1);
-    expect(axios.post.mock.calls[0][2].headers["Content-Range"]).toBe(
-      "bytes 0-2/3",
+    const [url, formData, options] = axios.post.mock.calls[0];
+    expect(url).toBe(
+      "https://api.cloudinary.com/v1_1/test-cloud/video/upload",
     );
+    expect(formData.get("file")).toEqual({
+      uri: "file:///video.mp4",
+      name: "video.mp4",
+      type: "video/mp4",
+    });
+    expect(formData.get("api_key")).toBe("public-api-key");
+    expect(formData.get("timestamp")).toBe("123");
+    expect(formData.get("folder")).toBe("quartierplus/posts");
+    expect(formData.get("public_id")).toBe("user_video");
+    expect(formData.get("signature")).toBe("signed-value");
+    expect(options.headers).toBeUndefined();
     expect(onProgress).toHaveBeenLastCalledWith(90);
+  });
+
+  it("uploads photos as React Native URI form data", async () => {
+    const signature = {
+      apiKey: "public-api-key",
+      cloudName: "test-cloud",
+      folder: "quartierplus/posts",
+      public_id: "user_photo",
+      resource_type: "image",
+      signature: "signed-value",
+      timestamp: 123,
+    };
+    axios.post.mockResolvedValue({ data: { public_id: "user_photo" } });
+    await uploadCloudinaryMedia(signature, {
+      uri: "file:///photo.jpg",
+      name: "photo.jpg",
+      type: "image/jpeg",
+      size: 3,
+    });
+    const [url, formData] = axios.post.mock.calls[0];
+    expect(url).toBe(
+      "https://api.cloudinary.com/v1_1/test-cloud/image/upload",
+    );
+    expect(formData.get("file")).toEqual({
+      uri: "file:///photo.jpg",
+      name: "photo.jpg",
+      type: "image/jpeg",
+    });
+    expect(axios.post).toHaveBeenCalledTimes(1);
   });
 
   it("accepts and returns the public ID prefixed by the signed folder", async () => {

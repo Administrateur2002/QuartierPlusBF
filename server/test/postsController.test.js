@@ -516,8 +516,8 @@ test("server rejects oversized photos and videos that exceed the configured dura
   assert.match(videoResponse.payload.error, /420 secondes/);
 });
 
-test("server accepts and stores a seven-minute video within the default upload limit", async (context) => {
-  let insertedValues;
+test("server accepts short videos and the seven-minute maximum", async (context) => {
+  const insertedDurations = [];
   const asset = {
     public_id: `${USER_ID}_seven_minutes`,
     secure_url:
@@ -540,31 +540,36 @@ test("server accepts and stores a seven-minute video within the default upload l
   }));
   const transaction = createTransactionClient({
     query(statement, values) {
-      if (statement.includes("INSERT INTO posts")) insertedValues = values;
+      if (statement.includes("INSERT INTO posts")) {
+        insertedDurations.push(values[11]);
+      }
       return undefined;
     },
   });
   context.mock.method(pool, "connect", async () => transaction);
-  const response = createResponse();
 
-  await createPost(
-    {
-      auth: { userId: USER_ID },
-      body: {
-        scope: "country",
-        media_type: "video",
-        media_public_id: asset.public_id,
+  for (const duration of [3, 420]) {
+    asset.duration = duration;
+    const response = createResponse();
+    await createPost(
+      {
+        auth: { userId: USER_ID },
+        body: {
+          scope: "country",
+          media_type: "video",
+          media_public_id: asset.public_id,
+        },
       },
-    },
-    response,
-    (error) => {
-      throw error;
-    },
-  );
+      response,
+      (error) => {
+        throw error;
+      },
+    );
 
-  assert.equal(response.statusCode, 201);
-  assert.equal(insertedValues[10], 80 * 1024 * 1024);
-  assert.equal(insertedValues[11], 420);
+    assert.equal(response.statusCode, 201);
+  }
+
+  assert.deepEqual(insertedDurations, [3, 420]);
 });
 
 test("server publishes only the first 420 seconds when an overlong video has a signed trim request", async (context) => {

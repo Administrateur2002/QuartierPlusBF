@@ -74,6 +74,7 @@ import {
 } from "../services/cloudinaryUpload";
 import { MediaUploadError } from "../services/mediaUploadError";
 import { compressVideoForUpload } from "../services/videoCompression";
+import { exceedsVideoDurationLimit } from "../services/videoDuration";
 import FeedMedia from "./FeedMedia";
 import ProfileAvatar from "../components/ProfileAvatar";
 import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
@@ -1976,70 +1977,17 @@ export default function FeedScreen() {
       return;
     }
     if (isOffline) {
-      const caption = draftCaption.trim();
-      if (!caption) {
-        Alert.alert(
-          "Publication hors ligne",
-          "Ajoutez une légende pour mettre en file une publication texte. Le média sera ignoré.",
-        );
-        return;
-      }
-      if (!confirmedHostile && draftCaption.trim()) {
-        setIsPublishing(true);
-        try {
-          const warning = await checkPublicText(draftCaption.trim(), "POST");
-          if (warning) {
-            Alert.alert("Attention au ton de la publication", warning, [
-              { text: "Modifier", style: "cancel" },
-              { text: "Publier quand même", onPress: () => void publishMedia(true) },
-            ]);
-            return;
-          }
-        } catch (moderationError) {
-          Alert.alert(
-            "Vérification impossible",
-            moderationError instanceof Error ? moderationError.message : "Réessayez.",
-          );
-          return;
-        } finally {
-          setIsPublishing(false);
-        }
-      }
-      if (
-        (draftScope === "neighborhood" || draftScope === "region") &&
-        !coordinates
-      ) {
-        Alert.alert(
-          "Position nécessaire",
-          "La position de cette publication locale n’est pas disponible hors ligne.",
-        );
-        return;
-      }
-      try {
-        await queueOfflineAction("create_feed_post", {
-          caption,
-          scope: draftScope,
-          ...(coordinates
-            ? {
-                latitude: coordinates.latitude,
-                longitude: coordinates.longitude,
-              }
-            : {}),
-        });
-        setComposerStage("closed");
-        setDraftMedia(null);
-        setAdditionalDraftMedia([]);
-        setDraftCaption("");
-        Alert.alert(
-          "Publication mise en attente",
-          "La version texte sera publiée au retour du réseau; le média n’a pas été mis en file.",
-        );
-      } catch (queueError) {
-        Alert.alert(
-          "Mise en file impossible",
-          queueError instanceof Error ? queueError.message : "Réessayez.",
-        );
-      }
+      Alert.alert(
+        "Média non envoyé",
+        "Cette publication contient un média qui ne peut pas être envoyé hors ligne. Gardez le brouillon et réessayez lorsque la connexion sera rétablie.",
+        [
+          { text: "Garder le brouillon", style: "cancel" },
+          {
+            text: "Réessayer",
+            onPress: () => void publishMedia(confirmedHostile),
+          },
+        ],
+      );
       return;
     }
     let position: FeedCoordinates | null = null;
@@ -2077,7 +2025,6 @@ export default function FeedScreen() {
     uploadControllerRef.current = controller;
     setIsPublishing(true);
     setUploadProgress(0);
-    let postRequestStarted = false;
     try {
       let trimVideo = draftMedia.trimVideo;
       let signature = await requestMediaSignature(
@@ -2090,7 +2037,10 @@ export default function FeedScreen() {
         !trimVideo &&
         typeof signature.max_duration_seconds === "number" &&
         draftMedia.duration !== undefined &&
-        draftMedia.duration > signature.max_duration_seconds
+        exceedsVideoDurationLimit(
+          draftMedia.duration,
+          signature.max_duration_seconds,
+        )
       ) {
         const shouldTrim = await new Promise<boolean>((resolve) => {
           let settled = false;
@@ -2268,7 +2218,6 @@ export default function FeedScreen() {
         uploadedAdditionalMedia.push(uploadedPhoto.publicId);
       }
       setUploadProgress(94);
-      postRequestStarted = true;
       const postResponse = await apiFetch(`${API_BASE_URL}/v1/posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2302,10 +2251,29 @@ export default function FeedScreen() {
         );
       }
       const postPayload: unknown = await postResponse.json();
+      const publishedPost =
+        isRecord(postPayload) && isRecord(postPayload.post)
+          ? postPayload.post
+          : null;
+      if (!publishedPost || typeof publishedPost.id !== "string") {
+        throw new PublicationApiError(
+          "Le serveur n’a pas confirmé la création de la publication avec média.",
+        );
+      }
       const moderationStatus =
         isRecord(postPayload) && typeof postPayload.moderation_status === "string"
           ? postPayload.moderation_status
           : null;
+      if (
+        moderationStatus !== "CHILD_SAFETY_ALERT" &&
+        (publishedPost.media_type !== draftMedia.resourceType ||
+          typeof publishedPost.media_url !== "string" ||
+          !publishedPost.media_url.startsWith("https://res.cloudinary.com/"))
+      ) {
+        throw new PublicationApiError(
+          "Le serveur n’a pas confirmé l’enregistrement du média. Votre brouillon est conservé.",
+        );
+      }
       setUploadProgress(100);
       setComposerStage("closed");
       setDraftMedia(null);
@@ -2331,68 +2299,22 @@ export default function FeedScreen() {
     } catch (publishError) {
       if (controller.signal.aborted) return;
       console.error("Unable to publish media:", publishError);
-      if (postRequestStarted || !draftCaption.trim()) {
-        Alert.alert(
-          "Publication impossible",
-          publishError instanceof PublicationApiError ||
-          publishError instanceof MediaUploadError
-            ? publishError.message
-            : "Impossible de publier ce média. Réessayez dans un instant.",
-        );
-        return;
-      }
-      try {
-        const fallbackResponse = await apiFetch(`${API_BASE_URL}/v1/posts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            caption: draftCaption.trim(),
-            confirmed_hostile: confirmedHostile,
-            scope: draftScope,
-            media_type: null,
-            ...(position
-              ? {
-                  latitude: position.latitude,
-                  longitude: position.longitude,
-                }
-              : {}),
-          }),
-          signal: controller.signal,
-        });
-        if (!fallbackResponse.ok) {
-          const payload: unknown = await fallbackResponse.json();
-          throw new PublicationApiError(
-            isRecord(payload) && typeof payload.error === "string"
-              ? payload.error
-              : "La publication texte a été refusée par le serveur.",
-          );
-        }
-        setComposerStage("closed");
-        setDraftMedia(null);
-        setAdditionalDraftMedia([]);
-        setDraftCaption("");
-        refresh();
-        const uploadReason =
-          publishError instanceof PublicationApiError ||
-          publishError instanceof MediaUploadError
-            ? publishError.message
-            : "Erreur de téléversement inconnue (code CLOUDINARY_UPLOAD_FAILED).";
-        Alert.alert(
-          "Publication texte seule",
-          `Le média n'a pas pu être téléversé : ${uploadReason}\nVotre publication texte a été enregistrée.`,
-        );
-      } catch (fallbackError) {
-        if (controller.signal.aborted) return;
-        Alert.alert(
-          "Publication impossible",
-          fallbackError instanceof PublicationApiError
-            ? fallbackError.message
-            : publishError instanceof PublicationApiError ||
-              publishError instanceof MediaUploadError
-              ? publishError.message
-              : "Le téléversement et la publication texte ont échoué. Vérifiez la connexion puis réessayez.",
-        );
-      }
+      const uploadErrorMessage =
+        publishError instanceof PublicationApiError ||
+        publishError instanceof MediaUploadError
+          ? publishError.message
+          : "Impossible de téléverser le média. Vérifiez votre connexion puis réessayez.";
+      Alert.alert(
+        "Publication impossible",
+        `${uploadErrorMessage}\nVotre brouillon avec média est conservé ; aucune publication texte seule n’a été créée.`,
+        [
+          { text: "Garder le brouillon", style: "cancel" },
+          {
+            text: "Réessayer",
+            onPress: () => void publishMedia(confirmedHostile),
+          },
+        ],
+      );
     } finally {
       if (uploadControllerRef.current === controller) {
         uploadControllerRef.current = null;
