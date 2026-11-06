@@ -76,14 +76,14 @@ const readLocalAcceptance = async (): Promise<LocalAcceptance | null> => {
 };
 
 export default function LegalConsentGate() {
-  const { isOffline, user } = useAuth();
+  const { isOffline, isSessionLoading, user } = useAuth();
   const [documents, setDocuments] = useState<LegalDocumentStatus[]>(fallbackStatuses);
   const [checked, setChecked] = useState<Set<LegalDocumentId>>(new Set());
   const [ageConfirmed, setAgeConfirmed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [visible, setVisible] = useState(true);
+  const [visible, setVisible] = useState(false);
   const loadGeneration = useRef(0);
   const allDocumentsChecked = useMemo(
     () => LEGAL_DOCUMENTS.every((document) => checked.has(document.id)),
@@ -92,7 +92,7 @@ export default function LegalConsentGate() {
 
   const loadConsent = async () => {
     const generation = ++loadGeneration.current;
-    setVisible(true);
+    setVisible(false);
     setLoading(true);
     setError(null);
     try {
@@ -152,7 +152,39 @@ export default function LegalConsentGate() {
         statuses.every(
           (document) => local.versions[document.id] === document.version,
         );
-      if (!user && locallyAccepted) {
+      if (local && locallyAccepted && (!user || !local.server_verified)) {
+        if (user) {
+          const response = await apiFetch(`${API_BASE_URL}/v1/legal/acceptances`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              acceptances: statuses.map(({ id, version }) => ({
+                document_id: id,
+                version,
+              })),
+              age_16_or_older: local.age_16_or_older,
+              app_version: APP_VERSION,
+            }),
+          });
+          if (!response.ok) {
+            const responseBody = await response.json<{ error?: string }>();
+            throw new Error(
+              responseBody.error ??
+                `Échec de l’enregistrement (HTTP ${response.status}).`,
+            );
+          }
+          await AsyncStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({
+              ...local,
+              app_version: APP_VERSION,
+              server_verified: true,
+              versions: Object.fromEntries(
+                statuses.map(({ id, version }) => [id, version]),
+              ),
+            } satisfies LocalAcceptance),
+          );
+        }
         setVisible(false);
         return;
       }
@@ -186,8 +218,9 @@ export default function LegalConsentGate() {
   };
 
   useEffect(() => {
+    if (isSessionLoading) return;
     void loadConsent();
-  }, [isOffline, user?.id]);
+  }, [isOffline, isSessionLoading, user?.id]);
 
   const toggleDocument = (id: LegalDocumentId) => {
     setChecked((current) => {

@@ -6,8 +6,6 @@ import api from "../../services/api";
 const googleWebClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() ?? "";
 const googleIosClientId =
   process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID?.trim() ?? "";
-const googleAndroidClientId =
-  process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID?.trim() ?? "";
 const validGoogleClientId = (clientId: string) =>
   /^\d+-[a-z0-9-]+\.apps\.googleusercontent\.com$/i.test(clientId);
 
@@ -17,15 +15,6 @@ const initialConfigurationError = (() => {
   }
   if (!validGoogleClientId(googleWebClientId)) {
     return "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID invalide (code GOOGLE_WEB_CLIENT_ID_INVALID).";
-  }
-  if (Platform.OS === "android" && !googleAndroidClientId) {
-    return "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID manquant. Vérifiez aussi google-services.json (code GOOGLE_ANDROID_CLIENT_ID_MISSING).";
-  }
-  if (
-    Platform.OS === "android" &&
-    !validGoogleClientId(googleAndroidClientId)
-  ) {
-    return "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID invalide (code GOOGLE_ANDROID_CLIENT_ID_INVALID).";
   }
   if (Platform.OS === "ios" && !validGoogleClientId(googleIosClientId)) {
     if (googleIosClientId) {
@@ -99,9 +88,6 @@ export default function GoogleAuthScreen() {
       const { GoogleSignin } = await import("@react-native-google-signin/google-signin");
       GoogleSignin.configure({
         webClientId: googleWebClientId,
-        ...(Platform.OS === "android" && googleAndroidClientId
-          ? { androidClientId: googleAndroidClientId }
-          : {}),
         ...(Platform.OS === "ios" && googleIosClientId
           ? { iosClientId: googleIosClientId }
           : {}),

@@ -117,9 +117,12 @@ de 404 pour un compte n'ayant encore aucune conversation.
 
 La migration 038 enregistre les acceptations datées des documents légaux par
 utilisateur, version et version de l’application. Appliquez-la avant de
-déployer le parcours de consentement. Les variables `LEGAL_*_VERSION` du
-serveur déterminent les versions en vigueur ; changer une valeur relance la
-demande d’acceptation pour le document correspondant.
+déployer le parcours de consentement et publiez la version du serveur qui monte
+les routes `/v1/legal` et `/api/v1/legal`. Vérifiez ensuite que
+`GET /v1/legal/documents` renvoie HTTP 200 ; une réponse 404 signifie que le
+serveur déployé n’expose pas encore ces routes. Les variables
+`LEGAL_*_VERSION` du serveur déterminent les versions en vigueur ; changer une
+valeur relance la demande d’acceptation pour le document correspondant.
 
 La migration 039 ajoute les compteurs quotidiens de SMS et de signatures
 d’upload. La migration 040 permet d’anonymiser les références acheteur/livreur

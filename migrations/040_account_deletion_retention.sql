@@ -4,7 +4,9 @@ ALTER TABLE pro_orders
     DROP CONSTRAINT IF EXISTS pro_orders_buyer_id_fkey;
 ALTER TABLE pro_orders
     ADD CONSTRAINT pro_orders_buyer_id_fkey
-    FOREIGN KEY (buyer_id) REFERENCES users(id) ON DELETE SET NULL;
+    FOREIGN KEY (buyer_id) REFERENCES users(id) ON DELETE SET NULL;cd /workspaces/QuartierPlus
+    git status
+    git push origin main
 
 ALTER TABLE pro_orders
     DROP CONSTRAINT IF EXISTS pro_orders_deliverer_id_fkey;

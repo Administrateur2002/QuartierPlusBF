@@ -210,11 +210,25 @@ jobs:
                 process.exit(1);
               }
             ' "$RESPONSE_FILE"; then
-              exit 0
+              LEGAL_HTTP_CODE="$(curl --silent --output "$RESPONSE_FILE" --write-out '%{http_code}' --max-time 15 "$EXPO_PUBLIC_API_URL/v1/legal/documents" || true)"
+              LEGAL_HTTP_CODE="${LEGAL_HTTP_CODE:-000}"
+              echo "Route des documents légaux : HTTP $LEGAL_HTTP_CODE"
+              if [ "$LEGAL_HTTP_CODE" = "200" ] && node -e '
+                try {
+                  const documents = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).documents;
+                  process.exit(Array.isArray(documents) && documents.length === 6 && documents.every((document) =>
+                    typeof document?.id === "string" && typeof document?.version === "string"
+                  ) ? 0 : 1);
+                } catch {
+                  process.exit(1);
+                }
+              ' "$RESPONSE_FILE"; then
+                exit 0
+              fi
             fi
             if [ "$attempt" -lt 6 ]; then sleep 20; fi
           done
-          echo "::error::L’API n’a pas répondu HTTP 200 avec status « ok » après 6 tentatives."
+          echo "::error::L’API ou GET /v1/legal/documents n’a pas répondu avec le contrat attendu après 6 tentatives."
           exit 1
 
       - name: Installer EAS CLI

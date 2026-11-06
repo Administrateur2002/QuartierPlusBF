@@ -84,13 +84,14 @@ le client OAuth Web et transmet l'ID token à `POST /api/v1/auth/google`.
 
 Copier `mobile/.env.example` pour la configuration locale. Configurer
 `EXPO_PUBLIC_API_URL` ainsi que les identifiants OAuth publics
-`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` et
-`EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` dans l'environnement Expo. Configurer
-également `EXPO_PUBLIC_LIVEKIT_URL` et `EXPO_PUBLIC_EAS_PROJECT_ID`. Les
-identifiants web/iOS/Android correspondants doivent être acceptés côté serveur
-via `GOOGLE_CLIENT_ID` et `GOOGLE_CLIENT_IDS`; ces valeurs OAuth publiques ne
-sont pas des secrets. L'application utilise le schéma de redirection
-`quartierplus`.
+`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` et `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` dans
+l'environnement Expo. Android charge son client OAuth natif depuis
+`mobile/google-services.json` ; Firebase doit contenir les SHA-1 et SHA-256 du
+certificat de signature EAS. Le serveur doit accepter le client Web via
+`GOOGLE_CLIENT_ID` ou `GOOGLE_CLIENT_IDS`. Configurer également
+`EXPO_PUBLIC_LIVEKIT_URL` et `EXPO_PUBLIC_EAS_PROJECT_ID` ; ces valeurs OAuth
+publiques ne sont pas des secrets. L'application utilise le schéma de
+redirection `quartierplus`.
 
 Pour enregistrer le canal OTA, lancer manuellement le workflow
 `.github/workflows/eas-setup.yml`; il vérifie le compte `quartierplus_bf` et
