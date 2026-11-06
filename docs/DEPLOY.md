@@ -314,14 +314,20 @@ leurs vraies valeurs dans Render ; ne les inscrivez pas dans le dépôt.
 | `GOOGLE_CLIENT_ID` | Identifiant OAuth client Web Google utilisé par l'application |
 | `SMS_DELIVERY_URL` | URL HTTPS du relais SMS de production |
 | `SMS_DELIVERY_TOKEN` | Jeton du relais SMS |
-| `EMAIL_PROVIDER` | `resend` pour activer l’adaptateur e-mail |
-| `EMAIL_API_KEY` | Clé API privée Resend |
-| `EMAIL_FROM` | Expéditeur autorisé par Resend, par exemple `QuartierPlus <noreply@votre-domaine>` |
 
-Créez ces trois variables dans **Render → service API → Environment**.
-L’e-mail OTP reste désactivé tant que les trois valeurs ne sont pas présentes
-et que l’expéditeur n’est pas autorisé chez Resend. Le parcours SMS continue de
-fonctionner sans configuration e-mail.
+L'e-mail OTP n'est pas obligatoire au démarrage. Pour le configurer dans
+**Render → service API → Environment**, choisissez un seul fournisseur :
+
+| Fournisseur | Variables Render |
+| --- | --- |
+| Gmail SMTP | `EMAIL_PROVIDER=smtp`, `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465` (ou `587`), `SMTP_USER` (adresse complète), `SMTP_PASS` (mot de passe d'application Google), `MAIL_FROM` (expéditeur autorisé) |
+| Resend | `EMAIL_PROVIDER=resend`, `EMAIL_API_KEY`, `EMAIL_FROM` (expéditeur vérifié) |
+
+Pour le SMS, créez `SMS_DELIVERY_URL` (URL HTTPS d'un relais qui accepte un
+POST JSON `{ "to": "+...", "message": "..." }`) et `SMS_DELIVERY_TOKEN`
+(jeton attendu par le relais). Le code n'a pas d'intégration directe
+Twilio/`TWILIO_*` : faites pointer l'URL vers votre relais ou un adaptateur
+compatible. Sans ces deux variables, l'API en production refuse de démarrer.
 
 L'application refuse de démarrer en production si un des éléments de la liste
 des variables requises ci-dessus manque. `NODE_ENV` doit être défini sur
@@ -392,11 +398,15 @@ les offres sont activées
 immédiatement et affichées comme gratuites pendant la phase de test; mettez-le
 à `true` uniquement après avoir configuré FedaPay.
 
-`PORT` est fourni par Render : ne le créez pas manuellement. `OTP_TEST_MODE`
-doit être absent ou `false` en production ; le serveur refuse `true`, même si
-`OTP_TEST_ALLOWLIST` est renseignée. Hors production, seul un numéro présent
-dans cette liste reçoit le code fixe `123456`; les autres numéros exigent la
-configuration SMS et reçoivent un code aléatoire.
+`PORT` est fourni par Render : ne le créez pas manuellement. Pour un service
+Render de test isolé seulement, définissez `NODE_ENV=test`,
+`OTP_TEST_MODE=true` et `OTP_TEST_ALLOWLIST` avec le numéro E.164 autorisé.
+Seuls les numéros de cette liste reçoivent le code fixe `123456`. Le serveur
+refuse de démarrer en production si `OTP_TEST_MODE=true`. L'allowlist ne
+rattache pas le numéro au compte administrateur : la base de test doit déjà
+associer ce numéro au compte portant l'adresse `ADMIN_EMAIL`, dont l'UUID est
+présent dans `ADMIN_USER_IDS`. Ne changez pas le téléphone du compte admin en
+production pour effectuer ce test.
 
 Le HMAC des codes stockés dans `code_hash` utilise `JWT_SECRET` dans
 `authController.js`; aucun `HMAC_SECRET` distinct n'est lu par l'API. Render

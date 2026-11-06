@@ -90,9 +90,13 @@ router.post("/test-email", async (request, response) => {
     await sendSmtpDiagnosticEmail(env.emailFrom);
     return response.status(200).json({ ok: true, provider: "smtp" });
   } catch (error) {
-    console.error("Échec du test SMTP :", error.code || error.message);
+    const diagnosticCode =
+      typeof error?.code === "string" && /^[A-Z0-9_]+$/.test(error.code)
+        ? error.code
+        : "UNKNOWN";
+    console.error("Échec du test SMTP :", diagnosticCode);
     return response.status(502).json({
-      error: `Échec de l'envoi SMTP (${error.code || "erreur transport"}).`,
+      error: `Échec de l'envoi SMTP (${diagnosticCode}).`,
     });
   }
 });

@@ -226,3 +226,41 @@ keystore ni sa clé privée à Firebase, GitHub variables ou au dépôt.
 `GOOGLE_CLIENT_IDS` sur Render est facultatif et permet d'ajouter des audiences
 OAuth autorisées séparées par des virgules. `EXPO_PUBLIC_*` ne contient jamais
 de secret serveur.
+
+### Livraison des codes OTP
+
+Sur Render, le SMS passe par un relais HTTPS configurable, pas par un adaptateur
+Twilio intégré. Créez `SMS_DELIVERY_URL` (URL HTTPS du relais) et
+`SMS_DELIVERY_TOKEN` (jeton que ce relais accepte). Le relais doit accepter un
+POST JSON `{ "to": "+...", "message": "..." }` avec le jeton d'autorisation.
+Il n'existe pas de variable `TWILIO_*` ou `SMS_PROVIDER` dans le code actuel.
+
+Pour Gmail SMTP, créez toutes ces variables Render :
+
+```text
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USER=<adresse Gmail complète>
+SMTP_PASS=<mot de passe d'application Google>
+MAIL_FROM=<expéditeur autorisé pour cette adresse>
+```
+
+Le port `587` est aussi accepté. `SMTP_PASS` doit être un mot de passe
+d'application Google créé après activation de la validation en deux étapes,
+jamais le mot de passe normal du compte. Le code exige `MAIL_FROM` pour valider
+la configuration SMTP.
+
+Alternative prise en charge : Resend avec `EMAIL_PROVIDER=resend`,
+`EMAIL_API_KEY` (clé privée Resend) et `EMAIL_FROM` (expéditeur vérifié).
+Ne configurez pas `EMAIL_PROVIDER=resend` pour un SMTP Gmail. Tant que les
+variables requises par le fournisseur choisi manquent, la demande d'OTP e-mail
+renvoie une erreur de configuration au lieu d'envoyer un code.
+
+Le code fixe `123456` est réservé à un service de test isolé :
+`NODE_ENV=test`, `OTP_TEST_MODE=true` et `OTP_TEST_ALLOWLIST` contenant le
+numéro de test en format E.164. Le code refuse `OTP_TEST_MODE=true` avec
+`NODE_ENV=production`. Ne définissez jamais ces paramètres sur le service
+Render de production. L'allowlist seule ne crée ni ne rattache un compte : le
+numéro doit déjà être associé à la ligne du compte administrateur dans la base
+de test, et l'accès admin doit conserver `ADMIN_EMAIL` et `ADMIN_USER_IDS`.

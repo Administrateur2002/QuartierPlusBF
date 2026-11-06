@@ -56,7 +56,11 @@ export const verifySmtpTransport = async () => {
     console.info(`SMTP prêt (${env.smtpHost}:${env.smtpPort}).`);
     return true;
   } catch (error) {
-    console.error("Échec de vérification SMTP :", error.code || error.message);
+    const diagnosticCode =
+      typeof error?.code === "string" && /^[A-Z0-9_]+$/.test(error.code)
+        ? error.code
+        : "UNKNOWN";
+    console.error("Échec de vérification SMTP :", diagnosticCode);
     return false;
   }
 };

@@ -38,6 +38,12 @@ test("production environment accepts a complete valid configuration", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("production environment refuses the fixed test OTP mode", () => {
+  const result = loadProductionConfig({ OTP_TEST_MODE: "true" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /OTP_TEST_MODE must not be enabled in production/);
+});
+
 test("administrator identities are normalized and must be valid UUIDs", () => {
   const valid = loadProductionConfig({
     ADMIN_EMAIL: "AdministrateurQuartierPlus@gmail.com",
