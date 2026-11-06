@@ -131,3 +131,25 @@ test("Cloudinary refusals are logged and returned with their exact reason", asyn
     console.error = originalConsoleError;
   }
 });
+
+test("Cloudinary video lookups request duration metadata and signed upload context", async (context) => {
+  let requestedUrl;
+  context.mock.method(globalThis, "fetch", async (url) => {
+    requestedUrl = new URL(url);
+    return new Response(
+      JSON.stringify({
+        public_id: "user-123_video",
+        duration: 12.5,
+        context: { custom: { trim_video: "true" } },
+      }),
+      { status: 200 },
+    );
+  });
+
+  const asset = await getCloudinaryAsset("video", "user-123_video");
+
+  assert.equal(requestedUrl.searchParams.get("context"), "true");
+  assert.equal(requestedUrl.searchParams.get("metadata"), "true");
+  assert.equal(asset.duration, 12.5);
+  assert.equal(asset.context.custom.trim_video, "true");
+});

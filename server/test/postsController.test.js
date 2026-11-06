@@ -149,12 +149,13 @@ test("video signatures include timestamp, folder and public ID without exposing 
   assert.equal(response.payload.resource_type, "video");
   assert.equal(response.payload.max_duration_seconds, 420);
   assert.equal(response.payload.max_bytes, 100 * 1024 * 1024);
+  assert.equal(response.payload.context, "trim_video=true");
   assert.ok(Math.abs(Math.floor(Date.now() / 1000) - timestamp) <= 1);
   assert.equal(
     signature,
     createHash("sha1")
       .update(
-        `folder=${folder}&public_id=${publicId}&timestamp=${timestamp}test-api-secret`,
+        `context=trim_video=true&folder=${folder}&public_id=${publicId}&timestamp=${timestamp}test-api-secret`,
       )
       .digest("hex"),
   );
@@ -446,7 +447,7 @@ test("text-only publication stores null media fields when upload is unavailable"
   ]);
 });
 
-test("server rejects oversized photos and videos that exceed the configured duration", async (context) => {
+test("server rejects oversized photos and caps overlong videos", async (context) => {
   let asset = {
     public_id: `${USER_ID}_photo`,
     secure_url:
@@ -466,9 +467,24 @@ test("server rejects oversized photos and videos that exceed the configured dura
       return asset;
     },
   }));
-  context.mock.method(pool, "connect", async () => {
-    throw new Error("Rejected media must not be inserted.");
+  const transaction = createTransactionClient({
+    query(statement, values) {
+      if (statement.includes("INSERT INTO posts")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: POST_ID,
+            caption: "Vidéo",
+            scope: "country",
+            media_url: values[7],
+            media_type: "video",
+          }],
+        };
+      }
+      return undefined;
+    },
   });
+  context.mock.method(pool, "connect", async () => transaction);
 
   const photoResponse = createResponse();
   await createPost(
@@ -496,6 +512,7 @@ test("server rejects oversized photos and videos that exceed the configured dura
     bytes: 1000,
     resource_type: "video",
     duration: 421,
+    context: { custom: { trim_video: "true" } },
   };
   const videoResponse = createResponse();
   await createPost(
@@ -512,11 +529,15 @@ test("server rejects oversized photos and videos that exceed the configured dura
       throw error;
     },
   );
-  assert.equal(videoResponse.statusCode, 400);
-  assert.match(videoResponse.payload.error, /420 secondes/);
+  assert.equal(videoResponse.statusCode, 201);
+  assert.equal(videoResponse.payload.video_trimmed, true);
+  assert.match(
+    videoResponse.payload.post.media_url,
+    /\/video\/upload\/so_0,du_420\//,
+  );
 });
 
-test("server accepts short videos and the seven-minute maximum", async (context) => {
+test("server accepts short videos through the exact seven-minute maximum", async (context) => {
   const insertedDurations = [];
   const asset = {
     public_id: `${USER_ID}_seven_minutes`,
@@ -526,6 +547,7 @@ test("server accepts short videos and the seven-minute maximum", async (context)
     bytes: 80 * 1024 * 1024,
     resource_type: "video",
     duration: 420,
+    context: { custom: { trim_video: "true" } },
   };
   context.mock.method(pool, "query", async () => ({
     rowCount: 1,
@@ -548,7 +570,7 @@ test("server accepts short videos and the seven-minute maximum", async (context)
   });
   context.mock.method(pool, "connect", async () => transaction);
 
-  for (const duration of [3, 420]) {
+  for (const duration of [3, 419.99, 420]) {
     asset.duration = duration;
     const response = createResponse();
     await createPost(
@@ -569,10 +591,10 @@ test("server accepts short videos and the seven-minute maximum", async (context)
     assert.equal(response.statusCode, 201);
   }
 
-  assert.deepEqual(insertedDurations, [3, 420]);
+  assert.deepEqual(insertedDurations, [3, 419.99, 420]);
 });
 
-test("server publishes only the first 420 seconds when an overlong video has a signed trim request", async (context) => {
+test("server automatically caps overlong videos that carry the signed duration cap", async (context) => {
   const asset = {
     public_id: `${USER_ID}_video`,
     secure_url:
@@ -635,6 +657,123 @@ test("server publishes only the first 420 seconds when an overlong video has a s
     statement.includes("INSERT INTO posts"),
   );
   assert.equal(response.statusCode, 201);
+  assert.equal(response.payload.video_trimmed, true);
+  assert.match(insert.values[7], /\/video\/upload\/so_0,du_420\//);
+  assert.equal(insert.values[11], 420);
+});
+
+test("server caps videos when Cloudinary has not returned readable duration metadata", async (context) => {
+  const asset = {
+    public_id: `${USER_ID}_unknown_duration`,
+    secure_url:
+      "https://res.cloudinary.com/quartierplus-test/video/upload/video.mp4",
+    format: "mp4",
+    bytes: 1000,
+    resource_type: "video",
+    duration: null,
+    context: { custom: { trim_video: "true" } },
+  };
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return asset;
+    },
+  }));
+  const transaction = createTransactionClient({
+    query(statement, values) {
+      if (statement.includes("INSERT INTO posts")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: POST_ID,
+            caption: "Durée à confirmer",
+            scope: "country",
+            media_url: values[7],
+            media_type: "video",
+          }],
+        };
+      }
+      return undefined;
+    },
+  });
+  context.mock.method(pool, "connect", async () => transaction);
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "video",
+        media_public_id: asset.public_id,
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  const insert = transaction.queries.find(({ statement }) =>
+    statement.includes("INSERT INTO posts"),
+  );
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.payload.video_trimmed, true);
+  assert.match(insert.values[7], /\/video\/upload\/so_0,du_420\//);
+  assert.equal(insert.values[11], null);
+});
+
+test("server reads explicit millisecond duration metadata and applies the cap", async (context) => {
+  const asset = {
+    public_id: `${USER_ID}_duration_ms`,
+    secure_url:
+      "https://res.cloudinary.com/quartierplus-test/video/upload/video.mp4",
+    format: "mp4",
+    bytes: 1000,
+    resource_type: "video",
+    duration_ms: 421_000,
+    context: { custom: { trim_video: "true" } },
+  };
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return asset;
+    },
+  }));
+  const transaction = createTransactionClient();
+  context.mock.method(pool, "connect", async () => transaction);
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "video",
+        media_public_id: asset.public_id,
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  const insert = transaction.queries.find(({ statement }) =>
+    statement.includes("INSERT INTO posts"),
+  );
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.payload.video_trimmed, true);
   assert.match(insert.values[7], /\/video\/upload\/so_0,du_420\//);
   assert.equal(insert.values[11], 420);
 });
@@ -809,6 +948,33 @@ test("feed requires a position for location-based scopes and never returns exact
   assert.deepEqual(queryValues, ["neighborhood", "BF", 12.3, -1.5, null, 0, false]);
   assert.equal("latitude" in response.payload.posts[0], false);
   assert.equal("longitude" in response.payload.posts[0], false);
+});
+
+test("feed returns published video URL and media type for playback", async (context) => {
+  const videoPost = {
+    id: POST_ID,
+    media_url:
+      "https://res.cloudinary.com/quartierplus-test/video/upload/so_0,du_420/video.mp4",
+    media_type: "video",
+    status: "ACTIVE",
+  };
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [videoPost],
+  }));
+  const response = createResponse();
+
+  await listFeed(
+    { query: { scope: "international" } },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.posts[0].media_type, "video");
+  assert.equal(response.payload.posts[0].media_url, videoPost.media_url);
 });
 
 test("feed rejects invalid pagination offsets without querying", async (context) => {

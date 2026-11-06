@@ -391,6 +391,15 @@ Les signatures sont émises par l'API avec un timestamp et des paramètres trié
 les vidéos de plus de 20 Mo sont téléversées par segments. En cas de refus
 Cloudinary, l'API journalise le statut HTTP et le message renvoyé.
 Les variables `POST_*` sont facultatives et remplacent les limites par défaut.
+Les vidéos sélectionnées sur mobile sont recompressées en MP4 avant leur
+téléversement direct signé vers Cloudinary. Le serveur n'accepte que le format
+MP4, vérifie la taille (100 Mio par défaut) et revalide la durée depuis les
+métadonnées Cloudinary. Le client relit aussi la durée du fichier local avec le
+lecteur natif puis utilise la durée du sélecteur comme repli. Si Cloudinary ne
+renvoie aucune durée, ou si la vidéo excède la limite réelle, l'URL publiée est
+transformée pour ne livrer que les 420 premières secondes; une durée inconnue
+n'est pas inventée en base. Les posts restent actifs dans le fil et conservent
+le type `video`.
 LiveKit est facultatif au démarrage : si sa configuration est absente ou
 invalide, les journaux de l'API identifient les variables à corriger et le
 service de jeton renvoie une erreur précise. Quand `BILLING_ENABLED=false`,

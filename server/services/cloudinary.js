@@ -84,6 +84,7 @@ export const getCloudinaryAsset = async (resourceType, publicId) => {
   const url = new URL(
     `https://api.cloudinary.com/v1_1/${encodeURIComponent(env.cloudinaryCloudName)}/resources/${resourceType}/upload/${encodeURIComponent(publicId)}`,
   );
+  url.searchParams.set("context", "true");
   url.searchParams.set("metadata", "true");
   const authorization = Buffer.from(
     `${env.cloudinaryApiKey}:${env.cloudinaryApiSecret}`,

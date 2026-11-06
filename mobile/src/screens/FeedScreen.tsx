@@ -74,7 +74,10 @@ import {
 } from "../services/cloudinaryUpload";
 import { MediaUploadError } from "../services/mediaUploadError";
 import { compressVideoForUpload } from "../services/videoCompression";
-import { exceedsVideoDurationLimit } from "../services/videoDuration";
+import {
+  exceedsVideoDurationLimit,
+  readVideoDurationSeconds,
+} from "../services/videoDuration";
 import FeedMedia from "./FeedMedia";
 import ProfileAvatar from "../components/ProfileAvatar";
 import ProfilePhotoViewer from "../components/ProfilePhotoViewer";
@@ -185,7 +188,8 @@ const requestMediaSignature = async (
     typeof payload.max_bytes !== "number" ||
     payload.resource_type !== resourceType ||
     payload.trim_video !== trimVideo ||
-    (trimVideo && payload.context !== "trim_video=true") ||
+    (resourceType === "video" && payload.context !== "trim_video=true") ||
+    (resourceType === "image" && payload.context !== undefined) ||
     !(
       payload.max_duration_seconds === null ||
       typeof payload.max_duration_seconds === "number"
@@ -1893,7 +1897,9 @@ export default function FeedScreen() {
       }
       const asset = selectedAssets[0];
       const duration =
-        typeof asset.duration === "number" ? asset.duration / 1000 : undefined;
+        resourceType === "video"
+          ? await readVideoDurationSeconds(asset.uri, asset.duration)
+          : undefined;
       const preparedAssets: DraftMedia[] = [];
       for (const [index, selectedAsset] of selectedAssets.entries()) {
         let mediaUri = selectedAsset.uri;
@@ -2264,6 +2270,8 @@ export default function FeedScreen() {
         isRecord(postPayload) && typeof postPayload.moderation_status === "string"
           ? postPayload.moderation_status
           : null;
+      const videoWasTrimmed =
+        isRecord(postPayload) && postPayload.video_trimmed === true;
       if (
         moderationStatus !== "CHILD_SAFETY_ALERT" &&
         (publishedPost.media_type !== draftMedia.resourceType ||
@@ -2294,6 +2302,11 @@ export default function FeedScreen() {
         Alert.alert(
           "Publication bloquée",
           "La publication a été bloquée et transmise à l'équipe de modération.",
+        );
+      } else if (videoWasTrimmed) {
+        Alert.alert(
+          "Vidéo ajustée",
+          "La durée d’origine dépassait la limite ou n’a pas pu être confirmée. La vidéo publiée est limitée aux 420 premières secondes.",
         );
       }
     } catch (publishError) {

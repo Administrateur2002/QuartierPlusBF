@@ -21,6 +21,29 @@ const IMAGE_FORMATS = new Set(["jpg", "jpeg", "png", "webp"]);
 const VIDEO_FORMATS = new Set(["mp4"]);
 const GEO_CELL_LATITUDE_DEGREES = 200 / 111_320;
 
+const positiveDuration = (value) => {
+  if (
+    (typeof value !== "number" && typeof value !== "string") ||
+    (typeof value === "string" && !value.trim())
+  ) {
+    return null;
+  }
+  const duration = Number(value);
+  return Number.isFinite(duration) && duration > 0 ? duration : null;
+};
+
+const getVideoDurationSeconds = (asset) => {
+  const duration =
+    positiveDuration(asset.duration) ??
+    positiveDuration(asset.video_metadata?.duration);
+  if (duration !== null) return duration;
+
+  const durationMilliseconds =
+    positiveDuration(asset.duration_ms) ??
+    positiveDuration(asset.video_metadata?.duration_ms);
+  return durationMilliseconds === null ? null : durationMilliseconds / 1000;
+};
+
 const parseCoordinates = (latitude, longitude) => {
   if (latitude === undefined && longitude === undefined) return null;
   const parsedLatitude = Number(latitude);
@@ -262,7 +285,7 @@ export const signMediaUpload = async (request, response, next) => {
       folder,
       public_id: publicId,
       timestamp,
-      ...(trimVideo ? { context: "trim_video=true" } : {}),
+      ...(mediaType === "video" ? { context: "trim_video=true" } : {}),
     });
     return response.status(200).json({
       ...signature,
@@ -277,7 +300,7 @@ export const signMediaUpload = async (request, response, next) => {
       max_duration_seconds:
         mediaType === "video" && !trimVideo ? env.postMaxVideoSeconds : null,
       trim_video: trimVideo,
-      ...(trimVideo ? { context: "trim_video=true" } : {}),
+      ...(mediaType === "video" ? { context: "trim_video=true" } : {}),
     });
   } catch (error) {
     return next(error);
@@ -382,22 +405,29 @@ const getVerifiedAsset = async (
           : "La vidéo dépasse la limite de taille autorisée.",
     };
   }
-  const duration =
-    mediaType === "video" ? Number(asset.duration) : null;
+  const duration = mediaType === "video" ? getVideoDurationSeconds(asset) : null;
+  const durationCapAuthorized = mediaType === "video" && signedTrimContext;
+  if (mediaType === "video" && duration === null && !durationCapAuthorized) {
+    return {
+      error: "La durée de la vidéo est temporairement indisponible. Réessayez.",
+      status: 503,
+      code: "VIDEO_DURATION_UNAVAILABLE",
+    };
+  }
   if (
     mediaType === "video" &&
-    (!Number.isFinite(duration) ||
-      duration <= 0 ||
-      (duration > env.postMaxVideoSeconds && !trimVideo))
+    duration !== null &&
+    duration > env.postMaxVideoSeconds &&
+    !durationCapAuthorized
   ) {
     return {
-      error: `La vidéo doit durer au maximum ${env.postMaxVideoSeconds} secondes.`,
+      error: `La vidéo dépasse la limite de ${env.postMaxVideoSeconds} secondes et ne peut pas être ajustée.`,
     };
   }
   const isTrimmedVideo =
     mediaType === "video" &&
-    trimVideo &&
-    duration > env.postMaxVideoSeconds;
+    durationCapAuthorized &&
+    (duration === null || duration > env.postMaxVideoSeconds);
   const verifiedAsset = isTrimmedVideo
     ? {
         ...asset,
@@ -410,7 +440,13 @@ const getVerifiedAsset = async (
   return {
     asset: verifiedAsset,
     format,
-    duration: isTrimmedVideo ? env.postMaxVideoSeconds : duration,
+    duration:
+      duration === null
+        ? null
+        : isTrimmedVideo
+          ? env.postMaxVideoSeconds
+          : duration,
+    durationLimited: isTrimmedVideo,
   };
 };
 
@@ -504,7 +540,12 @@ export const createPost = async (request, response, next) => {
           request.body?.trim_video === true,
         )
       : null;
-    if (media?.error) return response.status(400).json({ error: media.error });
+    if (media?.error) {
+      return response.status(media.status ?? 400).json({
+        error: media.error,
+        ...(media.code ? { code: media.code } : {}),
+      });
+    }
     const additionalMedia = await Promise.all(
       additionalMediaIds.map((mediaPublicId) =>
         getVerifiedAsset(user.id, mediaPublicId, "image"),
@@ -633,6 +674,7 @@ export const createPost = async (request, response, next) => {
       }
       return response.status(201).json({
         post: { ...post, status: moderation.postStatus },
+        video_trimmed: media?.durationLimited ?? false,
         ...(moderation.moderationStatus
           ? { moderation_status: moderation.moderationStatus }
           : {}),
