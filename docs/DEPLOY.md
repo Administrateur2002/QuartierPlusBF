@@ -90,6 +90,15 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 42. `migrations/038_legal_document_acceptances.sql`
 43. `migrations/039_usage_limits.sql`
 44. `migrations/040_account_deletion_retention.sql`
+45. `migrations/041_series_core.sql`
+
+La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
+progression de lecture et votes de fin d'épisode. Elle est additive et conserve
+les données existantes. Appliquez-la après 040 et avant de déployer les routes
+`/v1/series`. La monétisation des séries reste désactivée : aucun crédit,
+déblocage payant ou abonnement n'est simulé. N'activez pas de flux payant avant
+la configuration et la validation réglementaire d'un prestataire autorisé pour
+chaque pays concerné.
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes

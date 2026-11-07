@@ -2,6 +2,7 @@ import type { NavigatorScreenParams } from "@react-navigation/native";
 
 export type MainTabParamList = {
   Accueil: undefined;
+  Séries: undefined;
   CarteSOS: { voiceSosRequestId?: string } | undefined;
   Marche:
     | {

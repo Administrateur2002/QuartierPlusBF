@@ -36,6 +36,10 @@ const adminWorkspaceMigration = readFileSync(
   new URL("../../migrations/035_secure_admin_workspace.sql", import.meta.url),
   "utf8",
 );
+const seriesMigration = readFileSync(
+  new URL("../../migrations/041_series_core.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -129,6 +133,10 @@ test("profile photos and feed carousel migrations are additive and documented fo
     grinModerationMigration,
     /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
   );
+  assert.match(seriesMigration, /CREATE TABLE IF NOT EXISTS series_episode_votes/);
+  assert.match(seriesMigration, /PRIMARY KEY \(poll_id, user_id\)/);
+  assert.match(seriesMigration, /CREATE TABLE IF NOT EXISTS series_episode_progress/);
+  assert.doesNotMatch(seriesMigration, /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i);
   for (const [migration, version] of [
     [commerceGrowthMigration, "025_commerce_growth_offers.sql"],
     [profilePhotoMigration, "026_user_profile_photos.sql"],
@@ -137,6 +145,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     [postMediaMigration, "029_post_media_carousel.sql"],
     [grinModerationMigration, "034_grin_live_moderation.sql"],
     [adminWorkspaceMigration, "035_secure_admin_workspace.sql"],
+    [seriesMigration, "041_series_core.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -150,6 +159,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "029_post_media_carousel.sql",
     "034_grin_live_moderation.sql",
     "035_secure_admin_workspace.sql",
+    "041_series_core.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));

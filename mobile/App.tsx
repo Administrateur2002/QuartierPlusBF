@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Home,
+  Clapperboard,
   MapPin,
   Mic,
   MessageSquare,
@@ -52,6 +53,7 @@ import CompleteProfileScreen from "./src/screens/auth/CompleteProfileScreen";
 import PhoneAuthScreen from "./src/screens/auth/PhoneAuthScreen";
 import GuestWelcomeScreen from "./src/screens/GuestWelcomeScreen";
 import FeedScreen from "./src/screens/FeedScreen";
+import SeriesScreen from "./src/screens/SeriesScreen";
 import GrinScreen from "./src/screens/GrinScreen";
 import MapScreen from "./src/screens/MapScreen";
 import MarketplaceScreen from "./src/screens/MarketplaceScreen";
@@ -180,6 +182,14 @@ function MainTabs() {
         options={{
           tabBarLabel: renderTabLabel(t("tabHome")),
           tabBarIcon: ({ color, size }) => <Home color={color} size={size} />,
+        }}
+      />
+      <Tab.Screen
+        name="Séries"
+        component={SeriesScreen}
+        options={{
+          tabBarLabel: renderTabLabel("Séries"),
+          tabBarIcon: ({ color, size }) => <Clapperboard color={color} size={size} />,
         }}
       />
       <Tab.Screen
