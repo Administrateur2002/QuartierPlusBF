@@ -8,6 +8,7 @@ import {
   Bookmark,
   BusFront,
   Calendar,
+  Clapperboard,
   ChevronRight,
   Download,
   Heart,
@@ -20,6 +21,7 @@ import {
   Search,
   Share2,
   Settings2,
+  Users,
 } from "lucide-react-native";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
@@ -61,7 +63,7 @@ import {
   getCachedPosts,
 } from "../services/db";
 import { openProfileStore } from "../storage/profileStore";
-import { API_BASE_URL, apiFetch } from "../services/api";
+import api, { API_BASE_URL, apiFetch } from "../services/api";
 import {
   FEED_FILTERS,
   matchesFeedFilter,
@@ -132,6 +134,14 @@ type FeedComment = {
 type FeedError = {
   message: string;
   details: string;
+};
+
+type ResumeEpisode = {
+  series_id: string;
+  series_title: string;
+  episode_id: string;
+  episode_title: string;
+  position_seconds: number;
 };
 
 type DraftMedia = {
@@ -352,6 +362,7 @@ export default function FeedScreen() {
   const pagerRef = useRef<ScrollView>(null);
   const [scope, setScope] = useState<FeedScope>("country");
   const [tabBarVisible, setTabBarVisible] = useState(true);
+  const [resumeEpisode, setResumeEpisode] = useState<ResumeEpisode | null>(null);
   const scopeScrollOffsets = useRef<Record<FeedScope, number>>({
     neighborhood: 0,
     region: 0,
@@ -411,6 +422,32 @@ export default function FeedScreen() {
   const tripleTapHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tripleTapHintShown = useRef(false);
   const tabBarHeight = 68 + insets.bottom;
+
+  useEffect(() => {
+    let active = true;
+    if (!isFocused || !user) {
+      setResumeEpisode(null);
+      return () => {
+        active = false;
+      };
+    }
+    void api
+      .get<{ resume: ResumeEpisode | null }>("/v1/series/resume", {
+        headers: { "Cache-Control": "no-cache" },
+      })
+      .then((response) => {
+        if (active) setResumeEpisode(response.data.resume);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setResumeEpisode(null);
+          console.warn("Unable to load the latest series progress:", error);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [isFocused, user?.id]);
 
   const showFloatingBar = useCallback(() => {
     if (floatingBarTimer.current) clearTimeout(floatingBarTimer.current);
@@ -2886,6 +2923,63 @@ export default function FeedScreen() {
             </Pressable>
           </View>
         </Animated.View>
+        <View
+          accessibilityRole="tablist"
+          pointerEvents={interfaceVisible ? "auto" : "none"}
+          style={[styles.universeSwitcher, { opacity: interfaceVisible ? 1 : 0 }]}
+        >
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: true }}
+            onPress={() => setInterfaceVisible(true)}
+            style={[styles.universeTab, styles.universeTabSelected]}
+          >
+            <Users color="#ffffff" size={15} />
+            <Text style={styles.universeTabSelectedText}>Communauté</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: false }}
+            onPress={() => navigation.navigate("Séries")}
+            style={styles.universeTab}
+          >
+            <Clapperboard color="#ffffff" size={15} />
+            <Text style={styles.universeTabText}>Séries</Text>
+          </Pressable>
+        </View>
+        <ScrollView
+          contentContainerStyle={styles.seriesShortcutsRow}
+          horizontal
+          pointerEvents={interfaceVisible ? "auto" : "none"}
+          showsHorizontalScrollIndicator={false}
+          style={{ opacity: interfaceVisible ? 1 : 0 }}
+        >
+          {resumeEpisode ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => navigation.navigate("Séries", { action: "resume" })}
+              style={styles.seriesShortcut}
+            >
+              <Text numberOfLines={1} style={styles.seriesShortcutText}>
+                Reprendre ma dernière série · {resumeEpisode.series_title}
+              </Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => navigation.navigate("Séries")}
+            style={styles.seriesShortcut}
+          >
+            <Text style={styles.seriesShortcutText}>Découvrir les séries</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => navigation.navigate("Séries", { action: "cultures" })}
+            style={styles.seriesShortcut}
+          >
+            <Text style={styles.seriesShortcutText}>Explorer les cultures</Text>
+          </Pressable>
+        </ScrollView>
         <Animated.View
           pointerEvents={interfaceVisible ? "box-none" : "none"}
           style={[
@@ -3858,6 +3952,14 @@ const styles = StyleSheet.create({
   topEdgeTouch: { height: 8, left: 0, position: "absolute", right: 0, top: 0, zIndex: 9 },
   floatingTopContainer: { left: 0, position: "absolute", right: 0, top: 0, zIndex: 8 },
   topFloatingRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 12 },
+  universeSwitcher: { alignSelf: "center", flexDirection: "row", gap: 4, marginTop: 8, padding: 3, borderRadius: 18, backgroundColor: "rgba(12,28,40,0.78)", borderColor: "rgba(255,255,255,0.2)", borderWidth: 1 },
+  universeTab: { alignItems: "center", borderRadius: 15, flexDirection: "row", gap: 6, minHeight: 34, paddingHorizontal: 14 },
+  universeTabSelected: { backgroundColor: "#16856b" },
+  universeTabSelectedText: { color: "#ffffff", fontSize: 12, fontWeight: "700" },
+  universeTabText: { color: "#ffffff", fontSize: 12, fontWeight: "600" },
+  seriesShortcutsRow: { gap: 7, paddingHorizontal: 12, paddingTop: 7 },
+  seriesShortcut: { alignItems: "center", backgroundColor: "rgba(12,28,40,0.78)", borderColor: "rgba(255,255,255,0.2)", borderRadius: 16, borderWidth: 1, justifyContent: "center", minHeight: 36, maxWidth: 240, paddingHorizontal: 12 },
+  seriesShortcutText: { color: "#ffffff", fontSize: 11, fontWeight: "700" },
   homeShortcutsRow: { flexDirection: "row", gap: 6, marginTop: 8, paddingHorizontal: 12 },
   homeShortcut: {
     alignItems: "center",

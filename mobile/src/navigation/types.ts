@@ -2,7 +2,7 @@ import type { NavigatorScreenParams } from "@react-navigation/native";
 
 export type MainTabParamList = {
   Accueil: undefined;
-  Séries: undefined;
+  Séries: { action?: "resume" | "create" | "cultures" } | undefined;
   CarteSOS: { voiceSosRequestId?: string } | undefined;
   Marche:
     | {

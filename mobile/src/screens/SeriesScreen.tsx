@@ -1,4 +1,5 @@
-import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
+import type { RouteProp } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { Clapperboard, Plus, RefreshCw } from "lucide-react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
@@ -65,6 +66,7 @@ export default function SeriesScreen() {
   const { colors } = useTheme();
   const { user, requestAuthentication } = useAuth();
   const navigation = useNavigation<BottomTabNavigationProp<MainTabParamList>>();
+  const route = useRoute<RouteProp<MainTabParamList, "Séries">>();
   const [series, setSeries] = useState<SeriesItem[]>([]);
   const [mine, setMine] = useState<SeriesItem[]>([]);
   const [detail, setDetail] = useState<SeriesDetail | null>(null);
@@ -76,12 +78,15 @@ export default function SeriesScreen() {
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [cultureTagsText, setCultureTagsText] = useState("");
   const [countryCode, setCountryCode] = useState(user?.country_code ?? "BF");
   const [languageCode, setLanguageCode] = useState("fr");
   const [seasonTitle, setSeasonTitle] = useState("Saison 1");
   const [episodeTitle, setEpisodeTitle] = useState("");
   const [episodeVideoUrl, setEpisodeVideoUrl] = useState("");
   const [isSavingEpisode, setIsSavingEpisode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [cultureFilter, setCultureFilter] = useState<string | null>(null);
 
   const loadSeries = useCallback(async () => {
     setIsLoading(true);
@@ -105,12 +110,26 @@ export default function SeriesScreen() {
       setSeries(catalog.data.series);
       setMine(own.data.series);
       setResume(latest.data.resume);
+      if (route.params?.action === "cultures") setCultureFilter(null);
+      if (route.params?.action === "resume" && latest.data.resume) {
+        const detailResponse = await api.get<{ series: SeriesDetail }>(
+          `/v1/series/${latest.data.resume.series_id}`,
+          { headers: { "Cache-Control": "no-cache" } },
+        );
+        setDetail(detailResponse.data.series);
+        const episode = detailResponse.data.series.seasons
+          .flatMap((season) => season.episodes)
+          .find((item) => item.id === latest.data.resume?.episode_id);
+        if (episode) setActiveEpisode(episode);
+        else setError("L’épisode à reprendre n’est plus disponible.");
+      }
+      if (route.params?.action) navigation.setParams({ action: undefined });
     } catch (loadError) {
       setError(messageFrom(loadError));
     } finally {
       setIsLoading(false);
     }
-  }, [user]);
+  }, [navigation, route.params?.action, user]);
 
   const openSeries = async (item: SeriesItem) => {
     setError(null);
@@ -195,14 +214,31 @@ export default function SeriesScreen() {
     void loadSeries();
   }, [loadSeries]));
 
+  const cultureOptions = [...new Set(series.flatMap((item) => item.culture_tags))]
+    .filter((tag) => tag.trim())
+    .sort((left, right) => left.localeCompare(right));
+  const filteredSeries = series.filter((item) => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    const matchesSearch = !query ||
+      `${item.title} ${item.description} ${item.country_code ?? ""} ${item.language_code} ${item.culture_tags.join(" ")}`
+        .toLocaleLowerCase()
+        .includes(query);
+    return matchesSearch && (!cultureFilter || item.culture_tags.includes(cultureFilter));
+  });
+
   const createSeries = async () => {
     if (!user) {
       requestAuthentication();
       return;
     }
+    const cultureTags = [...new Set(cultureTagsText.split(",").map((tag) => tag.trim()).filter(Boolean))];
     if (!title.trim() || !/^[A-Z]{2,3}$/.test(countryCode.trim()) ||
         !/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(languageCode.trim())) {
       Alert.alert("Informations invalides", "Vérifiez le titre, le code pays et la langue.");
+      return;
+    }
+    if (cultureTags.length > 10 || cultureTags.some((tag) => tag.length > 48)) {
+      Alert.alert("Cultures invalides", "Saisissez au maximum 10 cultures de 48 caractères chacune.");
       return;
     }
     setIsCreating(true);
@@ -212,9 +248,11 @@ export default function SeriesScreen() {
         description: description.trim(),
         country_code: countryCode.trim(),
         language_code: languageCode.trim(),
+        culture_tags: cultureTags,
       });
       setTitle("");
       setDescription("");
+      setCultureTagsText("");
       setShowCreateForm(false);
       await loadSeries();
       Alert.alert("Série créée", "Le brouillon est enregistré dans vos productions.");
@@ -256,6 +294,43 @@ export default function SeriesScreen() {
         </Pressable>
       </View>
 
+      <View style={styles.discoveryBlock}>
+        <Text style={styles.sectionTitle}>Explorer les cultures</Text>
+        <TextInput
+          accessibilityLabel="Rechercher une série"
+          onChangeText={setSearchQuery}
+          placeholder="Série, pays, langue ou culture"
+          placeholderTextColor={colors.secondaryText}
+          style={styles.searchInput}
+          value={searchQuery}
+        />
+        {cultureOptions.length > 0 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cultureFilters}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: cultureFilter === null }}
+              onPress={() => setCultureFilter(null)}
+              style={[styles.cultureChip, cultureFilter === null && styles.cultureChipSelected]}
+            >
+              <Text style={[styles.cultureChipText, cultureFilter === null && styles.cultureChipTextSelected]}>Toutes</Text>
+            </Pressable>
+            {cultureOptions.map((tag) => (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: cultureFilter === tag }}
+                key={tag}
+                onPress={() => setCultureFilter((current) => current === tag ? null : tag)}
+                style={[styles.cultureChip, cultureFilter === tag && styles.cultureChipSelected]}
+              >
+                <Text style={[styles.cultureChipText, cultureFilter === tag && styles.cultureChipTextSelected]}>{tag}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : (
+          <Text style={styles.metadata}>Les productions publiées n’ont pas encore de culture renseignée.</Text>
+        )}
+      </View>
+
       {resume && (
         <Pressable accessibilityRole="button" onPress={() => void resumeLastEpisode()} style={styles.resumeButton}>
           <Text style={styles.resumeEyebrow}>REPRENDRE MA SÉRIE</Text>
@@ -269,6 +344,7 @@ export default function SeriesScreen() {
           <Text style={styles.formTitle}>Nouvelle production</Text>
           <Field label="Titre" value={title} onChangeText={setTitle} maxLength={160} styles={styles} />
           <Field label="Synopsis" value={description} onChangeText={setDescription} maxLength={10000} multiline styles={styles} />
+          <Field label="Cultures (séparées par des virgules)" value={cultureTagsText} onChangeText={setCultureTagsText} maxLength={500} styles={styles} />
           <View style={styles.fieldRow}>
             <Field label="Pays (ISO)" value={countryCode} onChangeText={(value) => setCountryCode(value.toUpperCase())} maxLength={3} styles={styles} />
             <Field label="Langue" value={languageCode} onChangeText={setLanguageCode} maxLength={12} styles={styles} />
@@ -291,7 +367,10 @@ export default function SeriesScreen() {
       {!isLoading && !error && series.length === 0 && (
         <Text style={styles.empty}>Les premières séries seront bientôt disponibles.</Text>
       )}
-      {series.map((item) => <SeriesRow key={item.id} item={item} styles={styles} onPress={() => void openSeries(item)} />)}
+      {filteredSeries.map((item) => <SeriesRow key={item.id} item={item} styles={styles} onPress={() => void openSeries(item)} />)}
+      {!isLoading && !error && series.length > 0 && filteredSeries.length === 0 && (
+        <Text style={styles.empty}>Aucune série ne correspond à cette recherche.</Text>
+      )}
 
       {detail && (
         <View style={styles.detail}>
@@ -300,6 +379,16 @@ export default function SeriesScreen() {
               <Text style={styles.eyebrow}>SÉRIE</Text>
               <Text style={styles.detailTitle}>{detail.title}</Text>
             </View>
+            {detail.credits.length > 0 && (
+              <View style={styles.creditsBlock}>
+                <Text style={styles.sectionTitle}>Générique et distribution</Text>
+                {detail.credits.map((credit, index) => (
+                  <Text key={`${credit.role}:${credit.name}:${index}`} style={styles.metadata}>
+                    {credit.name} · {credit.role}
+                  </Text>
+                ))}
+              </View>
+            )}
             <Pressable accessibilityRole="button" onPress={() => { setDetail(null); setActiveEpisode(null); }} style={styles.closeButton}>
               <Text style={styles.closeText}>Fermer</Text>
             </Pressable>
@@ -578,6 +667,13 @@ const createStyles = (colors: ReturnType<typeof useTheme>["colors"]) => StyleShe
   title: { color: colors.text, fontSize: 28, fontWeight: "800" },
   iconButton: { width: 42, height: 42, borderRadius: 9, backgroundColor: colors.card, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border },
   creatorRow: { gap: 12, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
+  discoveryBlock: { gap: 9, padding: 14, borderRadius: 10, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+  searchInput: { minHeight: 44, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, color: colors.text },
+  cultureFilters: { gap: 8, paddingRight: 8 },
+  cultureChip: { minHeight: 34, justifyContent: "center", paddingHorizontal: 12, borderRadius: 17, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background },
+  cultureChipSelected: { borderColor: "#16856b", backgroundColor: "#16856b" },
+  cultureChipText: { color: colors.text, fontSize: 12, fontWeight: "600" },
+  cultureChipTextSelected: { color: "#ffffff" },
   sectionTitle: { color: colors.text, fontSize: 16, fontWeight: "700" },
   createButton: { alignSelf: "flex-start", minHeight: 42, borderRadius: 8, paddingHorizontal: 14, backgroundColor: "#16856b", flexDirection: "row", alignItems: "center", gap: 8 },
   createButtonText: { color: "#ffffff", fontSize: 14, fontWeight: "700" },
@@ -609,6 +705,7 @@ const createStyles = (colors: ReturnType<typeof useTheme>["colors"]) => StyleShe
   detailHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
   detailCopy: { flex: 1, gap: 3 },
   detailTitle: { color: colors.text, fontSize: 20, fontWeight: "800" },
+  creditsBlock: { gap: 5, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border },
   closeButton: { minHeight: 36, paddingHorizontal: 10, alignItems: "center", justifyContent: "center", borderRadius: 7, borderWidth: 1, borderColor: colors.border },
   closeText: { color: colors.text, fontWeight: "600", fontSize: 12 },
   season: { gap: 4 },
