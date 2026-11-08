@@ -10,17 +10,19 @@ const { ensureDefaultChannels } = await import("../services/defaultChannels.js")
 const { pool } = await import("../db/pool.js");
 
 test("startup idempotently upserts emergency and announcements channels per country", async (context) => {
-  let statement;
+  const statements = [];
   context.mock.method(pool, "query", async (query) => {
-    statement = query;
+    statements.push(query);
     return { rowCount: 2, rows: [] };
   });
 
   await ensureDefaultChannels();
 
+  const statement = statements[0];
   assert.match(statement, /INSERT INTO channels \(name, kind, country_code\)/);
   assert.match(statement, /'URGENCES', 'EMERGENCY'/);
   assert.match(statement, /'ANNONCES', 'ANNOUNCEMENTS'/);
   assert.match(statement, /ON CONFLICT \(country_code, kind\)/);
   assert.match(statement, /DO UPDATE SET name = EXCLUDED\.name/);
+  assert.match(statements[1], /'International · Communauté', 'COMMUNITY', 'international'/);
 });

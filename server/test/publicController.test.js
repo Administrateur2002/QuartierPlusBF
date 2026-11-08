@@ -73,7 +73,7 @@ test("nearby SOS alerts accept valid radius filters and return an empty list", a
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.payload, { alerts: [] });
-  assert.deepEqual(queryValues, [12.37, -1.52, 30_000, null, null]);
+  assert.deepEqual(queryValues, [12.37, -1.52, 30_000, null, null, null]);
   assert.match(queryStatement, /ST_SnapToGrid\(alert\.location, 0\.002\)/);
   assert.doesNotMatch(queryStatement, /ST_Y\(alert\.location\)/);
 });

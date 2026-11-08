@@ -150,3 +150,32 @@ export const createSosAlert = async (request, response, next) => {
     moderation_pending: isNewAccount,
   });
 };
+
+export const resolveSosAlert = async (request, response, next) => {
+  const alertId = request.params.id;
+  if (
+    typeof alertId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      alertId,
+    )
+  ) {
+    return response.status(400).json({ error: "Identifiant d'alerte invalide." });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE sos_alerts
+       SET status = 'RESOLVED'
+       WHERE id = $1 AND user_id = $2 AND status = 'ACTIVE'
+       RETURNING id, status, created_at`,
+      [alertId, request.auth.userId],
+    );
+    if (!result.rowCount) {
+      return response.status(404).json({
+        error: "Seul l'auteur peut clôturer une alerte SOS encore active.",
+      });
+    }
+    return response.status(200).json({ alert: result.rows[0] });
+  } catch (error) {
+    return next(error);
+  }
+};

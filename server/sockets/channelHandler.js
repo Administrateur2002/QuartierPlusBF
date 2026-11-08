@@ -20,7 +20,7 @@ const emitChannelError = (socket, acknowledgement, message) => {
 const payloadChannelId = (payload) =>
   String(payload?.channel_id ?? payload?.channelId ?? "").trim();
 
-const resolveChannel = async (channelId) => {
+const resolveChannel = async (channelId, userId) => {
   if (!channelId || channelId.length > 100) return null;
   const upper = channelId.toUpperCase();
   const kind = CHANNEL_ALIASES.get(upper);
@@ -28,17 +28,59 @@ const resolveChannel = async (channelId) => {
     ? await pool.query(
         `SELECT id, name, kind
          FROM channels
-         WHERE UPPER(kind) = $1 OR UPPER(name) = $2
-         ORDER BY CASE WHEN UPPER(kind) = $1 THEN 0 ELSE 1 END
+         WHERE UPPER(kind) = $1
+           AND communication_area_id IS NULL
+           AND (country_code IS NULL OR country_code = (
+             SELECT country_code FROM users WHERE id = $3
+           ))
+         ORDER BY CASE WHEN country_code = (
+           SELECT country_code FROM users WHERE id = $3
+         ) THEN 0 ELSE 1 END
          LIMIT 1`,
-        [kind, upper],
+        [kind, upper, userId],
       )
     : UUID_PATTERN.test(channelId)
       ? await pool.query(
-          `SELECT id, name, kind
-           FROM channels
-           WHERE id = $1 AND UPPER(kind) IN ('EMERGENCY', 'ANNOUNCEMENTS')`,
-          [channelId],
+          `SELECT channel.id, channel.name, channel.kind
+           FROM channels AS channel
+           WHERE channel.id = $1
+             AND (
+               channel.geography_scope = 'international'
+               OR (channel.communication_area_id IS NULL
+                 AND channel.country_code = (
+                   SELECT country_code FROM users WHERE id = $2
+                 ))
+               OR EXISTS (
+                 SELECT 1 FROM user_geographic_channel_follows AS follow
+                 WHERE follow.user_id = $2 AND follow.channel_id = channel.id
+               )
+               OR EXISTS (
+                 SELECT 1 FROM users AS account
+                 JOIN communication_areas AS area
+                   ON area.id = channel.communication_area_id
+                 WHERE account.id = $2
+                   AND (
+                     (account.last_location IS NOT NULL
+                       AND ST_Covers(area.boundary, account.last_location))
+                     OR (area.scope = 'neighborhood'
+                       AND LOWER(area.name) = LOWER(COALESCE(account.neighborhood, '')))
+                   )
+               )
+               OR EXISTS (
+                 SELECT 1 FROM users AS account
+                 WHERE account.id = $2 AND account.last_location IS NOT NULL
+                   AND channel.center_location IS NOT NULL
+                   AND ST_DWithin(
+                     channel.center_location::geography,
+                     account.last_location::geography,
+                     COALESCE((
+                       SELECT default_radius_m FROM country_config
+                       WHERE code = account.country_code
+                     ), 5000)
+                   )
+               )
+             )`,
+          [channelId, userId],
         )
       : null;
   return result?.rows[0] ?? null;
@@ -61,7 +103,7 @@ const eventErrorHandler = (socket, event, handler) => {
 
 const getJoinedChannel = async (socket, payload, acknowledgement) => {
   const channelId = payloadChannelId(payload);
-  const channel = await resolveChannel(channelId);
+  const channel = await resolveChannel(channelId, socket.data.user.id);
   if (!channel) {
     emitChannelError(socket, acknowledgement, "Canal public introuvable.");
     return null;
@@ -92,7 +134,7 @@ export const registerChannelHandlers = (io, socket) => {
   };
   const leaveChannel = async (payload, acknowledgement) => {
     const channelId = payloadChannelId(payload);
-    const channel = await resolveChannel(channelId);
+    const channel = await resolveChannel(channelId, socket.data.user.id);
     if (!channel) {
       emitChannelError(socket, acknowledgement, "Canal public introuvable.");
       return;
@@ -115,10 +157,18 @@ export const registerChannelHandlers = (io, socket) => {
 
   const sendMessage = async (payload, acknowledgement) => {
     const channelId = payloadChannelId(payload);
-    const channel = await resolveChannel(channelId);
+    const channel = await resolveChannel(channelId, socket.data.user.id);
     const room = channel ? channelRoom(channel.id) : "";
     if (!channel || !socket.rooms.has(room)) {
       emitChannelError(socket, acknowledgement, "Vous n'êtes pas membre de ce canal.");
+      return;
+    }
+    if (channel.kind === "ANNOUNCEMENTS") {
+      emitChannelError(
+        socket,
+        acknowledgement,
+        "Les annonces officielles doivent être publiées via le parcours institutionnel vérifié.",
+      );
       return;
     }
 
@@ -171,6 +221,7 @@ export const registerChannelHandlers = (io, socket) => {
       content: saved.body,
       media_url: saved.media_url,
       media_type: saved.media_type,
+      information_type: "COMMUNITY",
       created_at: saved.created_at,
     };
     io.to(room).emit("channel:new_message", message);
@@ -187,10 +238,15 @@ export const registerChannelHandlers = (io, socket) => {
     void (async () => {
       const pushTokens = await pool.query(
         `SELECT DISTINCT push_tokens.token
-         FROM user_channel_subscriptions
-         JOIN push_tokens ON push_tokens.user_id = user_channel_subscriptions.user_id
-         WHERE user_channel_subscriptions.channel_id = $1
-           AND user_channel_subscriptions.user_id <> $2`,
+         FROM push_tokens
+         WHERE push_tokens.user_id <> $2
+           AND push_tokens.user_id IN (
+             SELECT user_id FROM user_channel_subscriptions
+             WHERE channel_id = $1
+             UNION
+             SELECT user_id FROM user_geographic_channel_follows
+             WHERE channel_id = $1
+           )`,
         [channel.id, saved.sender_id],
       );
       await sendExpoPushNotifications(

@@ -1,22 +1,28 @@
 import { AudioSession } from "@livekit/react-native";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
 import { File } from "expo-file-system";
 import { VideoView, useVideoPlayer } from "expo-video";
 import {
   AlertTriangle,
+  BadgeCheck,
+  Building2,
+  HeartHandshake,
   ImagePlus,
   MapPin,
   Megaphone,
   MessageSquare,
   Mic,
   Radio,
+  RefreshCw,
   Send,
+  ShieldAlert,
   Siren,
   X,
 } from "lucide-react-native";
 import { Room } from "livekit-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoute, type RouteProp } from "@react-navigation/native";
 import VoiceTextInput from "../components/VoiceTextInput";
 import ProfileAvatar from "../components/ProfileAvatar";
@@ -49,7 +55,15 @@ import {
 import { compressVideoForUpload } from "../services/videoCompression";
 import { exceedsVideoDurationLimit } from "../services/videoDuration";
 
-type ChannelId = "emergency" | "announcements";
+type ChannelId = string;
+type GeographicScope =
+  | "nearby"
+  | "neighborhood"
+  | "commune"
+  | "region"
+  | "country"
+  | "international";
+type InformationCategory = "COMMUNITY" | "OFFICIAL" | "SOS" | "EMERGENCY_CHAT";
 type Channel = {
   id: ChannelId;
   label: string;
@@ -57,6 +71,12 @@ type Channel = {
   color: string;
   background: string;
   icon: typeof Siren;
+  kind: string;
+  scope?: GeographicScope;
+  areaId?: string | null;
+  countryCode?: string | null;
+  isFollowing?: boolean;
+  canPublishOfficial?: boolean;
 };
 type ChatMessage = {
   id: string;
@@ -71,6 +91,26 @@ type ChatMessage = {
   isOwnMessage: boolean;
   imageUrl?: string;
   mediaType?: CloudinaryMediaType;
+  informationType: "COMMUNITY" | "OFFICIAL";
+  institutionName?: string | null;
+  institutionId?: string | null;
+};
+type Institution = {
+  id: string;
+  name: string;
+  institution_type: string;
+  country_code: string;
+  communication_area_id: string | null;
+  status: string;
+  membership_status: string;
+};
+type SosAlert = {
+  id: string;
+  emergency_type: string;
+  status: string;
+  created_at: string;
+  distance_m: number | null;
+  is_mine: boolean;
 };
 type UploadedMessageMedia = {
   publicId: string;
@@ -99,6 +139,7 @@ const CHANNELS: Channel[] = [
     color: "#dc2626",
     background: "#fef2f2",
     icon: Siren,
+    kind: "EMERGENCY",
   },
   {
     id: "announcements",
@@ -107,7 +148,16 @@ const CHANNELS: Channel[] = [
     color: "#ca8a04",
     background: "#fefce8",
     icon: Megaphone,
+    kind: "ANNOUNCEMENTS",
   },
+];
+const GEOGRAPHIC_SCOPES: { id: GeographicScope; label: string }[] = [
+  { id: "nearby", label: "Autour de moi" },
+  { id: "neighborhood", label: "Mon quartier" },
+  { id: "commune", label: "Ma commune" },
+  { id: "region", label: "Ma région" },
+  { id: "country", label: "Mon pays" },
+  { id: "international", label: "International" },
 ];
 const REPORT_REASONS = [
   "Harcèlement",
@@ -115,6 +165,8 @@ const REPORT_REASONS = [
   "Arnaque",
   "Faux profil",
   "Spam",
+  "Fausse information",
+  "Fausse alerte",
   "Usurpation d’identité",
   "Contenu dangereux",
   "Autre motif",
@@ -122,6 +174,57 @@ const REPORT_REASONS = [
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const normalizeChannel = (value: unknown): Channel | null => {
+  if (!isRecord(value)) return null;
+  const id = String(value.id ?? "");
+  const kind = String(value.kind ?? "").toUpperCase();
+  const scope =
+    typeof value.scope === "string" &&
+    GEOGRAPHIC_SCOPES.some((item) => item.id === value.scope)
+      ? (value.scope as GeographicScope)
+      : undefined;
+  if (!id || !["COMMUNITY", "ANNOUNCEMENTS", "EMERGENCY"].includes(kind)) {
+    return null;
+  }
+  const icon =
+    kind === "EMERGENCY"
+      ? Siren
+      : kind === "ANNOUNCEMENTS"
+        ? Megaphone
+        : MessageSquare;
+  const color =
+    kind === "EMERGENCY"
+      ? "#dc2626"
+      : kind === "ANNOUNCEMENTS"
+        ? "#ca8a04"
+        : "#2563eb";
+  return {
+    id,
+    label: String(value.name ?? "Canal public"),
+    description:
+      scope === "international"
+        ? "Canal communautaire international"
+        : scope
+          ? `Canal ${scope}`
+          : "Canal communautaire",
+    color,
+    background:
+      kind === "EMERGENCY"
+        ? "#fef2f2"
+        : kind === "ANNOUNCEMENTS"
+          ? "#fefce8"
+          : "#eff6ff",
+    icon,
+    kind,
+    scope,
+    areaId: typeof value.area_id === "string" ? value.area_id : null,
+    countryCode:
+      typeof value.country_code === "string" ? value.country_code : null,
+    isFollowing: value.is_following === true,
+    canPublishOfficial: value.can_publish_official === true,
+  };
+};
 
 const normalizeMessage = (
   value: unknown,
@@ -174,6 +277,12 @@ const normalizeMessage = (
           ? value.imageUrl
           : undefined,
     mediaType: value.media_type === "video" ? "video" : value.media_url || value.image_url ? "image" : undefined,
+    informationType:
+      value.information_type === "OFFICIAL" ? "OFFICIAL" : "COMMUNITY",
+    institutionName:
+      typeof value.institution_name === "string" ? value.institution_name : null,
+    institutionId:
+      typeof value.institution_id === "string" ? value.institution_id : null,
   };
 };
 
@@ -258,6 +367,29 @@ export default function MessagesScreen() {
   const [activeTab, setActiveTab] = useState<"Privés" | "Canaux">("Privés");
   const [selectedChannelId, setSelectedChannelId] =
     useState<ChannelId>("emergency");
+  const [channels, setChannels] = useState<Channel[]>(CHANNELS);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
+  const [geographicScope, setGeographicScope] =
+    useState<GeographicScope>("nearby");
+  const [informationCategory, setInformationCategory] =
+    useState<InformationCategory>("COMMUNITY");
+  const [channelSearch, setChannelSearch] = useState("");
+  const [targetCountryCode, setTargetCountryCode] = useState("");
+  const [searchedChannels, setSearchedChannels] = useState<Channel[]>([]);
+  const [isSearchingChannels, setIsSearchingChannels] = useState(false);
+  const [institutions, setInstitutions] = useState<Institution[]>([]);
+  const [selectedInstitutionId, setSelectedInstitutionId] = useState("");
+  const [isInstitutionFormVisible, setIsInstitutionFormVisible] =
+    useState(false);
+  const [institutionName, setInstitutionName] = useState("");
+  const [institutionType, setInstitutionType] = useState("MUNICIPALITY");
+  const [institutionLegalId, setInstitutionLegalId] = useState("");
+  const [institutionProofUrl, setInstitutionProofUrl] = useState("");
+  const [isSubmittingInstitution, setIsSubmittingInstitution] = useState(false);
+  const [sosAlerts, setSosAlerts] = useState<SosAlert[]>([]);
+  const [isLoadingSosAlerts, setIsLoadingSosAlerts] = useState(false);
+  const [sosAlertsError, setSosAlertsError] = useState<string | null>(null);
+  const [isSubmittingSosAction, setIsSubmittingSosAction] = useState(false);
   const [conversations, setConversations] = useState<PrivateConversation[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
   const [conversationsError, setConversationsError] = useState<string | null>(
@@ -275,6 +407,13 @@ export default function MessagesScreen() {
   const [isCompressingMedia, setIsCompressingMedia] = useState(false);
   const [mediaUploadProgress, setMediaUploadProgress] = useState<number | null>(null);
   const [selectedReport, setSelectedReport] = useState<ChatMessage | null>(null);
+  const [selectedOfficialMessage, setSelectedOfficialMessage] =
+    useState<ChatMessage | null>(null);
+  const [officialEditDraft, setOfficialEditDraft] = useState("");
+  const [officialHistory, setOfficialHistory] = useState<Record<string, unknown>[]>([]);
+  const [isLoadingOfficialHistory, setIsLoadingOfficialHistory] = useState(false);
+  const [isUpdatingOfficialMessage, setIsUpdatingOfficialMessage] =
+    useState(false);
   const [reportReason, setReportReason] = useState("");
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [isPttVisible, setIsPttVisible] = useState(false);
@@ -288,7 +427,31 @@ export default function MessagesScreen() {
   const liveKitTokenControllerRef = useRef<AbortController | null>(null);
   const pttPressedRef = useRef(false);
   const selectedChannel =
-    CHANNELS.find((channel) => channel.id === selectedChannelId) ?? CHANNELS[0];
+    channels.find((channel) => channel.id === selectedChannelId) ??
+    CHANNELS.find((channel) => channel.id === selectedChannelId) ??
+    CHANNELS[0];
+  const visibleChannels = channels.filter((channel) =>
+    informationCategory === "COMMUNITY"
+      ? channel.kind === "COMMUNITY"
+      : informationCategory === "OFFICIAL"
+        ? channel.kind === "ANNOUNCEMENTS"
+        : informationCategory === "EMERGENCY_CHAT"
+          ? channel.kind === "EMERGENCY"
+          : false,
+  );
+  const hasSelectedChannel = visibleChannels.some(
+    (channel) => channel.id === selectedChannelId,
+  );
+  const publishableInstitutions = institutions.filter(
+    (institution) =>
+      institution.status === "VERIFIED" &&
+      institution.membership_status === "ACTIVE" &&
+      ((institution.communication_area_id &&
+        institution.communication_area_id === selectedChannel.areaId) ||
+        (!institution.communication_area_id &&
+          !selectedChannel.areaId &&
+          institution.country_code === selectedChannel.countryCode)),
+  );
   const filteredConversations = useMemo(() => {
     const normalize = (text: string) =>
       text
@@ -309,6 +472,9 @@ export default function MessagesScreen() {
     if (!params?.voiceRequestId) return;
     if (params.voiceChannelId) {
       setActiveTab("Canaux");
+      setInformationCategory(
+        params.voiceChannelId === "emergency" ? "EMERGENCY_CHAT" : "OFFICIAL",
+      );
       setSelectedChannelId(params.voiceChannelId);
       setSelectedConversation(null);
       setConversationSearch("");
@@ -318,6 +484,208 @@ export default function MessagesScreen() {
     setSelectedConversation(null);
     setConversationSearch(params.voiceContactQuery ?? "");
   }, [route.params]);
+
+  useEffect(() => {
+    if (activeTab !== "Canaux") return;
+    if (!API_BASE_URL) {
+      setChannelsError(
+        "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
+      );
+      return;
+    }
+    const controller = new AbortController();
+    const loadChannels = async () => {
+      setChannelsError(null);
+      try {
+        const response = await apiFetch(
+          `${API_BASE_URL}/v1/channels?scope=${encodeURIComponent(geographicScope)}`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) {
+          throw new Error(`Chargement refusé (HTTP ${response.status}).`);
+        }
+        const payload: unknown = await response.json();
+        const records =
+          isRecord(payload) && Array.isArray(payload.channels)
+            ? payload.channels
+            : null;
+        if (!records) {
+          throw new Error("Le serveur a renvoyé un annuaire de canaux invalide.");
+        }
+        const normalized = records.map(normalizeChannel);
+        if (normalized.some((channel) => channel === null)) {
+          throw new Error("L'annuaire contient un canal invalide.");
+        }
+        const validChannels = normalized.filter(
+          (channel): channel is Channel => channel !== null,
+        );
+        setChannels(validChannels);
+        const categoryKind =
+          informationCategory === "COMMUNITY"
+            ? "COMMUNITY"
+            : informationCategory === "OFFICIAL"
+              ? "ANNOUNCEMENTS"
+              : informationCategory === "EMERGENCY_CHAT"
+                ? "EMERGENCY"
+                : null;
+        const categoryChannels = categoryKind
+          ? validChannels.filter((channel) => channel.kind === categoryKind)
+          : [];
+        if (
+          categoryChannels.length > 0 &&
+          !categoryChannels.some((channel) => channel.id === selectedChannelId)
+        ) {
+          setSelectedChannelId(categoryChannels[0].id);
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setChannelsError(
+          error instanceof Error
+            ? error.message
+            : "Impossible de charger les canaux géographiques.",
+        );
+      }
+    };
+    void loadChannels();
+    return () => controller.abort();
+  }, [activeTab, geographicScope, informationCategory, isOffline]);
+
+  useEffect(() => {
+    if (activeTab !== "Canaux" || !API_BASE_URL) return;
+    const controller = new AbortController();
+    const loadInstitutions = async () => {
+      try {
+        const response = await apiFetch(
+          `${API_BASE_URL}/v1/channels/institutions/mine`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) {
+          throw new Error(`Chargement des institutions refusé (HTTP ${response.status}).`);
+        }
+        const payload: unknown = await response.json();
+        const records =
+          isRecord(payload) && Array.isArray(payload.institutions)
+            ? payload.institutions
+            : null;
+        if (!records) {
+          throw new Error("Le serveur a renvoyé une liste institutionnelle invalide.");
+        }
+        setInstitutions(
+          records.filter(
+            (institution): institution is Institution =>
+              isRecord(institution) &&
+              typeof institution.id === "string" &&
+              typeof institution.name === "string" &&
+              typeof institution.institution_type === "string" &&
+              typeof institution.country_code === "string" &&
+              typeof institution.status === "string" &&
+              typeof institution.membership_status === "string",
+          ),
+        );
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.error("Unable to load current institutions:", error);
+        }
+      }
+    };
+    void loadInstitutions();
+    return () => controller.abort();
+  }, [activeTab, isOffline]);
+
+  const loadSosAlerts = useCallback(async () => {
+    if (!API_BASE_URL) {
+      setSosAlertsError(
+        "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
+      );
+      return;
+    }
+    if (isOffline) {
+      setSosAlertsError("Les alertes SOS nécessitent une connexion réseau.");
+      return;
+    }
+    setIsLoadingSosAlerts(true);
+    setSosAlertsError(null);
+    let coordinates: { latitude: number; longitude: number } | null = null;
+    let locationError: string | null = null;
+    try {
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted" && permission.canAskAgain) {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+      if (permission.status === "granted") {
+        const position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        coordinates = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        };
+      } else {
+        locationError =
+          "Localisation refusée : les alertes sont affichées à l'échelle du pays.";
+      }
+    } catch (error) {
+      locationError =
+        error instanceof Error
+          ? `Position indisponible : ${error.message}`
+          : "Position indisponible : affichage des alertes du pays.";
+    }
+    try {
+      const countryCode =
+        typeof user?.country_code === "string" ? user.country_code : "";
+      const query = new URLSearchParams();
+      if (coordinates && /^[A-Z]{2,3}$/i.test(countryCode)) {
+        query.set("scope", "neighborhood");
+        query.set("latitude", String(coordinates.latitude));
+        query.set("longitude", String(coordinates.longitude));
+        query.set("country_code", countryCode);
+      } else if (/^[A-Z]{2,3}$/i.test(countryCode)) {
+        query.set("scope", "country");
+        query.set("country_code", countryCode);
+      } else {
+        query.set("scope", "international");
+      }
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/sos/alerts?${query.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Chargement refusé (HTTP ${response.status}).`);
+      }
+      const payload: unknown = await response.json();
+      const records =
+        isRecord(payload) && Array.isArray(payload.alerts) ? payload.alerts : null;
+      if (!records) {
+        throw new Error("Le serveur a renvoyé une liste d'alertes invalide.");
+      }
+      setSosAlerts(
+        records.filter(
+          (alert): alert is SosAlert =>
+            isRecord(alert) &&
+            typeof alert.id === "string" &&
+            typeof alert.emergency_type === "string" &&
+            typeof alert.status === "string" &&
+            typeof alert.created_at === "string" &&
+            typeof alert.is_mine === "boolean",
+        ),
+      );
+      setSosAlertsError(locationError);
+    } catch (error) {
+      setSosAlertsError(
+        error instanceof Error
+          ? error.message
+          : "Impossible de charger les alertes SOS.",
+      );
+    } finally {
+      setIsLoadingSosAlerts(false);
+    }
+  }, [isOffline, user?.country_code]);
+
+  useEffect(() => {
+    if (activeTab !== "Canaux" || informationCategory !== "SOS") return;
+    void loadSosAlerts();
+    const interval = setInterval(() => void loadSosAlerts(), 60_000);
+    return () => clearInterval(interval);
+  }, [activeTab, informationCategory, loadSosAlerts]);
 
   useEffect(() => {
     if (activeTab !== "Privés") return;
@@ -456,6 +824,13 @@ export default function MessagesScreen() {
       return () => controller.abort();
     }
 
+    if (informationCategory === "SOS") {
+      setMessages([]);
+      setIsLoadingMessages(false);
+      setMessagesError(null);
+      return;
+    }
+
     if (!API_BASE_URL) {
       setMessagesError(
         "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
@@ -535,10 +910,18 @@ export default function MessagesScreen() {
 
     void loadMessages();
     return () => controller.abort();
-  }, [activeTab, isOffline, selectedChannelId, selectedConversation, user?.id]);
+  }, [
+    activeTab,
+    informationCategory,
+    isOffline,
+    selectedChannelId,
+    selectedConversation,
+    user?.id,
+  ]);
 
   useEffect(() => {
     if (!API_BASE_URL) return;
+    if (activeTab === "Canaux" && informationCategory === "SOS") return;
     const isPrivateConversation =
       activeTab === "Privés" && selectedConversation !== null;
     if (activeTab === "Privés" && !selectedConversation) return;
@@ -660,7 +1043,14 @@ export default function MessagesScreen() {
         socket.disconnect();
       }
     };
-  }, [activeTab, selectedChannelId, selectedConversation, token, user?.id]);
+  }, [
+    activeTab,
+    informationCategory,
+    selectedChannelId,
+    selectedConversation,
+    token,
+    user?.id,
+  ]);
 
   useEffect(
     () => () => {
@@ -671,6 +1061,339 @@ export default function MessagesScreen() {
     },
     [],
   );
+
+  const toggleChannelFollow = async (channel: Channel) => {
+    if (!user?.id || !token) {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    try {
+      const following = !channel.isFollowing;
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/channels/${encodeURIComponent(channel.id)}/follow`,
+        { method: following ? "POST" : "DELETE" },
+      );
+      if (!response.ok) {
+        throw new Error(`Modification refusée (HTTP ${response.status}).`);
+      }
+      setChannels((current) =>
+        current.map((item) =>
+          item.id === channel.id ? { ...item, isFollowing: following } : item,
+        ),
+      );
+      setSearchedChannels((current) =>
+        current.map((item) =>
+          item.id === channel.id ? { ...item, isFollowing: following } : item,
+        ),
+      );
+    } catch (error) {
+      Alert.alert(
+        "Abonnement impossible",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    }
+  };
+
+  const searchGeographicChannels = async () => {
+    if (!API_BASE_URL) return;
+    const countryCode = targetCountryCode.trim().toUpperCase();
+    const query = new URLSearchParams({
+      scope: geographicScope,
+      q: channelSearch.trim(),
+    });
+    if (countryCode) query.set("country_code", countryCode);
+    setIsSearchingChannels(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/channels/catalog?${query.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Recherche refusée (HTTP ${response.status}).`);
+      }
+      const payload: unknown = await response.json();
+      const records =
+        isRecord(payload) && Array.isArray(payload.channels)
+          ? payload.channels
+          : null;
+      if (!records) {
+        throw new Error("Le serveur a renvoyé un annuaire invalide.");
+      }
+      const normalized = records.map(normalizeChannel);
+      if (normalized.some((channel) => channel === null)) {
+        throw new Error("L'annuaire contient un canal invalide.");
+      }
+      setSearchedChannels(
+        normalized.filter((channel): channel is Channel => channel !== null),
+      );
+    } catch (error) {
+      Alert.alert(
+        "Recherche impossible",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    } finally {
+      setIsSearchingChannels(false);
+    }
+  };
+
+  const submitInstitutionVerification = async () => {
+    if (!user?.id || !token) {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    if (institutionType === "MUNICIPALITY" && !selectedChannel.areaId) {
+      Alert.alert(
+        "Zone de mairie requise",
+        "Sélectionnez d'abord le canal géographique de la commune concernée.",
+      );
+      return;
+    }
+    const countryCode =
+      selectedChannel.countryCode ??
+      (typeof user.country_code === "string" ? user.country_code : "");
+    setIsSubmittingInstitution(true);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/channels/institutions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: institutionName.trim(),
+          institution_type: institutionType,
+          country_code: countryCode,
+          ...(selectedChannel.areaId
+            ? { communication_area_id: selectedChannel.areaId }
+            : {}),
+          legal_identifier: institutionLegalId.trim(),
+          proof_url: institutionProofUrl.trim(),
+        }),
+      });
+      if (!response.ok) {
+        let message = `Demande refusée (HTTP ${response.status}).`;
+        try {
+          const payload: unknown = await response.json();
+          if (isRecord(payload) && typeof payload.error === "string") {
+            message = payload.error;
+          }
+        } catch {
+          // Keep the HTTP error visible when the response is not JSON.
+        }
+        throw new Error(message);
+      }
+      const payload: unknown = await response.json();
+      const created =
+        isRecord(payload) && isRecord(payload.institution)
+          ? payload.institution
+          : null;
+      if (!created || typeof created.id !== "string") {
+        throw new Error("Le serveur n'a pas confirmé la demande institutionnelle.");
+      }
+      const createdInstitutionId = created.id;
+      setIsInstitutionFormVisible(false);
+      setInstitutionName("");
+      setInstitutionLegalId("");
+      setInstitutionProofUrl("");
+      Alert.alert(
+        "Demande envoyée",
+        "L'institution restera sans badge officiel et sans droit de publication jusqu'à vérification par l'administration.",
+      );
+      setInstitutions((current) => [
+        ...current,
+        {
+          id: createdInstitutionId,
+          name: institutionName.trim(),
+          institution_type: institutionType,
+          country_code: countryCode,
+          communication_area_id: selectedChannel.areaId ?? null,
+          status: "PENDING",
+          membership_status: "PENDING",
+        },
+      ]);
+    } catch (error) {
+      Alert.alert(
+        "Demande impossible",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    } finally {
+      setIsSubmittingInstitution(false);
+    }
+  };
+
+  const submitSosAction = async (
+    alert: SosAlert,
+    action: "assist" | "report-fake" | "resolve",
+  ) => {
+    if (!user?.id || !token) {
+      requestAuthentication();
+      return;
+    }
+    if (!API_BASE_URL) return;
+    setIsSubmittingSosAction(true);
+    try {
+      const actionPath =
+        action === "assist"
+          ? `/v1/sos/${encodeURIComponent(alert.id)}/assist`
+          : action === "report-fake"
+            ? `/v1/sos/${encodeURIComponent(alert.id)}/report-fake`
+            : `/v1/sos/${encodeURIComponent(alert.id)}/resolve`;
+      const response = await apiFetch(
+        `${API_BASE_URL}${actionPath}`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        let message = `Action refusée (HTTP ${response.status}).`;
+        try {
+          const payload: unknown = await response.json();
+          if (isRecord(payload) && typeof payload.error === "string") {
+            message = payload.error;
+          }
+        } catch {
+          // Keep the HTTP error visible when the response is not JSON.
+        }
+        throw new Error(message);
+      }
+      Alert.alert(
+        action === "assist"
+          ? "Proposition d'aide enregistrée"
+          : action === "resolve"
+            ? "Alerte clôturée"
+            : "Signalement transmis",
+        action === "assist"
+          ? "Votre proposition est associée à cette alerte."
+          : action === "resolve"
+            ? "Le suivi de cette alerte est terminé."
+            : "La modération examinera cette alerte.",
+      );
+      await loadSosAlerts();
+    } catch (error) {
+      Alert.alert(
+        "Action impossible",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    } finally {
+      setIsSubmittingSosAction(false);
+    }
+  };
+
+  const loadOfficialMessageHistory = async (messageId: string) => {
+    if (!API_BASE_URL) return;
+    setIsLoadingOfficialHistory(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/channels/official-messages/${encodeURIComponent(messageId)}/history`,
+      );
+      if (!response.ok) {
+        throw new Error(`Historique indisponible (HTTP ${response.status}).`);
+      }
+      const payload: unknown = await response.json();
+      const records =
+        isRecord(payload) && Array.isArray(payload.history) ? payload.history : null;
+      if (!records || records.some((item) => !isRecord(item))) {
+        throw new Error("Le serveur a renvoyé un historique invalide.");
+      }
+      setOfficialHistory(records as Record<string, unknown>[]);
+    } catch (error) {
+      Alert.alert(
+        "Historique indisponible",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    } finally {
+      setIsLoadingOfficialHistory(false);
+    }
+  };
+
+  const openOfficialMessage = (message: ChatMessage) => {
+    setSelectedOfficialMessage(message);
+    setOfficialEditDraft(message.text);
+    setOfficialHistory([]);
+    void loadOfficialMessageHistory(message.id);
+  };
+
+  const correctSelectedOfficialMessage = async () => {
+    if (!selectedOfficialMessage || !API_BASE_URL) return;
+    if (!selectedOfficialMessage.institutionId || !officialEditDraft.trim()) {
+      Alert.alert("Correction invalide", "Saisissez le texte corrigé.");
+      return;
+    }
+    setIsUpdatingOfficialMessage(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/channels/official-messages/${encodeURIComponent(selectedOfficialMessage.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: officialEditDraft.trim() }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`Correction refusée (HTTP ${response.status}).`);
+      }
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === selectedOfficialMessage.id
+            ? { ...message, text: officialEditDraft.trim() }
+            : message,
+        ),
+      );
+      setSelectedOfficialMessage((current) =>
+        current ? { ...current, text: officialEditDraft.trim() } : current,
+      );
+      await loadOfficialMessageHistory(selectedOfficialMessage.id);
+    } catch (error) {
+      Alert.alert(
+        "Correction impossible",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    } finally {
+      setIsUpdatingOfficialMessage(false);
+    }
+  };
+
+  const withdrawSelectedOfficialMessage = () => {
+    if (!selectedOfficialMessage || !API_BASE_URL) return;
+    Alert.alert(
+      "Retirer l'annonce officielle",
+      "L'annonce sera retirée du canal et cette action sera conservée dans son historique.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Retirer",
+          style: "destructive",
+          onPress: () => {
+            setIsUpdatingOfficialMessage(true);
+            void apiFetch(
+              `${API_BASE_URL}/v1/channels/official-messages/${encodeURIComponent(selectedOfficialMessage.id)}`,
+              { method: "DELETE" },
+            )
+              .then((response) => {
+                if (!response.ok) {
+                  throw new Error(`Retrait refusé (HTTP ${response.status}).`);
+                }
+                setMessages((current) =>
+                  current.filter(
+                    (message) => message.id !== selectedOfficialMessage.id,
+                  ),
+                );
+                setSelectedOfficialMessage(null);
+                Alert.alert(
+                  "Annonce retirée",
+                  "Le retrait a été enregistré dans l'historique officiel.",
+                );
+              })
+              .catch((error: unknown) => {
+                Alert.alert(
+                  "Retrait impossible",
+                  error instanceof Error
+                    ? error.message
+                    : "Une erreur est survenue.",
+                );
+              })
+              .finally(() => setIsUpdatingOfficialMessage(false));
+          },
+        },
+      ],
+    );
+  };
 
   const upsertMessage = (message: ChatMessage) => {
     setMessages((current) => [
@@ -688,8 +1411,22 @@ export default function MessagesScreen() {
 
   const sendMessage = async (media?: UploadedMessageMedia) => {
     const text = draftMessage.trim();
+    const isOfficialPublication =
+      activeTab === "Canaux" && informationCategory === "OFFICIAL";
     if (!text && !media) {
       Alert.alert("Message vide", "Saisissez un message ou joignez une photo.");
+      return;
+    }
+    if (
+      isOfficialPublication &&
+      !publishableInstitutions.some(
+        (institution) => institution.id === selectedInstitutionId,
+      )
+    ) {
+      Alert.alert(
+        "Publication officielle indisponible",
+        "Sélectionnez une institution vérifiée et autorisée pour ce canal.",
+      );
       return;
     }
     if (!user?.id || !token) {
@@ -717,6 +1454,14 @@ export default function MessagesScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content: text,
+          ...(isOfficialPublication
+            ? {
+                information_type: "OFFICIAL",
+                institution_id: selectedInstitutionId,
+              }
+            : activeTab === "Canaux"
+              ? { information_type: "COMMUNITY" }
+              : {}),
           ...(media
             ? {
                 media_url: media.secureUrl,
@@ -949,7 +1694,9 @@ export default function MessagesScreen() {
         const response = await apiFetch(`${API_BASE_URL}/v1/livekit/token`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ room: selectedChannelId }),
+          body: JSON.stringify({
+            room: selectedChannel.kind === "EMERGENCY" ? "emergency" : selectedChannelId,
+          }),
           signal: controller.signal,
         });
         const payload: unknown = await response.json();
@@ -1009,7 +1756,7 @@ export default function MessagesScreen() {
   };
 
   const openPtt = () => {
-    if (selectedChannelId !== "emergency") return;
+    if (selectedChannel.kind !== "EMERGENCY") return;
     setIsPttVisible(true);
     void ensureLiveKitRoom().catch((error: unknown) => {
       setPttError(
@@ -1139,68 +1886,387 @@ export default function MessagesScreen() {
           <View style={styles.proximityBanner}>
             <MapPin color="#2563eb" size={17} />
             <Text style={styles.proximityText}>
-              Messages communautaires en temps réel
+              Canaux et informations selon votre position et vos abonnements
             </Text>
           </View>
-          <View style={styles.channelList}>
-        {CHANNELS.map((channel) => {
-          const Icon = channel.icon;
-          const isSelected = selectedChannelId === channel.id;
-          const channelLabel =
-            channel.id === "emergency"
-              ? t("messagesEmergency")
-              : t("messagesAnnouncements");
-          return (
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: isSelected }}
-              key={channel.id}
-              onPress={() => setSelectedChannelId(channel.id)}
-              style={[
-                styles.channelButton,
-                isSelected && styles.channelButtonSelected,
-              ]}
-            >
-              <Icon color={isSelected ? colors.primary : colors.secondaryText} size={17} />
-              <Text
+          <ScrollView
+            horizontal
+            contentContainerStyle={styles.scopeList}
+            showsHorizontalScrollIndicator={false}
+          >
+            {GEOGRAPHIC_SCOPES.map((scope) => (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: geographicScope === scope.id }}
+                key={scope.id}
+                onPress={() => {
+                  setGeographicScope(scope.id);
+                  setSearchedChannels([]);
+                }}
                 style={[
-                  styles.channelButtonText,
-                  isSelected && styles.channelButtonTextSelected,
+                  styles.scopeButton,
+                  geographicScope === scope.id && styles.scopeButtonSelected,
                 ]}
               >
-                {channelLabel}
-              </Text>
-            </Pressable>
-          );
-        })}
-          </View>
+                <Text
+                  style={[
+                    styles.scopeButtonText,
+                    geographicScope === scope.id && styles.scopeButtonTextSelected,
+                  ]}
+                >
+                  {scope.label}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
 
-          <View style={styles.channelHeading}>
-        <View style={[styles.channelIcon, { backgroundColor: selectedChannel.background }]}>
-          <ChannelIcon color={selectedChannel.color} size={20} />
-        </View>
-        <View style={styles.channelCopy}>
-          <Text style={[styles.channelName, { color: colors.text }]}>
-            {selectedChannelId === "emergency"
-              ? t("messagesEmergency")
-              : t("messagesAnnouncements")}
-          </Text>
-          <Text style={styles.channelDescription}>
-            {selectedChannel.description}
-          </Text>
-        </View>
-        {selectedChannelId === "emergency" && (
-          <Pressable
-            accessibilityLabel="Rejoindre le talkie-walkie URGENCES"
-            accessibilityRole="button"
-            onPress={openPtt}
-            style={styles.liveButton}
+          <ScrollView
+            horizontal
+            contentContainerStyle={styles.categoryList}
+            showsHorizontalScrollIndicator={false}
           >
-            <Radio color="#ffffff" size={15} />
-            <Text style={styles.liveButtonText}>LIVE</Text>
-          </Pressable>
-        )}
+            {[
+              { id: "COMMUNITY" as const, label: "Communautaire" },
+              { id: "OFFICIAL" as const, label: "Institutionnel officiel" },
+              { id: "SOS" as const, label: "Alertes SOS" },
+              { id: "EMERGENCY_CHAT" as const, label: "Talkie-walkie" },
+            ].map((category) => (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{
+                  selected: informationCategory === category.id,
+                }}
+                key={category.id}
+                onPress={() => {
+                  setInformationCategory(category.id);
+                  if (category.id === "EMERGENCY_CHAT") {
+                    setGeographicScope("country");
+                  } else {
+                    const kind =
+                      category.id === "COMMUNITY"
+                        ? "COMMUNITY"
+                        : category.id === "OFFICIAL"
+                          ? "ANNOUNCEMENTS"
+                          : null;
+                    const channel = kind
+                      ? channels.find((item) => item.kind === kind)
+                      : null;
+                    if (channel) setSelectedChannelId(channel.id);
+                  }
+                }}
+                style={[
+                  styles.categoryButton,
+                  informationCategory === category.id &&
+                    styles.categoryButtonSelected,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.categoryButtonText,
+                    informationCategory === category.id &&
+                      styles.categoryButtonTextSelected,
+                  ]}
+                >
+                  {category.label}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+
+          {informationCategory !== "SOS" && (
+            <>
+              {channelsError && (
+                <Text accessibilityRole="alert" style={styles.errorText}>
+                  {channelsError}
+                </Text>
+              )}
+              {visibleChannels.length > 0 ? (
+                <ScrollView
+                  horizontal
+                  contentContainerStyle={styles.channelList}
+                  showsHorizontalScrollIndicator={false}
+                >
+                  {visibleChannels.map((channel) => {
+                    const Icon = channel.icon;
+                    const isSelected = selectedChannelId === channel.id;
+                    return (
+                      <Pressable
+                        accessibilityRole="tab"
+                        accessibilityState={{ selected: isSelected }}
+                        key={channel.id}
+                        onPress={() => setSelectedChannelId(channel.id)}
+                        style={[
+                          styles.channelButton,
+                          isSelected && styles.channelButtonSelected,
+                        ]}
+                      >
+                        <Icon
+                          color={isSelected ? colors.primary : colors.secondaryText}
+                          size={17}
+                        />
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.channelButtonText,
+                            isSelected && styles.channelButtonTextSelected,
+                          ]}
+                        >
+                          {channel.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              ) : (
+                <Text style={styles.emptyText}>
+                  Aucun canal configuré dans cette portée. Recherchez une autre zone ci-dessous.
+                </Text>
+              )}
+
+              {selectedChannel.kind !== "EMERGENCY" && (
+                <View style={styles.channelSearch}>
+                  <VoiceTextInput
+                    accessibilityLabel="Rechercher une commune, une région ou un canal"
+                    onChangeText={setChannelSearch}
+                    placeholder="Rechercher une commune ou région"
+                    placeholderTextColor="#94a3b8"
+                    style={styles.channelSearchInput}
+                    value={channelSearch}
+                  />
+                  <VoiceTextInput
+                    accessibilityLabel="Code pays de la zone à suivre"
+                    autoCapitalize="characters"
+                    maxLength={3}
+                    onChangeText={setTargetCountryCode}
+                    placeholder="Pays"
+                    placeholderTextColor="#94a3b8"
+                    style={styles.countryCodeInput}
+                    value={
+                      targetCountryCode ||
+                      (typeof user?.country_code === "string"
+                        ? user.country_code
+                        : "")
+                    }
+                  />
+                  <Pressable
+                    accessibilityLabel="Rechercher des canaux géographiques"
+                    accessibilityRole="button"
+                    disabled={isSearchingChannels}
+                    onPress={() => void searchGeographicChannels()}
+                    style={styles.searchButton}
+                  >
+                    {isSearchingChannels ? (
+                      <ActivityIndicator color="#ffffff" size="small" />
+                    ) : (
+                      <MapPin color="#ffffff" size={17} />
+                    )}
+                  </Pressable>
+                </View>
+              )}
+              {searchedChannels.map((channel) => (
+                <View key={channel.id} style={styles.followResult}>
+                  <Text numberOfLines={1} style={styles.followResultName}>
+                    {channel.label}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void toggleChannelFollow(channel)}
+                    style={styles.followButton}
+                  >
+                    <Text style={styles.followButtonText}>
+                      {channel.isFollowing ? "Suivi" : "Suivre"}
+                    </Text>
+                  </Pressable>
+                </View>
+              ))}
+
+              {hasSelectedChannel && <View style={styles.channelHeading}>
+                <View
+                  style={[
+                    styles.channelIcon,
+                    { backgroundColor: selectedChannel.background },
+                  ]}
+                >
+                  <ChannelIcon color={selectedChannel.color} size={20} />
+                </View>
+                <View style={styles.channelCopy}>
+                  <Text style={[styles.channelName, { color: colors.text }]}>
+                    {selectedChannel.label}
+                  </Text>
+                  <Text style={styles.channelDescription}>
+                    {selectedChannel.description}
+                  </Text>
+                </View>
+                {informationCategory === "OFFICIAL" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setIsInstitutionFormVisible(true)}
+                    style={styles.institutionRequestButton}
+                  >
+                    <Building2 color="#ffffff" size={15} />
+                    <Text style={styles.liveButtonText}>Vérifier</Text>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void toggleChannelFollow(selectedChannel)}
+                    style={styles.followButton}
+                  >
+                    <Text style={styles.followButtonText}>
+                      {selectedChannel.isFollowing ? "Suivi" : "Suivre"}
+                    </Text>
+                  </Pressable>
+                )}
+                {selectedChannel.kind === "EMERGENCY" && (
+                  <Pressable
+                    accessibilityLabel="Rejoindre le talkie-walkie URGENCES"
+                    accessibilityRole="button"
+                    onPress={openPtt}
+                    style={styles.liveButton}
+                  >
+                    <Radio color="#ffffff" size={15} />
+                    <Text style={styles.liveButtonText}>LIVE</Text>
+                  </Pressable>
+                )}
+              </View>}
+              {hasSelectedChannel && informationCategory === "OFFICIAL" && (
+                <View style={styles.officialPicker}>
+                  <BadgeCheck color="#a16207" size={17} />
+                  {publishableInstitutions.length ? (
+                    publishableInstitutions.map((institution) => (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{
+                          selected: selectedInstitutionId === institution.id,
+                        }}
+                        key={institution.id}
+                        onPress={() => setSelectedInstitutionId(institution.id)}
+                        style={[
+                          styles.institutionChip,
+                          selectedInstitutionId === institution.id &&
+                            styles.institutionChipSelected,
+                        ]}
+                      >
+                        <Text style={styles.institutionChipText}>
+                          {institution.name}
+                        </Text>
+                      </Pressable>
+                    ))
+                  ) : (
+                    <Text style={styles.officialInfoText}>
+                      Aucune institution vérifiée n'est autorisée sur ce canal.
+                    </Text>
+                  )}
+                </View>
+              )}
+            </>
+          )}
+        {informationCategory === "SOS" && (
+          <View style={styles.sosPanel}>
+            <View style={styles.sosPanelHeading}>
+              <View style={styles.sosTitleGroup}>
+                <ShieldAlert color="#dc2626" size={19} />
+                <Text style={styles.sosPanelTitle}>Alertes SOS actives</Text>
+              </View>
+              <Pressable
+                accessibilityLabel="Actualiser les alertes SOS"
+                accessibilityRole="button"
+                disabled={isLoadingSosAlerts}
+                onPress={() => void loadSosAlerts()}
+                style={styles.refreshButton}
+              >
+                {isLoadingSosAlerts ? (
+                  <ActivityIndicator color="#2563eb" size="small" />
+                ) : (
+                  <RefreshCw color="#2563eb" size={17} />
+                )}
+              </Pressable>
+            </View>
+            {sosAlertsError && (
+              <Text accessibilityRole="alert" style={styles.errorText}>
+                {sosAlertsError}
+              </Text>
+            )}
+            {isLoadingSosAlerts && sosAlerts.length === 0 ? (
+              <ActivityIndicator color="#2563eb" style={styles.loading} />
+            ) : (
+              <ScrollView
+                contentContainerStyle={styles.sosAlertList}
+                showsVerticalScrollIndicator={false}
+              >
+                {sosAlerts.map((alert) => (
+                  <View key={alert.id} style={styles.sosAlertCard}>
+                    <View style={styles.sosAlertHeader}>
+                      <Siren color="#dc2626" size={18} />
+                      <View style={styles.sosAlertCopy}>
+                        <Text style={styles.sosAlertType}>
+                          {alert.emergency_type === "MEDICAL"
+                            ? "Urgence médicale"
+                            : alert.emergency_type === "SECURITY"
+                              ? "Sécurité"
+                              : alert.emergency_type === "FIRE"
+                                ? "Incendie"
+                                : "Autre urgence"}
+                        </Text>
+                        <Text style={styles.sosAlertMeta}>
+                          {typeof alert.distance_m === "number"
+                            ? `${(alert.distance_m / 1000).toFixed(1)} km · `
+                            : ""}
+                          {formatMessageTime(alert.created_at)}
+                          {alert.is_mine ? " · Votre alerte" : ""}
+                        </Text>
+                      </View>
+                      <Text style={styles.activeAlertBadge}>ACTIVE</Text>
+                    </View>
+                    <View style={styles.sosActions}>
+                      {alert.is_mine ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={isSubmittingSosAction}
+                          onPress={() => void submitSosAction(alert, "resolve")}
+                          style={styles.resolveSosButton}
+                        >
+                          <Text style={styles.resolveSosText}>
+                            Clôturer l'alerte
+                          </Text>
+                        </Pressable>
+                      ) : (
+                        <>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={isSubmittingSosAction}
+                            onPress={() => void submitSosAction(alert, "assist")}
+                            style={styles.assistSosButton}
+                          >
+                            <HeartHandshake color="#ffffff" size={15} />
+                            <Text style={styles.sosActionText}>Je peux aider</Text>
+                          </Pressable>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={isSubmittingSosAction}
+                            onPress={() =>
+                              void submitSosAction(alert, "report-fake")
+                            }
+                            style={styles.reportSosButton}
+                          >
+                            <Text style={styles.reportSosText}>
+                              Signaler une fausse alerte
+                            </Text>
+                          </Pressable>
+                        </>
+                      )}
+                    </View>
+                  </View>
+                ))}
+                {sosAlerts.length === 0 && !sosAlertsError && (
+                  <Text style={styles.emptyText}>
+                    Aucune alerte SOS active dans cette portée.
+                  </Text>
+                )}
+              </ScrollView>
+            )}
           </View>
+        )}
         </>
       ) : selectedConversation ? (
         <View style={styles.privateHeader}>
@@ -1319,13 +2385,19 @@ export default function MessagesScreen() {
       )}
 
       {messagesError &&
-        (activeTab === "Canaux" || selectedConversation) && (
+        ((activeTab === "Canaux" &&
+          informationCategory !== "SOS" &&
+          hasSelectedChannel) ||
+          selectedConversation) && (
         <Text accessibilityRole="alert" style={styles.errorText}>
           {messagesError}
         </Text>
       )}
 
-      {(activeTab === "Canaux" || selectedConversation) && <ScrollView
+      {((activeTab === "Canaux" &&
+        informationCategory !== "SOS" &&
+        hasSelectedChannel) ||
+        selectedConversation) && <ScrollView
         contentContainerStyle={styles.messageThread}
         showsVerticalScrollIndicator={false}
       >
@@ -1340,8 +2412,19 @@ export default function MessagesScreen() {
               accessibilityRole="button"
               key={message.id}
               onLongPress={() => {
-                setSelectedReport(message);
-                setReportReason("");
+                if (
+                  message.informationType === "OFFICIAL" &&
+                  message.institutionId &&
+                  publishableInstitutions.some(
+                    (institution) =>
+                      institution.id === message.institutionId,
+                  )
+                ) {
+                  openOfficialMessage(message);
+                } else {
+                  setSelectedReport(message);
+                  setReportReason("");
+                }
               }}
               style={[
                 styles.messageBubble,
@@ -1365,8 +2448,21 @@ export default function MessagesScreen() {
                 }
               />
               {!message.isOwnMessage && (
-                <Text style={styles.messageSender}>{message.senderName}</Text>
+                <Text style={styles.messageSender}>
+                  {message.informationType === "OFFICIAL"
+                    ? `${message.institutionName ?? "Institution vérifiée"} · Officiel`
+                    : message.senderName}
+                </Text>
               )}
+              {message.isOwnMessage &&
+                message.informationType === "OFFICIAL" && (
+                  <View style={styles.officialMessageBadge}>
+                    <BadgeCheck color="#a16207" size={12} />
+                    <Text style={styles.officialMessageBadgeText}>
+                      {message.institutionName ?? "Publication officielle"}
+                    </Text>
+                  </View>
+                )}
               {message.imageUrl && message.mediaType === "video" ? (
                 <PrivateMessageVideo uri={message.imageUrl} />
               ) : message.imageUrl ? (
@@ -1399,7 +2495,10 @@ export default function MessagesScreen() {
         )}
       </ScrollView>}
 
-      {(activeTab === "Canaux" || selectedConversation) && <View style={styles.composer}>
+      {((activeTab === "Canaux" &&
+        informationCategory !== "SOS" &&
+        hasSelectedChannel) ||
+        selectedConversation) && <View style={styles.composer}>
         <Pressable
           accessibilityLabel="Joindre une photo ou une vidéo"
           accessibilityRole="button"
@@ -1416,7 +2515,7 @@ export default function MessagesScreen() {
               : `Téléversement ${mediaUploadProgress} %`}
           </Text>
         ) : null}
-        {activeTab === "Canaux" && selectedChannelId === "emergency" && (
+        {activeTab === "Canaux" && selectedChannel.kind === "EMERGENCY" && (
           <Pressable
             accessibilityLabel="Ouvrir le talkie-walkie URGENCES"
             accessibilityRole="button"
@@ -1502,6 +2601,206 @@ export default function MessagesScreen() {
                 <ActivityIndicator color="#ffffff" />
               ) : (
                 <Text style={styles.reportButtonText}>Envoyer le signalement</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setSelectedOfficialMessage(null)}
+        transparent
+        visible={selectedOfficialMessage !== null}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.dialog}>
+            <View style={styles.dialogHeader}>
+              <View style={styles.reportIcon}>
+                <BadgeCheck color="#a16207" size={20} />
+              </View>
+              <Text style={styles.dialogTitle}>Annonce officielle</Text>
+              <Pressable
+                accessibilityLabel="Fermer l'annonce officielle"
+                accessibilityRole="button"
+                onPress={() => setSelectedOfficialMessage(null)}
+                style={styles.closeButton}
+              >
+                <X color="#64748b" size={20} />
+              </Pressable>
+            </View>
+            <Text style={styles.dialogDescription}>
+              Les corrections et retraits sont conservés dans l'historique public.
+            </Text>
+            <VoiceTextInput
+              accessibilityLabel="Texte corrigé de l'annonce"
+              multiline
+              onChangeText={setOfficialEditDraft}
+              placeholder="Texte officiel"
+              placeholderTextColor="#94a3b8"
+              style={styles.officialEditInput}
+              value={officialEditDraft}
+            />
+            <View style={styles.officialActions}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isUpdatingOfficialMessage}
+                onPress={() => void correctSelectedOfficialMessage()}
+                style={styles.correctOfficialButton}
+              >
+                <Text style={styles.reportButtonText}>Enregistrer la correction</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={isUpdatingOfficialMessage}
+                onPress={withdrawSelectedOfficialMessage}
+                style={styles.withdrawOfficialButton}
+              >
+                <Text style={styles.withdrawOfficialText}>Retirer</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.officialHistoryTitle}>Historique des publications</Text>
+            {isLoadingOfficialHistory ? (
+              <ActivityIndicator color="#2563eb" style={styles.loading} />
+            ) : (
+              <ScrollView style={styles.officialHistoryList}>
+                {officialHistory.map((entry, index) => (
+                  <View
+                    key={`${String(entry.created_at ?? index)}-${index}`}
+                    style={styles.officialHistoryEntry}
+                  >
+                    <Text style={styles.officialHistoryAction}>
+                      {entry.action === "PUBLISHED"
+                        ? "Publication"
+                        : entry.action === "EDITED"
+                          ? "Correction"
+                          : "Retrait"}
+                      {typeof entry.actor_name === "string"
+                        ? ` · ${entry.actor_name}`
+                        : ""}
+                    </Text>
+                    <Text style={styles.officialHistoryDate}>
+                      {typeof entry.created_at === "string"
+                        ? formatMessageTime(entry.created_at)
+                        : ""}
+                    </Text>
+                    {typeof entry.previous_body === "string" && (
+                      <Text style={styles.officialHistoryBody}>
+                        Avant : {entry.previous_body}
+                      </Text>
+                    )}
+                    {typeof entry.new_body === "string" && (
+                      <Text style={styles.officialHistoryBody}>
+                        Après : {entry.new_body}
+                      </Text>
+                    )}
+                  </View>
+                ))}
+                {officialHistory.length === 0 && (
+                  <Text style={styles.emptyText}>
+                    Aucun historique disponible.
+                  </Text>
+                )}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setIsInstitutionFormVisible(false)}
+        transparent
+        visible={isInstitutionFormVisible}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.dialog}>
+            <View style={styles.dialogHeader}>
+              <View style={styles.institutionModalIcon}>
+                <Building2 color="#1d4ed8" size={20} />
+              </View>
+              <Text style={styles.dialogTitle}>Vérifier une institution</Text>
+              <Pressable
+                accessibilityLabel="Fermer la demande institutionnelle"
+                accessibilityRole="button"
+                onPress={() => setIsInstitutionFormVisible(false)}
+                style={styles.closeButton}
+              >
+                <X color="#64748b" size={20} />
+              </Pressable>
+            </View>
+            <Text style={styles.dialogDescription}>
+              Un administrateur vérifiera le justificatif avant d'accorder un badge et les droits de publication. Zone sélectionnée : {selectedChannel.label}.
+            </Text>
+            <VoiceTextInput
+              accessibilityLabel="Nom officiel de l'institution"
+              onChangeText={setInstitutionName}
+              placeholder="Nom officiel"
+              placeholderTextColor="#94a3b8"
+              style={styles.institutionInput}
+              value={institutionName}
+            />
+            <View style={styles.institutionTypes}>
+              {[
+                ["MUNICIPALITY", "Mairie"],
+                ["PREFECTURE", "Préfecture"],
+                ["MINISTRY", "Ministère"],
+                ["ADMINISTRATION", "Administration"],
+                ["PUBLIC_SERVICE", "Service public"],
+              ].map(([value, label]) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: institutionType === value }}
+                  key={value}
+                  onPress={() => setInstitutionType(value)}
+                  style={[
+                    styles.institutionTypeButton,
+                    institutionType === value &&
+                      styles.institutionTypeButtonSelected,
+                  ]}
+                >
+                  <Text style={styles.institutionTypeText}>{label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <VoiceTextInput
+              accessibilityLabel="Identifiant légal de l'institution"
+              onChangeText={setInstitutionLegalId}
+              placeholder="Identifiant légal"
+              placeholderTextColor="#94a3b8"
+              style={styles.institutionInput}
+              value={institutionLegalId}
+            />
+            <VoiceTextInput
+              accessibilityLabel="Lien HTTPS vers un justificatif officiel"
+              autoCapitalize="none"
+              keyboardType="url"
+              onChangeText={setInstitutionProofUrl}
+              placeholder="Lien HTTPS vers un justificatif officiel"
+              placeholderTextColor="#94a3b8"
+              style={styles.institutionInput}
+              value={institutionProofUrl}
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={
+                isSubmittingInstitution ||
+                !institutionName.trim() ||
+                !institutionLegalId.trim() ||
+                !institutionProofUrl.trim()
+              }
+              onPress={() => void submitInstitutionVerification()}
+              style={[
+                styles.submitInstitutionButton,
+                isSubmittingInstitution && styles.disabledButton,
+              ]}
+            >
+              {isSubmittingInstitution ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.reportButtonText}>
+                  Envoyer pour vérification
+                </Text>
               )}
             </Pressable>
           </View>
@@ -1653,11 +2952,64 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
+  scopeList: {
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  scopeButton: {
+    backgroundColor: "#ffffff",
+    borderColor: "#dbe3ee",
+    borderRadius: 16,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: 34,
+    paddingHorizontal: 12,
+  },
+  scopeButtonSelected: {
+    backgroundColor: "#dbeafe",
+    borderColor: "#93c5fd",
+  },
+  scopeButtonText: {
+    color: "#475569",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  scopeButtonTextSelected: {
+    color: "#1d4ed8",
+  },
+  categoryList: {
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  categoryButton: {
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 9,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: 34,
+    paddingHorizontal: 11,
+  },
+  categoryButtonSelected: {
+    backgroundColor: "#f1f5f9",
+    borderColor: "#94a3b8",
+  },
+  categoryButtonText: {
+    color: "#64748b",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  categoryButtonTextSelected: {
+    color: "#172b4d",
+  },
   channelList: {
+    alignItems: "center",
     flexDirection: "row",
     gap: 9,
-    marginHorizontal: 20,
-    marginTop: 13,
+    paddingHorizontal: 20,
+    paddingTop: 10,
   },
   channelButton: {
     alignItems: "center",
@@ -1665,11 +3017,13 @@ const styles = StyleSheet.create({
     borderColor: "#e2e8f0",
     borderRadius: 12,
     borderWidth: 1,
-    flex: 1,
     flexDirection: "row",
     gap: 7,
     justifyContent: "center",
     minHeight: 42,
+    maxWidth: 220,
+    minWidth: 125,
+    paddingHorizontal: 10,
   },
   channelButtonSelected: {
     backgroundColor: "#eff6ff",
@@ -1679,6 +3033,7 @@ const styles = StyleSheet.create({
     color: "#475569",
     fontSize: 11,
     fontWeight: "800",
+    flexShrink: 1,
   },
   channelButtonTextSelected: {
     color: "#1d4ed8",
@@ -1692,6 +3047,237 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     marginTop: 11,
     padding: 11,
+  },
+  channelSearch: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+    marginHorizontal: 20,
+    marginTop: 8,
+  },
+  channelSearchInput: {
+    backgroundColor: "#ffffff",
+    borderColor: "#cbd5e1",
+    borderRadius: 9,
+    borderWidth: 1,
+    color: "#172b4d",
+    flex: 1,
+    fontSize: 11,
+    minHeight: 38,
+    minWidth: 0,
+    paddingHorizontal: 9,
+  },
+  countryCodeInput: {
+    backgroundColor: "#ffffff",
+    borderColor: "#cbd5e1",
+    borderRadius: 9,
+    borderWidth: 1,
+    color: "#172b4d",
+    fontSize: 11,
+    minHeight: 38,
+    paddingHorizontal: 9,
+    textAlign: "center",
+    width: 58,
+  },
+  searchButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 9,
+    height: 38,
+    justifyContent: "center",
+    width: 40,
+  },
+  followResult: {
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: "row",
+    marginHorizontal: 20,
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  followResultName: {
+    color: "#334155",
+    flex: 1,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  followButton: {
+    alignItems: "center",
+    backgroundColor: "#eff6ff",
+    borderRadius: 8,
+    justifyContent: "center",
+    minHeight: 30,
+    paddingHorizontal: 10,
+  },
+  followButtonText: {
+    color: "#1d4ed8",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  institutionRequestButton: {
+    alignItems: "center",
+    backgroundColor: "#a16207",
+    borderRadius: 9,
+    flexDirection: "row",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
+  officialPicker: {
+    alignItems: "center",
+    backgroundColor: "#fefce8",
+    borderColor: "#fde68a",
+    borderRadius: 11,
+    borderWidth: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+    marginHorizontal: 20,
+    marginTop: 8,
+    padding: 9,
+  },
+  institutionChip: {
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
+  institutionChipSelected: {
+    backgroundColor: "#fef3c7",
+    borderColor: "#d97706",
+  },
+  institutionChipText: {
+    color: "#713f12",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  officialInfoText: {
+    color: "#854d0e",
+    flex: 1,
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  sosPanel: {
+    flex: 1,
+    paddingTop: 12,
+  },
+  sosPanelHeading: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+  },
+  sosTitleGroup: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  sosPanelTitle: {
+    color: "#991b1b",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  refreshButton: {
+    alignItems: "center",
+    height: 34,
+    justifyContent: "center",
+    width: 34,
+  },
+  sosAlertList: {
+    gap: 9,
+    paddingBottom: 120,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  sosAlertCard: {
+    backgroundColor: "#ffffff",
+    borderColor: "#fecaca",
+    borderRadius: 13,
+    borderWidth: 1,
+    padding: 11,
+  },
+  sosAlertHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 9,
+  },
+  sosAlertCopy: {
+    flex: 1,
+  },
+  sosAlertType: {
+    color: "#7f1d1d",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  sosAlertMeta: {
+    color: "#64748b",
+    fontSize: 10,
+    marginTop: 3,
+  },
+  activeAlertBadge: {
+    backgroundColor: "#fee2e2",
+    borderRadius: 6,
+    color: "#b91c1c",
+    fontSize: 8,
+    fontWeight: "900",
+    overflow: "hidden",
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  sosActions: {
+    flexDirection: "row",
+    gap: 7,
+    marginTop: 10,
+  },
+  assistSosButton: {
+    alignItems: "center",
+    backgroundColor: "#b91c1c",
+    borderRadius: 8,
+    flex: 1,
+    flexDirection: "row",
+    gap: 5,
+    justifyContent: "center",
+    minHeight: 34,
+  },
+  sosActionText: {
+    color: "#ffffff",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  reportSosButton: {
+    alignItems: "center",
+    borderColor: "#fecaca",
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 34,
+    paddingHorizontal: 6,
+  },
+  reportSosText: {
+    color: "#991b1b",
+    fontSize: 9,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  resolveSosButton: {
+    alignItems: "center",
+    backgroundColor: "#166534",
+    borderRadius: 8,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 34,
+  },
+  resolveSosText: {
+    color: "#ffffff",
+    fontSize: 10,
+    fontWeight: "800",
   },
   privateListContainer: {
     flex: 1,
@@ -1895,6 +3481,17 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginBottom: 4,
   },
+  officialMessageBadge: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 4,
+    marginBottom: 5,
+  },
+  officialMessageBadgeText: {
+    color: "#a16207",
+    fontSize: 10,
+    fontWeight: "800",
+  },
   messageText: {
     color: "#1e293b",
     fontSize: 13,
@@ -1980,6 +3577,7 @@ const styles = StyleSheet.create({
   dialog: {
     backgroundColor: "#ffffff",
     borderRadius: 20,
+    maxHeight: "92%",
     maxWidth: 420,
     padding: 18,
     width: "100%",
@@ -1992,6 +3590,14 @@ const styles = StyleSheet.create({
   reportIcon: {
     alignItems: "center",
     backgroundColor: "#fef2f2",
+    borderRadius: 11,
+    height: 40,
+    justifyContent: "center",
+    width: 40,
+  },
+  institutionModalIcon: {
+    alignItems: "center",
+    backgroundColor: "#dbeafe",
     borderRadius: 11,
     height: 40,
     justifyContent: "center",
@@ -2014,6 +3620,120 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     marginTop: 13,
+  },
+  institutionInput: {
+    backgroundColor: "#f8fafc",
+    borderColor: "#cbd5e1",
+    borderRadius: 10,
+    borderWidth: 1,
+    color: "#172b4d",
+    fontSize: 12,
+    marginTop: 9,
+    minHeight: 40,
+    paddingHorizontal: 10,
+  },
+  institutionTypes: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
+  },
+  institutionTypeButton: {
+    backgroundColor: "#f1f5f9",
+    borderColor: "#e2e8f0",
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  institutionTypeButtonSelected: {
+    backgroundColor: "#dbeafe",
+    borderColor: "#60a5fa",
+  },
+  institutionTypeText: {
+    color: "#334155",
+    fontSize: 9,
+    fontWeight: "700",
+  },
+  submitInstitutionButton: {
+    alignItems: "center",
+    backgroundColor: "#1d4ed8",
+    borderRadius: 10,
+    justifyContent: "center",
+    marginTop: 12,
+    minHeight: 44,
+  },
+  officialEditInput: {
+    backgroundColor: "#f8fafc",
+    borderColor: "#d6d3d1",
+    borderRadius: 10,
+    borderWidth: 1,
+    color: "#172b4d",
+    fontSize: 12,
+    marginTop: 10,
+    minHeight: 90,
+    padding: 10,
+    textAlignVertical: "top",
+  },
+  officialActions: {
+    flexDirection: "row",
+    gap: 7,
+    marginTop: 9,
+  },
+  correctOfficialButton: {
+    alignItems: "center",
+    backgroundColor: "#a16207",
+    borderRadius: 9,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 40,
+    paddingHorizontal: 8,
+  },
+  withdrawOfficialButton: {
+    alignItems: "center",
+    borderColor: "#fecaca",
+    borderRadius: 9,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: 40,
+    paddingHorizontal: 10,
+  },
+  withdrawOfficialText: {
+    color: "#b91c1c",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  officialHistoryTitle: {
+    color: "#334155",
+    fontSize: 11,
+    fontWeight: "800",
+    marginTop: 14,
+  },
+  officialHistoryList: {
+    flexGrow: 0,
+    marginTop: 6,
+    maxHeight: 170,
+  },
+  officialHistoryEntry: {
+    borderBottomColor: "#e2e8f0",
+    borderBottomWidth: 1,
+    paddingVertical: 7,
+  },
+  officialHistoryAction: {
+    color: "#713f12",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  officialHistoryDate: {
+    color: "#94a3b8",
+    fontSize: 9,
+    marginTop: 2,
+  },
+  officialHistoryBody: {
+    color: "#475569",
+    fontSize: 10,
+    lineHeight: 15,
+    marginTop: 3,
   },
   reportInput: {
     backgroundColor: "#f8fafc",

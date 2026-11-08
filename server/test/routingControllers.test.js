@@ -30,8 +30,17 @@ const createResponse = () => ({
 
 test("channel history resolves the public alias and returns it to the mobile client", async (context) => {
   context.mock.method(pool, "query", async (statement) =>
-    statement.includes("FROM channels AS channel")
-      ? { rows: [{ id: "channel-uuid", name: "URGENCES" }] }
+    statement.includes("SELECT channel.id, channel.name, channel.kind")
+      ? {
+          rows: [{
+            id: "channel-uuid",
+            name: "URGENCES",
+            kind: "EMERGENCY",
+            geography_scope: "country",
+            communication_area_id: null,
+            country_code: null,
+          }],
+        }
       : {
           rows: [
             {
@@ -58,20 +67,40 @@ test("channel history resolves the public alias and returns it to the mobile cli
 
 test("channel message creation accepts text and returns the mobile channel alias", async (context) => {
   context.mock.method(pool, "query", async (statement) =>
-    statement.includes("FROM channels AS channel")
-      ? { rows: [{ id: "channel-uuid", name: "URGENCES" }] }
-      : {
-          rowCount: 1,
-          rows: [
-            {
-              id: "message-uuid",
-              channel_id: "channel-uuid",
-              sender_id: "user-uuid",
-              body: "Besoin d'aide",
-            },
-          ],
-        },
+    statement.includes("SELECT channel.id, channel.name, channel.kind")
+      ? {
+          rows: [{
+            id: "channel-uuid",
+            name: "URGENCES",
+            kind: "EMERGENCY",
+            geography_scope: "country",
+            communication_area_id: null,
+            country_code: null,
+          }],
+        }
+      : { rows: [] },
   );
+  const client = {
+    async query(statement) {
+      if (statement.includes("INSERT INTO messages")) {
+        return {
+          rows: [{
+            id: "message-uuid",
+            channel_id: "channel-uuid",
+            sender_id: "user-uuid",
+            body: "Besoin d'aide",
+            information_type: "COMMUNITY",
+          }],
+        };
+      }
+      if (statement.includes("SELECT full_name")) {
+        return { rows: [{ full_name: "Voisin" }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  context.mock.method(pool, "connect", async () => client);
   const response = createResponse();
 
   await createChannelMessage(
@@ -95,8 +124,17 @@ test("channel message creation rejects a media ID not owned by the sender", asyn
   let queries = 0;
   context.mock.method(pool, "query", async (statement) => {
     queries += 1;
-    assert.match(statement, /FROM channels AS channel/);
-    return { rows: [{ id: "channel-uuid", name: "URGENCES" }] };
+    assert.match(statement, /SELECT channel\.id, channel\.name, channel\.kind/);
+    return {
+      rows: [{
+        id: "channel-uuid",
+        name: "URGENCES",
+        kind: "EMERGENCY",
+        geography_scope: "country",
+        communication_area_id: null,
+        country_code: null,
+      }],
+    };
   });
   const response = createResponse();
 
@@ -122,8 +160,17 @@ test("channel message creation rejects a media ID not owned by the sender", asyn
 
 test("empty public channel history is a successful empty list", async (context) => {
   context.mock.method(pool, "query", async (statement) =>
-    statement.includes("FROM channels AS channel")
-      ? { rows: [{ id: "channel-uuid", name: "URGENCES" }] }
+    statement.includes("SELECT channel.id, channel.name, channel.kind")
+      ? {
+          rows: [{
+            id: "channel-uuid",
+            name: "URGENCES",
+            kind: "EMERGENCY",
+            geography_scope: "country",
+            communication_area_id: null,
+            country_code: null,
+          }],
+        }
       : { rows: [] },
   );
   const response = createResponse();

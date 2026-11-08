@@ -92,6 +92,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 44. `migrations/040_account_deletion_retention.sql`
 45. `migrations/041_series_core.sql`
 46. `migrations/042_marketplace_commerce.sql`
+47. `migrations/043_geographic_communications.sql`
 
 La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
 progression de lecture et votes de fin d'épisode. Elle est additive et conserve
@@ -106,6 +107,18 @@ internationale, les commandes, les étapes de livraison, les avis après livrais
 confirmée, les profils de livreurs indépendants et les opportunités commerciales.
 Les achats restent des accords directs entre acheteur et vendeur : l’API ne
 collecte pas de paiement et ne conserve pas de fonds.
+
+La migration 043 ajoute les portées géographiques des canaux, les abonnements,
+les publications institutionnelles vérifiées et leur historique. Appliquez-la
+après 042 et avant de mettre à jour l'API Messages. Elle requiert PostGIS et les
+tables existantes `municipalities`, `official_news` et `admin_audit_log`.
+Elle ne fournit pas de limites géographiques : un administrateur doit charger
+les aires GeoJSON valides via les routes protégées `/v1/channels/admin/areas`.
+Sans cet annuaire administré, les canaux de quartier, commune et région ne sont
+pas disponibles. Les demandes de vérification institutionnelle doivent aussi
+être examinées et approuvées par un administrateur; une demande seule ne donne
+aucun droit de publication officielle. La migration n'est pas appliquée
+automatiquement au démarrage.
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes

@@ -248,6 +248,7 @@ export const listNearbyAlerts = async (request, response, next) => {
   try {
     const result = await pool.query(
       `SELECT alert.id, alert.emergency_type, alert.status, alert.created_at,
+              alert.user_id = $6::uuid AS is_mine,
               ROUND(ST_Distance(
                 alert.location::geography,
                 ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography
@@ -280,7 +281,7 @@ export const listNearbyAlerts = async (request, response, next) => {
          ) END
        ORDER BY alert.created_at DESC
        LIMIT 100`,
-      filter.values,
+      [...filter.values, request.auth?.userId ?? null],
     );
     return response.status(200).json({ alerts: result.rows });
   } catch (error) {

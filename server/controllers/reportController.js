@@ -23,6 +23,8 @@ const REPORT_REASONS = new Set([
   "Menaces",
   "Nudité explicite",
   "Contenu privé sans consentement",
+  "Fausse information",
+  "Fausse alerte",
   "Comportement abusif",
   "Autre motif",
 ]);
@@ -75,9 +77,29 @@ export const createReport = async (request, response, next) => {
            FROM messages channel_message
            JOIN channels channel ON channel.id = channel_message.channel_id
            WHERE channel_message.id = $1
-             AND (channel.country_code IS NULL OR channel.country_code = (
-               SELECT country_code FROM users WHERE id = $2
-             ))
+             AND channel_message.removed_at IS NULL
+             AND (
+               channel.geography_scope = 'international'
+               OR channel.country_code = (
+                 SELECT country_code FROM users WHERE id = $2
+               )
+               OR EXISTS (
+                 SELECT 1 FROM user_geographic_channel_follows AS follow
+                 WHERE follow.user_id = $2 AND follow.channel_id = channel.id
+               )
+               OR EXISTS (
+                 SELECT 1 FROM users AS account
+                 JOIN communication_areas AS area
+                   ON area.id = channel.communication_area_id
+                 WHERE account.id = $2
+                   AND (
+                     (account.last_location IS NOT NULL
+                       AND ST_Covers(area.boundary, account.last_location))
+                     OR (area.scope = 'neighborhood'
+                       AND LOWER(area.name) = LOWER(COALESCE(account.neighborhood, '')))
+                   )
+               )
+             )
            LIMIT 1`,
           [targetId, request.auth.userId],
         );

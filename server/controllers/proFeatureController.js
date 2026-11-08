@@ -437,10 +437,15 @@ export const getTownHallContent = async (request, response, next) => {
         [municipality.id],
       ),
       pool.query(
-        `SELECT id, title, body, is_certified, created_at
-         FROM official_news
-         WHERE municipality_id = $1
-         ORDER BY created_at DESC LIMIT 50`,
+        `SELECT news.id, news.title, news.body,
+                (institution.status = 'VERIFIED') AS is_certified,
+                news.created_at
+         FROM official_news AS news
+         JOIN institutions AS institution
+           ON institution.id = news.institution_id
+         WHERE news.municipality_id = $1
+           AND institution.status = 'VERIFIED'
+         ORDER BY news.created_at DESC LIMIT 50`,
         [municipality.id],
       ),
     ]);
@@ -466,13 +471,53 @@ export const createOfficialNews = async (request, response, next) => {
     if (municipality.error) {
       return response.status(municipality.status ?? 400).json({ error: municipality.error });
     }
-    const result = await pool.query(
-      `INSERT INTO official_news (municipality_id, author_id, title, body, is_certified)
-       VALUES ($1, $2, $3, $4, TRUE)
-       RETURNING id, title, body, is_certified, created_at`,
-      [municipality.id, request.auth.userId, title, body],
-    );
-    return response.status(201).json({ official_news: result.rows[0] });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const publisher = await client.query(
+        `SELECT institution.id
+         FROM institutions AS institution
+         JOIN institution_memberships AS membership
+           ON membership.institution_id = institution.id
+         WHERE institution.municipality_id = $1
+           AND institution.status = 'VERIFIED'
+           AND membership.user_id = $2
+           AND membership.status = 'ACTIVE'
+         FOR SHARE OF institution, membership`,
+        [municipality.id, request.auth.userId],
+      );
+      if (!publisher.rowCount) {
+        await client.query("ROLLBACK");
+        return response.status(403).json({
+          error: "Une institution municipale vérifiée et une autorisation de publication sont requises.",
+        });
+      }
+      const result = await client.query(
+        `INSERT INTO official_news
+           (municipality_id, author_id, title, body, is_certified, institution_id)
+         VALUES ($1, $2, $3, $4, TRUE, $5)
+         RETURNING id, title, body, is_certified, created_at`,
+        [municipality.id, request.auth.userId, title, body, publisher.rows[0].id],
+      );
+      await client.query(
+        `INSERT INTO official_news_history
+           (official_news_id, institution_id, actor_id, action, new_body)
+         VALUES ($1, $2, $3, 'PUBLISHED', $4)`,
+        [
+          result.rows[0].id,
+          publisher.rows[0].id,
+          request.auth.userId,
+          body,
+        ],
+      );
+      await client.query("COMMIT");
+      return response.status(201).json({ official_news: result.rows[0] });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     return next(error);
   }
