@@ -36,8 +36,9 @@ jobs:
             process.exit(1);
           }
 
+          const fs = require("node:fs");
           const cleanInput = (value) => {
-            let normalized = value.replace(/[\p{Cf}\uFEFF]/gu, "").trim();
+            let normalized = (value ?? "").replace(/[\p{Cf}\uFEFF]/gu, "").trim();
             const quotes = new Map([["\"", "\""], ["'", "'"], ["“", "”"], ["‘", "’"]]);
             while (normalized.length >= 2 && quotes.get(normalized[0]) === normalized.at(-1)) {
               normalized = normalized.slice(1, -1).trim();
@@ -45,8 +46,8 @@ jobs:
             return normalized;
           };
           const decodeBase64 = (value) => {
-            const compact = value.replace(/\s/gu, "");
-            if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/.test(compact)) return null;
+            const compact = (value ?? "").replace(/\s/gu, "");
+            if (!compact || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/.test(compact)) return null;
             const bytes = Buffer.from(compact, "base64");
             if (bytes.toString("base64").replace(/=+$/, "") !== compact.replace(/=+$/, "")) return null;
             try {
@@ -55,29 +56,47 @@ jobs:
               return null;
             }
           };
-          const encodedSecret = Boolean(process.env.GOOGLE_SERVICES_JSON_B64?.trim());
-          let contents = cleanInput(encodedSecret
-            ? process.env.GOOGLE_SERVICES_JSON_B64
-            : process.env.GOOGLE_SERVICES_JSON);
-          if (encodedSecret) contents = decodeBase64(contents) ?? "";
-          let config;
+          const parseFirebaseConfig = (raw) => {
+            const normalized = cleanInput(raw);
+            if (!normalized) return null;
+            try {
+              const parsed = JSON.parse(normalized);
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+            } catch {
+              // retry with a decoded Base64 payload when a raw secret was pasted as base64 by mistake
+            }
+            const decoded = decodeBase64(normalized);
+            if (!decoded) return null;
+            try {
+              const parsed = JSON.parse(cleanInput(decoded));
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+            } catch {
+              return null;
+            }
+            return null;
+          };
+          const candidates = [];
+          const encodedSecret = process.env.GOOGLE_SERVICES_JSON_B64?.trim() ?? "";
+          const rawSecret = process.env.GOOGLE_SERVICES_JSON?.trim() ?? "";
+          if (encodedSecret) candidates.push({ source: "GOOGLE_SERVICES_JSON_B64", raw: encodedSecret });
+          if (rawSecret) candidates.push({ source: "GOOGLE_SERVICES_JSON", raw: rawSecret });
           try {
-            config = JSON.parse(cleanInput(contents));
-          } catch {
-            if (!encodedSecret) {
-              const decoded = decodeBase64(contents);
-              try {
-                if (decoded !== null) {
-                  contents = cleanInput(decoded);
-                  config = JSON.parse(contents);
-                }
-              } catch {
-                config = null;
-              }
+            const repoConfig = fs.readFileSync("mobile/google-services.json", "utf8");
+            if (repoConfig.trim()) candidates.push({ source: "mobile/google-services.json", raw: repoConfig });
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+          }
+          let config = null;
+          for (const candidate of candidates) {
+            const parsed = parseFirebaseConfig(candidate.raw);
+            if (parsed) {
+              config = parsed;
+              console.log(`Configuration Firebase valide détectée depuis : ${candidate.source}`);
+              break;
             }
           }
           if (!config || typeof config !== "object" || Array.isArray(config)) {
-            console.error("::error::GOOGLE_SERVICES_JSON ou GOOGLE_SERVICES_JSON_B64 est invalide (contenu masqué).");
+            console.error("::error::GOOGLE_SERVICES_JSON ou GOOGLE_SERVICES_JSON_B64 est invalide (contenu masqué). Aucune configuration Firebase Android valide n'a été trouvée dans le secret ou le dépôt.");
             process.exit(1);
           }
           const expectedPackage = require("./mobile/app.json").expo?.android?.package;
@@ -104,7 +123,7 @@ jobs:
             console.error("::error::Configuration Firebase incompatible : package Android, client OAuth Android (type 1) ou client Web (type 3) absent; contenu masqué.");
             process.exit(1);
           }
-          console.log("Préflight réussi : secrets présents, package et clients OAuth vérifiés (valeurs masquées).");
+          console.log("Préflight réussi : configuration Firebase valide, package et clients OAuth vérifiés (valeurs masquées).");
           NODE
 
   build:
