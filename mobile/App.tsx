@@ -9,7 +9,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Home,
-  Clapperboard,
   MapPin,
   Mic,
   MessageSquare,
@@ -96,7 +95,8 @@ function MainTabs() {
   const { colors, t } = useTheme();
   const { user } = useAuth();
   const [activeSpaces, setActiveSpaces] = useState<string[]>([]);
-  const adminEnabled = user?.role?.toLowerCase() === "admin";
+  const adminEnabled =
+    typeof user?.role === "string" && user.role.trim().toLowerCase() === "admin";
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -164,8 +164,8 @@ function MainTabs() {
         name="Séries"
         component={SeriesScreen}
         options={{
-          tabBarLabel: renderTabLabel("Séries"),
-          tabBarIcon: ({ color, size }) => <Clapperboard color={color} size={size} />,
+          tabBarButton: () => null,
+          tabBarItemStyle: { display: "none" },
         }}
       />
       <Tab.Screen
