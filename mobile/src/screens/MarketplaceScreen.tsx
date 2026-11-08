@@ -271,9 +271,13 @@ const normalizeItem = (value: unknown): MarketplaceItem | null => {
 
 const categoryQuery = (
   tab: MarketTab,
+  marketSection: MarketSection,
   listingCategory: ListingCategory,
   tradeCategory: TradeCategory,
 ) => {
+  if (marketSection !== "explore") {
+    return "ALL";
+  }
   if (tab === "Local / Made in") return "MADE_IN";
   if (tab === "Services & Métiers") {
     return tradeCategory === "Tous"
