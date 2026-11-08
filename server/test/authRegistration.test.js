@@ -6,11 +6,13 @@ process.env.NODE_ENV = "test";
 process.env.DATABASE_URL ??= "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET ??=
   "unit-test-secret-that-is-longer-than-thirty-two-characters";
+process.env.GOOGLE_CLIENT_ID ??= "test-web-client-id";
 process.env.OTP_TEST_MODE = "true";
 process.env.OTP_TEST_ALLOWLIST = "+22670000000";
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
 
-const { requestOtp, verifyOtp } = await import("../controllers/authController.js");
+const { googleAuth, requestOtp, verifyOtp } = await import("../controllers/authController.js");
+const { OAuth2Client } = await import("google-auth-library");
 const { pool } = await import("../db/pool.js");
 const phoneNumber = "+22670000000";
 const jwtSecret = process.env.JWT_SECRET;
@@ -204,6 +206,38 @@ test("unknown phone login offers account creation without issuing an OTP", async
   assert.equal(connectCalled, false);
 });
 
+test("phone login normalizes formatted input and stored phone values to E.164", async (context) => {
+  let insertedOtpValues;
+  const client = createClient(async (statement, values = []) => {
+    if (statement.includes("SELECT 1")) return { rowCount: 0, rows: [] };
+    if (statement.includes("INSERT INTO otp_verifications")) {
+      insertedOtpValues = values;
+    }
+    return { rowCount: 1, rows: [] };
+  });
+  context.mock.method(pool, "query", async (statement, values) => {
+    assert.match(statement, /regexp_replace\(COALESCE\(phone_e164, phone_number\)/);
+    assert.match(statement, /is_verified = TRUE OR phone_verified_at IS NOT NULL/);
+    assert.equal(values[0], phoneNumber);
+    return {
+      rowCount: 1,
+      rows: [{ phone_number: "+226 70 00 00 00", phone_e164: phoneNumber, email: "admin@example.com" }],
+    };
+  });
+  context.mock.method(pool, "connect", async () => client);
+
+  const response = createResponse();
+  await requestOtp(
+    { body: { flow: "login", identifier: "+226 70 00 00 00" } },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(insertedOtpValues[0], phoneNumber);
+  assert.equal(response.payload.test_code, "123456");
+});
+
 test("email login sends and verifies the OTP against the account phone", async (context) => {
   const email = "awa@example.com";
   const user = {
@@ -218,7 +252,7 @@ test("email login sends and verifies the OTP against the account phone", async (
   const client = createClient(async (statement, values = []) => {
     verificationCalls.push({ statement, values });
     if (statement.includes("SELECT 1")) return { rowCount: 0, rows: [] };
-    if (statement.includes("SELECT phone_number FROM users")) {
+    if (statement.includes("SELECT COALESCE(phone_e164, phone_number) AS phone_number FROM users")) {
       return { rowCount: 1, rows: [{ phone_number: phoneNumber }] };
     }
     if (statement.includes("SELECT phone_number FROM otp_verifications")) {
@@ -278,6 +312,54 @@ test("email login sends and verifies the OTP against the account phone", async (
   assert.ok(verificationUpdate);
   assert.match(verificationUpdate.statement, /email_verified_at = CASE WHEN \$3 = 'email'/);
   assert.equal(verificationUpdate.values[2], "email");
+});
+
+test("Google login links a case-insensitive email to the existing admin account", async (context) => {
+  const queries = [];
+  const adminUser = {
+    id: "existing-admin",
+    phone_number: phoneNumber,
+    email: "admin@example.com",
+    google_id: "google-subject",
+    full_name: "Admin",
+    role: "admin",
+    is_verified: true,
+    phone_verified_at: "2026-01-01T00:00:00.000Z",
+  };
+  const client = createClient(async (statement, values = []) => {
+    queries.push({ statement, values });
+    if (statement.includes("SELECT id, google_id")) {
+      return { rowCount: 1, rows: [{ id: adminUser.id, google_id: null }] };
+    }
+    if (statement.includes("UPDATE users")) {
+      return { rowCount: 1, rows: [adminUser] };
+    }
+    return { rowCount: 1, rows: [] };
+  });
+  context.mock.method(OAuth2Client.prototype, "verifyIdToken", async () => ({
+    getPayload: () => ({
+      sub: "google-subject",
+      email: "Admin@Example.com",
+      email_verified: true,
+      name: "Admin",
+    }),
+  }));
+  context.mock.method(pool, "connect", async () => client);
+
+  const response = createResponse();
+  await googleAuth(
+    { body: { id_token: "header.payload.signature" } },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.user.id, adminUser.id);
+  assert.equal(response.payload.user.role, "admin");
+  assert.equal(response.payload.user.phone_number, phoneNumber);
+  const lookup = queries.find(({ statement }) => statement.includes("SELECT id, google_id"));
+  assert.match(lookup.statement, /LOWER\(email\) = \$2/);
+  assert.equal(lookup.values[1], "admin@example.com");
 });
 
 test("an OTP issued for email cannot be verified as SMS", async (context) => {

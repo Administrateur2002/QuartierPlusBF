@@ -139,14 +139,12 @@ const io = attachSocketServer(server);
 app.set("io", io);
 scheduleProDeliveryLocationCleanup();
 scheduleAuditLogCleanup();
-if (env.adminUserIds.length > 0) {
-  const adminFlashInterval = setInterval(() => {
-    void processScheduledFlashes().catch((error) => {
-      console.error("Unable to process scheduled admin flashes:", error.message);
-    });
-  }, 30_000);
-  adminFlashInterval.unref();
-}
+const adminFlashInterval = setInterval(() => {
+  void processScheduledFlashes().catch((error) => {
+    console.error("Unable to process scheduled admin flashes:", error.message);
+  });
+}, 30_000);
+adminFlashInterval.unref();
 
 void verifySmtpTransport();
 

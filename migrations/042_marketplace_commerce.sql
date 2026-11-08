@@ -1,130 +1,131 @@
 ALTER TABLE marketplace_items
     ADD COLUMN IF NOT EXISTS price_amount NUMERIC(12, 2),
-    ADD COLUMN IF NOT EXISTS currency_code CHAR(3) NOT NULL DEFAULT 'XOF',
-    ADD COLUMN IF NOT EXISTS country_code VARCHAR(3)
-        REFERENCES country_config(code),
-    ADD COLUMN IF NOT EXISTS city VARCHAR(120),
-    ADD COLUMN IF NOT EXISTS language_code VARCHAR(12) NOT NULL DEFAULT 'fr',
-    ADD COLUMN IF NOT EXISTS promo_price NUMERIC(12, 2),
-    ADD COLUMN IF NOT EXISTS promo_expires_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS completed_sales INTEGER NOT NULL DEFAULT 0
-        CHECK (completed_sales >= 0);
+        ADD COLUMN IF NOT EXISTS currency_code CHAR(3) NOT NULL DEFAULT 'XOF',
+            ADD COLUMN IF NOT EXISTS country_code VARCHAR(3)
+                    REFERENCES country_config(code),
+                        ADD COLUMN IF NOT EXISTS city VARCHAR(120),
+                            ADD COLUMN IF NOT EXISTS language_code VARCHAR(12) NOT NULL DEFAULT 'fr',
+                                ADD COLUMN IF NOT EXISTS promo_price NUMERIC(12, 2),
+                                    ADD COLUMN IF NOT EXISTS promo_expires_at TIMESTAMPTZ,
+                                        ADD COLUMN IF NOT EXISTS completed_sales INTEGER NOT NULL DEFAULT 0
+                                                CHECK (completed_sales >= 0);
 
-UPDATE marketplace_items
-SET price_amount = price_fcfa
-WHERE price_amount IS NULL;
+                                                UPDATE marketplace_items
+                                                SET price_amount = price_fcfa
+                                                WHERE price_amount IS NULL;
 
-ALTER TABLE marketplace_items
-    ALTER COLUMN price_amount SET NOT NULL,
-    ALTER COLUMN price_amount SET DEFAULT 0;
+                                                ALTER TABLE marketplace_items
+                                                    ALTER COLUMN price_amount SET NOT NULL,
+                                                        ALTER COLUMN price_amount SET DEFAULT 0;
 
-CREATE TABLE IF NOT EXISTS marketplace_shops (
-    seller_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    business_name VARCHAR(120) NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    country_code VARCHAR(3) REFERENCES country_config(code),
-    city VARCHAR(120) NOT NULL DEFAULT '',
-    language_code VARCHAR(12) NOT NULL DEFAULT 'fr',
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+                                                        CREATE TABLE IF NOT EXISTS marketplace_shops (
+                                                            seller_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                                                                business_name VARCHAR(120) NOT NULL,
+                                                                    description TEXT NOT NULL DEFAULT '',
+                                                                        country_code VARCHAR(3) REFERENCES country_config(code),
+                                                                            city VARCHAR(120) NOT NULL DEFAULT '',
+                                                                                language_code VARCHAR(12) NOT NULL DEFAULT 'fr',
+                                                                                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                                                                                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                                                                            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                                                                            );
 
-CREATE TABLE IF NOT EXISTS marketplace_couriers (
-    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    country_code VARCHAR(3) NOT NULL REFERENCES country_config(code),
-    city VARCHAR(120) NOT NULL,
-    is_available BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+                                                                                            CREATE TABLE IF NOT EXISTS marketplace_couriers (
+                                                                                                user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                                                                                                    country_code VARCHAR(3) NOT NULL REFERENCES country_config(code),
+                                                                                                        city VARCHAR(120) NOT NULL,
+                                                                                                            is_available BOOLEAN NOT NULL DEFAULT TRUE,
+                                                                                                                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                                                                                                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                                                                                                    );
 
-CREATE TABLE IF NOT EXISTS marketplace_orders (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    buyer_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    seller_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    item_id UUID REFERENCES marketplace_items(id) ON DELETE SET NULL,
-    item_title VARCHAR(150) NOT NULL,
-    amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
-    currency_code CHAR(3) NOT NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'SENT'
-        CHECK (status IN (
-            'SENT', 'ACCEPTED', 'PREPARING', 'SHIPPED', 'DELIVERED', 'CANCELLED'
-        )),
-    delivery_method VARCHAR(20) NOT NULL
-        CHECK (delivery_method IN ('HOME_DELIVERY', 'PICKUP')),
-    delivery_address TEXT NOT NULL DEFAULT '',
-    delivery_city VARCHAR(120) NOT NULL DEFAULT '',
-    delivery_country_code VARCHAR(3) REFERENCES country_config(code),
-    courier_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    buyer_note TEXT NOT NULL DEFAULT '',
-    buyer_confirmed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (
-        (delivery_method = 'PICKUP')
-        OR (delivery_address <> '' AND delivery_city <> '')
-    )
-);
+                                                                                                                    CREATE TABLE IF NOT EXISTS marketplace_orders (
+                                                                                                                        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                                                                                            buyer_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                                                                                                                                seller_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                                                                                                                                    item_id UUID REFERENCES marketplace_items(id) ON DELETE SET NULL,
+                                                                                                                                        item_title VARCHAR(150) NOT NULL,
+                                                                                                                                            amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+                                                                                                                                                currency_code CHAR(3) NOT NULL,
+                                                                                                                                                    status VARCHAR(16) NOT NULL DEFAULT 'SENT'
+                                                                                                                                                            CHECK (status IN (
+                                                                                                                                                                        'SENT', 'ACCEPTED', 'PREPARING', 'SHIPPED', 'DELIVERED', 'CANCELLED'
+                                                                                                                                                                                )),
+                                                                                                                                                                                    delivery_method VARCHAR(20) NOT NULL
+                                                                                                                                                                                            CHECK (delivery_method IN ('HOME_DELIVERY', 'PICKUP')),
+                                                                                                                                                                                                delivery_address TEXT NOT NULL DEFAULT '',
+                                                                                                                                                                                                    delivery_city VARCHAR(120) NOT NULL DEFAULT '',
+                                                                                                                                                                                                        delivery_country_code VARCHAR(3) REFERENCES country_config(code),
+                                                                                                                                                                                                            courier_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                                                                                                                                                                                                                buyer_note TEXT NOT NULL DEFAULT '',
+                                                                                                                                                                                                                    buyer_confirmed_at TIMESTAMPTZ,
+                                                                                                                                                                                                                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                                                                                                                                                                                                            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                                                                                                                                                                                                                CHECK (
+                                                                                                                                                                                                                                        (delivery_method = 'PICKUP')
+                                                                                                                                                                                                                                                OR (delivery_address <> '' AND delivery_city <> '')
+                                                                                                                                                                                                                                                    )
+                                                                                                                                                                                                                                                    );
 
-CREATE TABLE IF NOT EXISTS marketplace_order_events (
-    id BIGSERIAL PRIMARY KEY,
-    order_id UUID NOT NULL REFERENCES marketplace_orders(id) ON DELETE CASCADE,
-    actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    status VARCHAR(16) NOT NULL,
-    note TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+                                                                                                                                                                                                                                                    CREATE TABLE IF NOT EXISTS marketplace_order_events (
+                                                                                                                                                                                                                                                        id BIGSERIAL PRIMARY KEY,
+                                                                                                                                                                                                                                                            order_id UUID NOT NULL REFERENCES marketplace_orders(id) ON DELETE CASCADE,
+                                                                                                                                                                                                                                                                actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                                                                                                                                                                                                                                                                    status VARCHAR(16) NOT NULL,
+                                                                                                                                                                                                                                                                        note TEXT NOT NULL DEFAULT '',
+                                                                                                                                                                                                                                                                            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                                                                                                                                                                                                                                                            );
 
-CREATE TABLE IF NOT EXISTS marketplace_reviews (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    order_id UUID NOT NULL UNIQUE REFERENCES marketplace_orders(id) ON DELETE CASCADE,
-    buyer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    seller_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
-    comment VARCHAR(1000) NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+                                                                                                                                                                                                                                                                            CREATE TABLE IF NOT EXISTS marketplace_reviews (
+                                                                                                                                                                                                                                                                                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                                                                                                                                                                                                                                                    order_id UUID NOT NULL UNIQUE REFERENCES marketplace_orders(id) ON DELETE CASCADE,
+                                                                                                                                                                                                                                                                                        buyer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                                                                                                                                                                                                                                                                            seller_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                                                                                                                                                                                                                                                                                rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                                                                                                                                                                                                                                                                                                    comment VARCHAR(1000) NOT NULL DEFAULT '',
+                                                                                                                                                                                                                                                                                                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                                                                                                                                                                                                                                                                                        );
 
-CREATE TABLE IF NOT EXISTS marketplace_opportunities (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    opportunity_type VARCHAR(20) NOT NULL
-        CHECK (opportunity_type IN ('SUPPLIER', 'PRODUCER', 'PARTNERSHIP')),
-    title VARCHAR(150) NOT NULL,
-    description TEXT NOT NULL,
-    category VARCHAR(60) NOT NULL,
-    country_code VARCHAR(3) REFERENCES country_config(code),
-    city VARCHAR(120) NOT NULL DEFAULT '',
-    language_code VARCHAR(12) NOT NULL DEFAULT 'fr',
-    currency_code CHAR(3) NOT NULL DEFAULT 'XOF',
-    budget_amount NUMERIC(12, 2) CHECK (budget_amount IS NULL OR budget_amount >= 0),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+                                                                                                                                                                                                                                                                                                        CREATE TABLE IF NOT EXISTS marketplace_opportunities (
+                                                                                                                                                                                                                                                                                                            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                                                                                                                                                                                                                                                                                                                owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                                                                                                                                                                                                                                                                                                    opportunity_type VARCHAR(20) NOT NULL
+                                                                                                                                                                                                                                                                                                                            CHECK (opportunity_type IN ('SUPPLIER', 'PRODUCER', 'PARTNERSHIP')),
+                                                                                                                                                                                                                                                                                                                                title VARCHAR(150) NOT NULL,
+                                                                                                                                                                                                                                                                                                                                    description TEXT NOT NULL,
+                                                                                                                                                                                                                                                                                                                                        category VARCHAR(60) NOT NULL,
+                                                                                                                                                                                                                                                                                                                                            country_code VARCHAR(3) REFERENCES country_config(code),
+                                                                                                                                                                                                                                                                                                                                                city VARCHAR(120) NOT NULL DEFAULT '',
+                                                                                                                                                                                                                                                                                                                                                    language_code VARCHAR(12) NOT NULL DEFAULT 'fr',
+                                                                                                                                                                                                                                                                                                                                                        currency_code CHAR(3) NOT NULL DEFAULT 'XOF',
+                                                                                                                                                                                                                                                                                                                                                            budget_amount NUMERIC(12, 2) CHECK (budget_amount IS NULL OR budget_amount >= 0),
+                                                                                                                                                                                                                                                                                                                                                                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                                                                                                                                                                                                                                                                                                                                                                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                                                                                                                                                                                                                                                                                                                                                        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                                                                                                                                                                                                                                                                                                                                                        );
 
-CREATE INDEX IF NOT EXISTS marketplace_items_international_idx
-    ON marketplace_items (country_code, city, language_code, category, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_items_promotions_idx
-    ON marketplace_items (promo_expires_at)
-    WHERE promo_price IS NOT NULL;
-CREATE INDEX IF NOT EXISTS marketplace_items_popular_idx
-    ON marketplace_items (completed_sales DESC, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_orders_buyer_idx
-    ON marketplace_orders (buyer_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_orders_seller_idx
-    ON marketplace_orders (seller_id, status, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_orders_courier_idx
-    ON marketplace_orders (courier_id, status, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_order_events_order_idx
-    ON marketplace_order_events (order_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_reviews_seller_idx
-    ON marketplace_reviews (seller_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS marketplace_opportunities_search_idx
-    ON marketplace_opportunities (country_code, city, opportunity_type, created_at DESC)
-    WHERE is_active = TRUE;
+                                                                                                                                                                                                                                                                                                                                                                        CREATE INDEX IF NOT EXISTS marketplace_items_international_idx
+                                                                                                                                                                                                                                                                                                                                                                            ON marketplace_items (country_code, city, language_code, category, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                            CREATE INDEX IF NOT EXISTS marketplace_items_promotions_idx
+                                                                                                                                                                                                                                                                                                                                                                                ON marketplace_items (promo_expires_at)
+                                                                                                                                                                                                                                                                                                                                                                                    WHERE promo_price IS NOT NULL;
+                                                                                                                                                                                                                                                                                                                                                                                    CREATE INDEX IF NOT EXISTS marketplace_items_popular_idx
+                                                                                                                                                                                                                                                                                                                                                                                        ON marketplace_items (completed_sales DESC, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                                        CREATE INDEX IF NOT EXISTS marketplace_orders_buyer_idx
+                                                                                                                                                                                                                                                                                                                                                                                            ON marketplace_orders (buyer_id, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                                            CREATE INDEX IF NOT EXISTS marketplace_orders_seller_idx
+                                                                                                                                                                                                                                                                                                                                                                                                ON marketplace_orders (seller_id, status, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                                                CREATE INDEX IF NOT EXISTS marketplace_orders_courier_idx
+                                                                                                                                                                                                                                                                                                                                                                                                    ON marketplace_orders (courier_id, status, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                                                    CREATE INDEX IF NOT EXISTS marketplace_order_events_order_idx
+                                                                                                                                                                                                                                                                                                                                                                                                        ON marketplace_order_events (order_id, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                                                        CREATE INDEX IF NOT EXISTS marketplace_reviews_seller_idx
+                                                                                                                                                                                                                                                                                                                                                                                                            ON marketplace_reviews (seller_id, created_at DESC);
+                                                                                                                                                                                                                                                                                                                                                                                                            CREATE INDEX IF NOT EXISTS marketplace_opportunities_search_idx
+                                                                                                                                                                                                                                                                                                                                                                                                                ON marketplace_opportunities (country_code, city, opportunity_type, created_at DESC)
+                                                                                                                                                                                                                                                                                                                                                                                                                    WHERE is_active = TRUE;
 
-INSERT INTO app_migrations (version)
-VALUES ('042_marketplace_commerce.sql')
-ON CONFLICT (version) DO NOTHING;
+                                                                                                                                                                                                                                                                                                                                                                                                                    INSERT INTO app_migrations (version)
+                                                                                                                                                                                                                                                                                                                                                                                                                    VALUES ('042_marketplace_commerce.sql')
+                                                                                                                                                                                                                                                                                                                                                                                                                    ON CONFLICT (version) DO NOTHING;
+                                                                                                                                                                                                                                                                                                                                                                                                                    

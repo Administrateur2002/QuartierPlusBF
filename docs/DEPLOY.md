@@ -204,13 +204,28 @@ SELECT id FROM users
 WHERE LOWER(email) = 'administrateurquartierplus@gmail.com';
 ```
 
-Configurez ensuite `ADMIN_EMAIL=administrateurquartierplus@gmail.com` et
-`ADMIN_USER_IDS=<UUID>` dans l'environnement serveur (UUID seulement, jamais
-dans l'application mobile). L'API exige simultanément l'UUID autorisé, l'e-mail
-vérifié, le téléphone vérifié et une session ouverte par OTP SMS;
-l'adresse seule ou une session Google seule ne confère aucun privilège.
-Pour ouvrir l'espace, l'administrateur doit donc se reconnecter avec son numéro
-vérifié et le code SMS.
+Le rôle `admin` en base est la source d'autorisation. L'API exige également
+l'e-mail et le téléphone vérifiés, et que l'adresse corresponde à
+`ADMIN_EMAIL`. Les connexions téléphone, e-mail et Google aboutissent au même
+compte lorsque leurs identifiants sont associés à la même ligne `users`.
+Pour attribuer le rôle au compte existant, exécutez cette requête paramétrée dans
+Neon avec l'adresse administrateur et le téléphone E.164 comme paramètres `$1`
+et `$2` :
+
+```sql
+UPDATE users
+SET role = 'admin'
+WHERE LOWER(email) = LOWER($1)
+     AND (regexp_replace(phone_e164, '[^0-9]', '', 'g')
+        = regexp_replace($2, '[^0-9]', '', 'g')
+        OR regexp_replace(phone_number, '[^0-9]', '', 'g')
+        = regexp_replace($2, '[^0-9]', '', 'g'))
+RETURNING id, role, email, phone_e164;
+```
+
+Vérifiez qu'une ligne est retournée et que les deux facteurs sont vérifiés.
+L'UUID n'est pas à recopier dans l'application. Les routes admin restent
+protégées côté serveur par le rôle et les états de vérification.
 Ne réutilisez pas un jeton d'administration partagé. Toute action de
 modération est journalisée; les comptes suspendus gardent accès au dépôt d'un
 recours et aux fonctions SOS de sécurité.
@@ -442,9 +457,9 @@ Render de test isolé seulement, définissez `NODE_ENV=test`,
 Seuls les numéros de cette liste reçoivent le code fixe `123456`. Le serveur
 refuse de démarrer en production si `OTP_TEST_MODE=true`. L'allowlist ne
 rattache pas le numéro au compte administrateur : la base de test doit déjà
-associer ce numéro au compte portant l'adresse `ADMIN_EMAIL`, dont l'UUID est
-présent dans `ADMIN_USER_IDS`. Ne changez pas le téléphone du compte admin en
-production pour effectuer ce test.
+associer ce numéro au compte portant l'adresse `ADMIN_EMAIL` et le rôle
+`admin`. Ne changez pas le téléphone du compte admin en production pour
+effectuer ce test.
 
 Le HMAC des codes stockés dans `code_hash` utilise `JWT_SECRET` dans
 `authController.js`; aucun `HMAC_SECRET` distinct n'est lu par l'API. Render

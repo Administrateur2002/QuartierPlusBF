@@ -4,7 +4,7 @@ import { test } from "node:test";
 process.env.NODE_ENV ??= "test";
 process.env.DATABASE_URL ??= "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET ??= "test-secret-that-is-long-enough-for-jwt";
-process.env.ADMIN_USER_IDS = "7b490a29-02dd-44ad-8c9f-81d9cadc0007";
+process.env.ADMIN_EMAIL = "administrateurquartierplus@gmail.com";
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
 
 const { adminAuthMiddleware } = await import("../middlewares/adminAuthMiddleware.js");
@@ -22,76 +22,40 @@ const createResponse = () => ({
   },
 });
 
-test("administrator authorization requires an allowlisted UUID and verified account factors", async (context) => {
-  let queryCount = 0;
+test("verified database admins can open the dashboard with SMS, email, or Google sessions", async (context) => {
   context.mock.method(pool, "query", async (_query, values) => {
-    queryCount += 1;
     assert.equal(values[1], "administrateurquartierplus@gmail.com");
     const query = _query;
+    assert.match(query, /LOWER\(role\) = 'admin'/);
+    assert.match(query, /LOWER\(email\) = LOWER\(\$2\)/);
     assert.match(query, /email_verified_at IS NOT NULL/);
     assert.match(query, /is_verified = TRUE/);
     assert.match(query, /phone_verified_at IS NOT NULL/);
     return { rowCount: 1, rows: [{}] };
   });
-  const response = createResponse();
-  let continued = false;
-  await adminAuthMiddleware(
-    { auth: { userId: "7b490a29-02dd-44ad-8c9f-81d9cadc0007", authMethod: "sms_otp" } },
-    response,
-    () => {
-      continued = true;
-    },
-  );
-  assert.equal(continued, true);
-  assert.equal(queryCount, 1);
-});
-
-test("knowing the administrator email does not grant administrator access", async (context) => {
-  context.mock.method(pool, "query", async () => {
-    throw new Error("The database must not be queried for a non-allowlisted identity.");
-  });
-  const response = createResponse();
-  let continued = false;
-  await adminAuthMiddleware(
-    { auth: { userId: "8b490a29-02dd-44ad-8c9f-81d9cadc0008" } },
-    response,
-    () => {
-      continued = true;
-    },
-  );
-  assert.equal(continued, false);
-  assert.equal(response.statusCode, 403);
-});
-
-test("Google-only administrator sessions require SMS step-up authentication", async (context) => {
-  context.mock.method(pool, "query", async () => {
-    throw new Error("SMS authentication must be checked before accessing the database.");
-  });
-  const response = createResponse();
-  let continued = false;
-  await adminAuthMiddleware(
-    {
-      auth: {
-        userId: "7b490a29-02dd-44ad-8c9f-81d9cadc0007",
-        authMethod: "google_oauth",
+  for (const authMethod of ["sms_otp", "email_otp", "google_oauth"]) {
+    const response = createResponse();
+    let continued = false;
+    await adminAuthMiddleware(
+      { auth: { userId: "admin-user", authMethod } },
+      response,
+      () => {
+        continued = true;
       },
-    },
-    response,
-    () => {
-      continued = true;
-    },
-  );
-  assert.equal(continued, false);
-  assert.equal(response.statusCode, 403);
-  assert.match(response.payload.error, /SMS/);
+    );
+    assert.equal(continued, true);
+  }
 });
 
-test("an allowlisted but incompletely verified account is refused", async (context) => {
-  context.mock.method(pool, "query", async () => ({ rowCount: 0, rows: [] }));
+test("an account without the database admin role is denied", async (context) => {
+  context.mock.method(pool, "query", async (query) => {
+    assert.match(query, /LOWER\(role\) = 'admin'/);
+    return { rowCount: 0, rows: [] };
+  });
   const response = createResponse();
   let continued = false;
   await adminAuthMiddleware(
-    { auth: { userId: "7b490a29-02dd-44ad-8c9f-81d9cadc0007", authMethod: "sms_otp" } },
+    { auth: { userId: "ordinary-user", authMethod: "sms_otp" } },
     response,
     () => {
       continued = true;

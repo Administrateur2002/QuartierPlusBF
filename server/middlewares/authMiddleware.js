@@ -33,9 +33,7 @@ const createAuthMiddleware = ({ allowSuspended = false } = {}) => async (
 
   try {
     const account = await pool.query(
-      env.adminUserIds.length
-        ? `SELECT suspended_until FROM users WHERE id = $1`
-        : `SELECT id FROM users WHERE id = $1`,
+      `SELECT suspended_until FROM users WHERE id = $1`,
       [userId],
     );
     if (!account.rowCount) {

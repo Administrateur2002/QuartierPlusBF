@@ -231,8 +231,9 @@ export const requestOtp = async (request, response, next) => {
       phoneNumber = normalizedPhone;
       try {
         const account = await pool.query(
-          `SELECT phone_number, email FROM users
-           WHERE (phone_number = $1 OR phone_e164 = $1)
+          `SELECT phone_number, phone_e164, email FROM users
+            WHERE (regexp_replace(COALESCE(phone_e164, phone_number), '[^0-9]', '', 'g') = regexp_replace($1, '[^0-9]', '', 'g')
+              OR regexp_replace(phone_number, '[^0-9]', '', 'g') = regexp_replace($1, '[^0-9]', '', 'g'))
              AND (is_verified = TRUE OR phone_verified_at IS NOT NULL OR email_verified_at IS NOT NULL)
            LIMIT 1`,
           [phoneNumber],
@@ -242,7 +243,10 @@ export const requestOtp = async (request, response, next) => {
             error: "Aucun compte vérifié ne correspond. Choisissez « Créer un compte ».",
           });
         }
-        phoneNumber = account.rows[0].phone_number ?? phoneNumber;
+        phoneNumber =
+          normalizePhoneNumberE164(
+            account.rows[0].phone_e164 ?? account.rows[0].phone_number,
+          ) ?? phoneNumber;
         recipientEmail = account.rows[0].email ?? "";
       } catch (error) {
         return next(error);
@@ -250,9 +254,9 @@ export const requestOtp = async (request, response, next) => {
     } else if (EMAIL_PATTERN.test(identifier)) {
       try {
         const account = await pool.query(
-          `SELECT phone_number, email FROM users
+          `SELECT phone_number, phone_e164, email FROM users
            WHERE LOWER(email) = $1
-             AND phone_number IS NOT NULL
+             AND COALESCE(phone_e164, phone_number) IS NOT NULL
              AND (is_verified = TRUE OR phone_verified_at IS NOT NULL OR email_verified_at IS NOT NULL)
            LIMIT 1`,
           [identifier.toLowerCase()],
@@ -262,7 +266,10 @@ export const requestOtp = async (request, response, next) => {
             error: "Aucun compte vérifié ne correspond. Choisissez « Créer un compte ».",
           });
         }
-        phoneNumber = account.rows[0].phone_number;
+        phoneNumber =
+          normalizePhoneNumberE164(
+            account.rows[0].phone_e164 ?? account.rows[0].phone_number,
+          ) ?? "";
         recipientEmail = account.rows[0].email ?? identifier.toLowerCase();
       } catch (error) {
         return next(error);
@@ -554,13 +561,14 @@ export const verifyOtp = async (request, response, next) => {
     let phoneNumber = phoneIdentifier ?? "";
     if (!phoneIdentifier) {
       const account = await client.query(
-        `SELECT phone_number FROM users
-         WHERE LOWER(email) = $1 AND phone_number IS NOT NULL
+        `SELECT COALESCE(phone_e164, phone_number) AS phone_number FROM users
+         WHERE LOWER(email) = $1 AND COALESCE(phone_e164, phone_number) IS NOT NULL
          FOR UPDATE`,
         [identifier],
       );
       if (account.rowCount > 0) {
-        phoneNumber = account.rows[0].phone_number;
+        phoneNumber =
+          normalizePhoneNumberE164(account.rows[0].phone_number) ?? "";
       } else {
         const pendingRegistration = await client.query(
           `SELECT phone_number FROM otp_verifications
@@ -636,15 +644,16 @@ export const verifyOtp = async (request, response, next) => {
     } else {
       result = await client.query(
         `UPDATE users
-         SET phone_number = COALESCE(phone_number, $1),
-             phone_e164 = COALESCE(phone_e164, $1),
+         SET phone_number = $1,
+             phone_e164 = $1,
              is_verified = TRUE,
              phone_verified_at = CASE WHEN $3 = 'sms'
                THEN COALESCE(phone_verified_at, NOW()) ELSE phone_verified_at END,
              email_verified_at = CASE WHEN $3 = 'email'
                THEN COALESCE(email_verified_at, NOW()) ELSE email_verified_at END,
              country_code = COALESCE(country_code, $2)
-         WHERE (phone_number = $1 OR phone_e164 = $1)
+         WHERE (regexp_replace(COALESCE(phone_e164, phone_number), '[^0-9]', '', 'g') = regexp_replace($1, '[^0-9]', '', 'g')
+            OR regexp_replace(phone_number, '[^0-9]', '', 'g') = regexp_replace($1, '[^0-9]', '', 'g'))
            AND is_verified = TRUE
          RETURNING id, phone_number, email, google_id, full_name, role,
                    neighborhood, country_code, reputation_score, is_verified,
@@ -791,7 +800,7 @@ export const googleAuth = async (request, response, next) => {
       const existing = await client.query(
         `SELECT id, google_id
          FROM users
-         WHERE google_id = $1 OR email = $2
+         WHERE google_id = $1 OR LOWER(email) = $2
          FOR UPDATE`,
         [identity.googleId, identity.email],
       );

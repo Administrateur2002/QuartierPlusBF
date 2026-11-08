@@ -19,6 +19,7 @@ SMS_DELIVERY_TOKEN
 Variables supplémentaires à créer pour activer les fonctions correspondantes :
 
 ```text
+ADMIN_EMAIL
 LIVEKIT_API_KEY
 LIVEKIT_API_SECRET
 LIVEKIT_URL
@@ -95,6 +96,46 @@ n'exige pas de jeton utilisateur.
 
 ## GitHub Actions et environnement EAS `preview`
 
+Créez les éléments suivants dans **GitHub → Settings → Secrets and variables
+→ Actions**. Pour une variable non confidentielle, privilégiez **Variables** ;
+les secrets doivent rester dans **Secrets**.
+
+| Nom | Emplacement |
+|---|---|
+| `EXPO_TOKEN` | Secret GitHub Actions du dépôt, jeton d'accès EAS |
+| `GOOGLE_SERVICES_JSON` | Secret GitHub Actions du dépôt, contenu du fichier Firebase Android |
+| `GOOGLE_SERVICES_JSON_B64` | Secret GitHub Actions du dépôt, alternative Base64 à `GOOGLE_SERVICES_JSON` |
+| `EXPO_PUBLIC_API_URL` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_API_KEY` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_PROJECT_ID` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_APP_ID` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` | Variable GitHub Actions et environnement EAS `preview` |
+| `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` | Environnement EAS `preview` ; le workflow de build l'extrait aussi de Firebase |
+| `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` | Environnement EAS `preview` ; le workflow de build l'extrait aussi de Firebase |
+| `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` | Variable GitHub Actions et environnement EAS `preview`, si iOS est activé |
+| `EXPO_PUBLIC_EAS_PROJECT_ID` | Variable GitHub Actions et environnement EAS `preview`, uniquement si absent de `app.json` |
+| `EXPO_PUBLIC_LIVEKIT_URL` | Variable GitHub Actions et environnement EAS `preview` |
+
+Les variables `EXPO_PUBLIC_*` sont intégrées à l'application et ne doivent
+jamais contenir de secret serveur. Les clés API Firebase et Maps sont des
+identifiants client : appliquez leurs restrictions dans les consoles Google.
+L'URL API peut utiliser la valeur de production par défaut du workflow ; créez
+la variable uniquement si une autre URL est requise.
+Le préflight du workflow Android exige `EXPO_TOKEN`, l'un de
+`GOOGLE_SERVICES_JSON` ou `GOOGLE_SERVICES_JSON_B64`, et
+`EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` (variable ou secret GitHub). Il vérifie aussi
+le package Android et la présence des clients OAuth Android et Web dans le JSON,
+sans afficher leur contenu. Les clients Google Android/Web et le projet Firebase
+sont extraits de ce fichier ; les autres variables client ne sont pas des
+secrets requis par le préflight. Configurez les valeurs utilisées par l'OTA dans
+l'environnement EAS `preview`.
+`ADMIN_EMAIL` se configure dans l'environnement du service Render et doit
+correspondre à l'adresse vérifiée du compte portant le rôle `admin` en base.
+
 Les variables suivantes sont intégrées au client ; ce ne sont pas des secrets :
 
 ```text
@@ -136,12 +177,13 @@ EXPO_TOKEN
 Pour la configuration Firebase Android du workflow APK, fournissez soit
 `GOOGLE_SERVICES_JSON` avec le contenu JSON brut, soit
 `GOOGLE_SERVICES_JSON_B64` avec le fichier JSON encodé en base64 standard.
-Si les deux secrets sont définis, `GOOGLE_SERVICES_JSON_B64` est prioritaire.
+Si les deux secrets sont définis, `GOOGLE_SERVICES_JSON_B64` est essayé en
+premier ; en cas d'invalidité, le workflow essaie `GOOGLE_SERVICES_JSON`.
 Le workflow détecte aussi un JSON encodé en Base64 accidentellement placé dans
-`GOOGLE_SERVICES_JSON`. Il retire uniquement les espaces, U+200E, U+200F et BOM
-périphériques du JSON brut/décodé ; les espaces internes du Base64 sont ignorés
-pour permettre son formatage sur plusieurs lignes. Un parseur JSON valide le
-contenu, puis le workflow exige `project_info.project_number`,
+`GOOGLE_SERVICES_JSON`. Il retire les caractères Unicode de format (dont
+U+200E/U+200F) et le BOM du JSON brut/décodé ; les espaces internes du Base64
+sont ignorés pour permettre son formatage sur plusieurs lignes. Un parseur JSON
+valide le contenu, puis le workflow exige `project_info.project_number`,
 `project_info.project_id`,
 `client_info.android_client_info.package_name`,
 `client_info.mobilesdk_app_id` et `api_key[].current_key` sur le client Android
@@ -161,17 +203,21 @@ client Web client_type 3, `project_number` et `project_id` de ce fichier font
 autorité. Les deux identifiants Google et `EXPO_PUBLIC_FIREBASE_PROJECT_ID`
 sont exportés depuis ce fichier et leur origine est consignée sans afficher
 leur valeur.
-Le workflow EAS Update utilise les mêmes secrets ; au contrôle initial, si ces
-secrets sont absents, il valide le fichier déjà présent à
-`mobile/google-services.json`, mais la publication requiert toujours au moins
-l'un des deux secrets. Il restaure la valeur normalisée à cet emplacement avant
-l'export Android. Un JSON absent, mal formé ou sans structure/client OAuth
-Android correspondant au package bloque la publication.
+Le workflow EAS Update essaie, dans l'ordre, le secret Base64, le secret JSON
+brut, puis `mobile/google-services.json` du dépôt. Il détecte aussi un JSON brut
+placé par erreur dans le secret Base64 ou un JSON encodé en Base64 dans le
+secret brut. Chaque candidat est validé (structure Firebase et client OAuth
+Android correspondant au package) avant usage ; un secret invalide n'empêche
+pas d'utiliser un autre candidat valide. Ainsi, un fichier du dépôt valide peut
+être utilisé même si les secrets sont absents ou mal formés. Le candidat retenu
+est normalisé à `mobile/google-services.json` avant l'export Android. La
+publication est bloquée uniquement si aucune configuration valide n'est
+disponible.
 `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` absent ou mal formé n'est qu'un avertissement :
 l'authentification Google iOS est omise et la publication Android continue.
 `EXPO_TOKEN` est passé à EAS et n'est pas affiché. Les workflows ne doivent jamais
 activer `set -x` ou imprimer une valeur de secret.
-Le workflow écrit le secret après le checkout et valide ensuite ce fichier ;
+Le workflow APK écrit le secret après le checkout et valide ensuite ce fichier ;
 la présence de `mobile/google-services.json` dans le dépôt ne remplace donc pas
 la valeur fournie par le secret pendant le build. La connexion Google iOS est
 facultative pour le build Android : l'absence ou l'invalidité de
@@ -196,9 +242,13 @@ Dans Firebase Console, activez Google dans Authentication, vérifiez l'app
 Android `com.administrateur.quartierplus`, puis ajoutez les empreintes SHA-1 et
 SHA-256 du certificat de signature EAS de chaque profil distribué. Obtenez-les
 dans `eas credentials -p android` pour le profil EAS concerné ; l'empreinte du
-keystore debug local n'est pas celle de l'APK EAS. Après modification,
-téléchargez le nouveau `google-services.json` et remplacez le secret GitHub
-`GOOGLE_SERVICES_JSON`.
+keystore debug local n'est pas celle de l'APK EAS. Si l'application est aussi
+distribuée via Google Play, ajoutez également les SHA-1 et SHA-256 du certificat
+de signature Play (Play Console → Intégrité de l'application), qui peuvent être
+différents du certificat EAS. Après modification, téléchargez le nouveau
+`google-services.json` et remplacez le secret GitHub `GOOGLE_SERVICES_JSON`.
+Un nouveau build natif est nécessaire pour prendre en compte ces certificats ;
+une publication OTA seule ne suffit pas.
 
 Dans Google Cloud Console → API et services → Identifiants, créez/vérifiez le
 client OAuth Android avec le package et le SHA-1 exacts, ainsi qu'un client OAuth
@@ -263,4 +313,5 @@ numéro de test en format E.164. Le code refuse `OTP_TEST_MODE=true` avec
 `NODE_ENV=production`. Ne définissez jamais ces paramètres sur le service
 Render de production. L'allowlist seule ne crée ni ne rattache un compte : le
 numéro doit déjà être associé à la ligne du compte administrateur dans la base
-de test, et l'accès admin doit conserver `ADMIN_EMAIL` et `ADMIN_USER_IDS`.
+de test. L'accès admin dépend de `ADMIN_EMAIL`, du rôle `admin` en base et des
+vérifications d'e-mail et de téléphone.

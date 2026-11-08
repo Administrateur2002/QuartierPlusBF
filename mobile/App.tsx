@@ -96,7 +96,7 @@ function MainTabs() {
   const { colors, t } = useTheme();
   const { user } = useAuth();
   const [activeSpaces, setActiveSpaces] = useState<string[]>([]);
-  const [adminEnabled, setAdminEnabled] = useState(false);
+  const adminEnabled = user?.role?.toLowerCase() === "admin";
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -127,30 +127,6 @@ function MainTabs() {
             setActiveSpaces([]);
             console.warn("Unable to load active Pro spaces:", error);
           }
-        });
-      return () => {
-        active = false;
-      };
-    }, [user?.id]),
-  );
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      if (!user) {
-        setAdminEnabled(false);
-        return () => {
-          active = false;
-        };
-      }
-      void api
-        .get<{ authorized?: boolean }>("/v1/admin/me", {
-          headers: { "Cache-Control": "no-cache" },
-        })
-        .then((response) => {
-          if (active) setAdminEnabled(response.data.authorized === true);
-        })
-        .catch(() => {
-          if (active) setAdminEnabled(false);
         });
       return () => {
         active = false;

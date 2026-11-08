@@ -56,7 +56,7 @@ const googleErrorMessage = (error: unknown) => {
         ? record.message
         : "Erreur Google inconnue.";
   if (code === "10" || /DEVELOPER_ERROR/i.test(rawMessage)) {
-    return `Google OAuth refuse cette application : ${rawMessage} (code 10 / DEVELOPER_ERROR). Vérifiez le package Android et les SHA-1/SHA-256 du certificat EAS dans Firebase, ainsi que le client OAuth Android correspondant dans Google Cloud Console.`;
+    return `Google OAuth refuse cette application : ${rawMessage} (code 10 / DEVELOPER_ERROR). Vérifiez le package Android, les SHA-1/SHA-256 du certificat EAS et les clients OAuth Android/Web dans Firebase. Après correction, un nouveau build natif est nécessaire : une mise à jour OTA ne suffit pas.`;
   }
   return `Google : ${rawMessage} (code ${code}).`;
 };

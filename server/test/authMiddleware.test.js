@@ -6,7 +6,6 @@ process.env.NODE_ENV = "test";
 process.env.DATABASE_URL ??= "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET ??=
   "unit-test-secret-that-is-longer-than-thirty-two-characters";
-process.env.ADMIN_USER_IDS = "7b490a29-02dd-44ad-8c9f-81d9cadc0007";
 process.env.OTP_TEST_MODE = "false";
 
 const { authMiddleware } = await import("../middlewares/authMiddleware.js");

@@ -44,16 +44,15 @@ test("production environment refuses the fixed test OTP mode", () => {
   assert.match(result.stderr, /OTP_TEST_MODE must not be enabled in production/);
 });
 
-test("administrator identities are normalized and must be valid UUIDs", () => {
+test("administrator email is normalized and validated", () => {
   const valid = loadProductionConfig({
     ADMIN_EMAIL: "AdministrateurQuartierPlus@gmail.com",
-    ADMIN_USER_IDS: "7b490a29-02dd-44ad-8c9f-81d9cadc0007",
   });
   assert.equal(valid.status, 0, valid.stderr);
 
-  const malformed = loadProductionConfig({ ADMIN_USER_IDS: "not-a-uuid" });
+  const malformed = loadProductionConfig({ ADMIN_EMAIL: "not-an-email" });
   assert.notEqual(malformed.status, 0);
-  assert.match(malformed.stderr, /ADMIN_USER_IDS/);
+  assert.match(malformed.stderr, /ADMIN_EMAIL/);
 });
 
 test("live Grin moderation requires a strong webhook secret when enabled", () => {

@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS series_seasons (
     season_number INTEGER NOT NULL CHECK (season_number > 0),
     title VARCHAR(160) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (series_id, season_number)
 );
 
