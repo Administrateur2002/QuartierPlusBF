@@ -50,7 +50,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as MediaLibrary from "expo-media-library";
 import * as SecureStore from "expo-secure-store";
 import NetInfo from "@react-native-community/netinfo";
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -198,7 +198,8 @@ const requestMediaSignature = async (
     typeof payload.max_bytes !== "number" ||
     payload.resource_type !== resourceType ||
     payload.trim_video !== trimVideo ||
-    (resourceType === "video" && payload.context !== "trim_video=true") ||
+    (resourceType === "video" &&
+      payload.context !== (trimVideo ? "trim_video=true" : undefined)) ||
     (resourceType === "image" && payload.context !== undefined) ||
     !(
       payload.max_duration_seconds === null ||
@@ -404,6 +405,11 @@ export default function FeedScreen() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+  const feedListRefs = useRef<
+    Partial<Record<FeedScope, FlashListRef<FeedEntry>>>
+  >({});
+  const pendingVideoAdvanceId = useRef<string | null>(null);
+  const loadMoreRef = useRef<() => Promise<void>>(async () => {});
   const [carouselIndices, setCarouselIndices] = useState<Record<string, number>>({});
   const [expandedCaptionPostId, setExpandedCaptionPostId] = useState<string | null>(null);
   const [feedPageHeight, setFeedPageHeight] = useState(
@@ -422,6 +428,41 @@ export default function FeedScreen() {
   const tripleTapHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tripleTapHintShown = useRef(false);
   const tabBarHeight = 68 + insets.bottom;
+  const scrollToFeedVideo = useCallback(
+    (index: number) => {
+      const list = feedListRefs.current[scope];
+      if (!isFocused || !list) return;
+      void list
+        .scrollToIndex({ index, animated: true, viewPosition: 0 })
+        .catch((error: unknown) => {
+          console.error("Unable to advance to the next feed video:", error);
+        });
+    },
+    [isFocused, scope],
+  );
+  const advanceToNextVideo = useCallback(
+    (currentEntryId: string) => {
+      const currentIndex = visibleEntries.findIndex(
+        (entry) => entry.id === currentEntryId,
+      );
+      if (currentIndex < 0) return;
+      const nextVideoIndex = visibleEntries.findIndex(
+        (entry, index) =>
+          index > currentIndex &&
+          entry.kind === "post" &&
+          entry.mediaType === "video" &&
+          Boolean(entry.imageUrl),
+      );
+      if (nextVideoIndex >= 0) {
+        pendingVideoAdvanceId.current = null;
+        scrollToFeedVideo(nextVideoIndex);
+      } else if (hasMoreFeed) {
+        pendingVideoAdvanceId.current = currentEntryId;
+        void loadMoreRef.current();
+      }
+    },
+    [hasMoreFeed, scrollToFeedVideo, visibleEntries],
+  );
 
   useEffect(() => {
     let active = true;
@@ -1093,6 +1134,7 @@ export default function FeedScreen() {
       if (hasMoreMarketplace && rawMarketplace.length < 100) setHasMoreMarketplace(false);
       if (hasMoreFeed && rawFeed.length < 100) setHasMoreFeed(false);
     } catch (loadError) {
+      pendingVideoAdvanceId.current = null;
       const details =
         loadError instanceof FeedHttpError
           ? `${loadError.path} — HTTP ${loadError.status}`
@@ -1105,6 +1147,36 @@ export default function FeedScreen() {
       setIsLoadingMore(false);
     }
   };
+  loadMoreRef.current = loadMore;
+
+  useEffect(() => {
+    const pendingId = pendingVideoAdvanceId.current;
+    if (!pendingId || !isFocused) return;
+
+    const currentIndex = visibleEntries.findIndex(
+      (entry) => entry.id === pendingId,
+    );
+    if (currentIndex < 0) {
+      pendingVideoAdvanceId.current = null;
+      return;
+    }
+
+    const nextVideoIndex = visibleEntries.findIndex(
+      (entry, index) =>
+        index > currentIndex &&
+        entry.kind === "post" &&
+        entry.mediaType === "video" &&
+        Boolean(entry.imageUrl),
+    );
+    if (nextVideoIndex >= 0) {
+      pendingVideoAdvanceId.current = null;
+      scrollToFeedVideo(nextVideoIndex);
+    } else if (!hasMoreFeed) {
+      pendingVideoAdvanceId.current = null;
+    } else if (!loadingMoreRef.current) {
+      void loadMoreRef.current();
+    }
+  }, [hasMoreFeed, isFocused, scrollToFeedVideo, visibleEntries]);
 
   const likePost = async (entry: FeedEntry) => {
     if (authStatus !== "connected") {
@@ -2079,11 +2151,11 @@ export default function FeedScreen() {
         draftMedia.resourceType === "video" &&
         !trimVideo &&
         typeof signature.max_duration_seconds === "number" &&
-        draftMedia.duration !== undefined &&
-        exceedsVideoDurationLimit(
-          draftMedia.duration,
-          signature.max_duration_seconds,
-        )
+        (draftMedia.duration === undefined ||
+          exceedsVideoDurationLimit(
+            draftMedia.duration,
+            signature.max_duration_seconds,
+          ))
       ) {
         const shouldTrim = await new Promise<boolean>((resolve) => {
           let settled = false;
@@ -2093,11 +2165,21 @@ export default function FeedScreen() {
             resolve(value);
           };
           Alert.alert(
-            "Vidéo trop longue",
-            `La limite du serveur est de ${signature.max_duration_seconds} secondes. Voulez-vous utiliser les ${signature.max_duration_seconds} premières secondes ?`,
+            draftMedia.duration === undefined
+              ? "Durée de vidéo inconnue"
+              : "Vidéo trop longue",
+            draftMedia.duration === undefined
+              ? `La durée n’a pas pu être confirmée avant l’envoi. Autorisez-vous une limite aux ${signature.max_duration_seconds} premières secondes si nécessaire ? Si la vidéo respecte déjà la limite, elle sera publiée en entier.`
+              : `La limite du serveur est de ${signature.max_duration_seconds} secondes. Voulez-vous utiliser les ${signature.max_duration_seconds} premières secondes ?`,
             [
               { text: "Choisir une autre vidéo", style: "cancel", onPress: () => settle(false) },
-              { text: "Utiliser ce segment", onPress: () => settle(true) },
+              {
+                text:
+                  draftMedia.duration === undefined
+                    ? "Autoriser si nécessaire"
+                    : "Utiliser ce segment",
+                onPress: () => settle(true),
+              },
             ],
             { cancelable: true, onDismiss: () => settle(false) },
           );
@@ -2353,7 +2435,9 @@ export default function FeedScreen() {
         publishError instanceof PublicationApiError ||
         publishError instanceof MediaUploadError
           ? publishError.message
-          : "Impossible de téléverser le média. Vérifiez votre connexion puis réessayez.";
+          : publishError instanceof Error && publishError.message.trim()
+            ? publishError.message
+            : "Impossible de téléverser le média. Vérifiez votre connexion puis réessayez.";
       Alert.alert(
         "Publication impossible",
         `${uploadErrorMessage}\nVotre brouillon avec média est conservé ; aucune publication texte seule n’a été créée.`,
@@ -2446,6 +2530,10 @@ export default function FeedScreen() {
                 extraData={`${activeMediaIndex}:${savedPostIds.join(",")}:${feedFilter}:${showSavedOnly}:${searchQuery}:${interfaceVisible}:${quickActionsPost?.id ?? ""}:${JSON.stringify(carouselIndices)}:${expandedCaptionPostId}`}
                 keyExtractor={(entry) => `${entry.kind}:${entry.id}`}
                 nestedScrollEnabled
+                ref={(instance) => {
+                  if (instance) feedListRefs.current[option.id] = instance;
+                  else delete feedListRefs.current[option.id];
+                }}
                 onEndReached={() => void loadMore()}
                 onEndReachedThreshold={0.6}
                 pagingEnabled
@@ -2529,7 +2617,9 @@ export default function FeedScreen() {
                               style={{ width: pageWidth, height: feedPageHeight }}
                             >
                               <FeedMedia
+                                key={`${entry.id}:${uri}`}
                                 active={
+                                  isFocused &&
                                   option.id === scope &&
                                   index === activeMediaIndex &&
                                   mediaIndex === (carouselIndices[entry.id] ?? 0)
@@ -2574,12 +2664,19 @@ export default function FeedScreen() {
                       </View>
                     ) : entry.imageUrl ? (
                       <FeedMedia
-                        active={option.id === scope && index === activeMediaIndex}
+                        key={`${entry.id}:${entry.mediaType}:${entry.imageUrl}`}
+                        active={
+                          isFocused &&
+                          option.id === scope &&
+                          index === activeMediaIndex
+                        }
                         autoPlay={!wifiOnlyVideoAutoplay || isWifiConnected}
                         creatorName={entry.authorName}
                         height={feedPageHeight}
                         immersive
                         lowDataMode={lowDataMode}
+                        onPlaybackEnd={() => advanceToNextVideo(entry.id)}
+                        progressBottom={tabBarHeight + 4}
                         showControls={interfaceVisible}
                         onSingleTap={() => {
                           setInterfaceVisible((visible) => !visible);
@@ -2593,14 +2690,15 @@ export default function FeedScreen() {
                         preloadUri={
                           option.id === scope &&
                           index === activeMediaIndex &&
-                          (visibleEntries[index + 1]?.mediaType === "image" ||
-                            (visibleEntries[index + 1]?.mediaType === "video" &&
-                              isWifiConnected &&
-                              !lowDataMode))
+                          visibleEntries[index + 1]?.mediaType === "image"
                             ? visibleEntries[index + 1]?.imageUrl
                             : undefined
                         }
-                        preloadType={visibleEntries[index + 1]?.mediaType}
+                        preloadType={
+                          visibleEntries[index + 1]?.mediaType === "image"
+                            ? "image"
+                            : undefined
+                        }
                         type={entry.mediaType ?? "image"}
                         uri={entry.imageUrl}
                       />

@@ -285,7 +285,9 @@ export const signMediaUpload = async (request, response, next) => {
       folder,
       public_id: publicId,
       timestamp,
-      ...(mediaType === "video" ? { context: "trim_video=true" } : {}),
+      ...(mediaType === "video" && trimVideo
+        ? { context: "trim_video=true" }
+        : {}),
     });
     return response.status(200).json({
       ...signature,
@@ -300,7 +302,9 @@ export const signMediaUpload = async (request, response, next) => {
       max_duration_seconds:
         mediaType === "video" && !trimVideo ? env.postMaxVideoSeconds : null,
       trim_video: trimVideo,
-      ...(mediaType === "video" ? { context: "trim_video=true" } : {}),
+      ...(mediaType === "video" && trimVideo
+        ? { context: "trim_video=true" }
+        : {}),
     });
   } catch (error) {
     return next(error);
@@ -385,8 +389,9 @@ const getVerifiedAsset = async (
     return { error: "L’adresse sécurisée du média est invalide." };
   }
   const signedTrimContext =
-    asset.context?.custom?.trim_video === "true" ||
-    asset.context?.trim_video === "true";
+    trimVideo &&
+    (asset.context?.custom?.trim_video === "true" ||
+      asset.context?.trim_video === "true");
   if (trimVideo && (mediaType !== "video" || !signedTrimContext)) {
     return { error: "Le découpage demandé n’a pas été autorisé pour cette vidéo." };
   }

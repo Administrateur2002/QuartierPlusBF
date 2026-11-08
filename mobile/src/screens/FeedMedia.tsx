@@ -4,6 +4,7 @@ import { Expand, Heart, Pause, Play, Shrink, Volume2, VolumeX, X } from "lucide-
 import { useEffect, useRef, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import {
+  ActivityIndicator,
   Animated,
   Modal,
   PanResponder,
@@ -13,6 +14,7 @@ import {
   Vibration,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { CloudinaryMediaType } from "../services/cloudinaryUpload";
 
 type Props = {
@@ -31,6 +33,8 @@ type Props = {
   creatorName?: string;
   immersive?: boolean;
   showControls?: boolean;
+  onPlaybackEnd?: () => void;
+  progressBottom?: number;
 };
 
 export default function FeedMedia({
@@ -49,11 +53,15 @@ export default function FeedMedia({
   creatorName,
   immersive = false,
   showControls = true,
+  onPlaybackEnd,
+  progressBottom = 0,
 }: Props) {
+  const insets = useSafeAreaInsets();
   const [muted, setMuted] = useState(true);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [fitMode, setFitMode] = useState<"contain" | "cover">("contain");
@@ -188,22 +196,28 @@ export default function FeedMedia({
       },
     ],
   };
-  const player = useVideoPlayer(type === "video" && active ? mediaUri : null, (instance) => {
-    instance.muted = true;
-    instance.loop = true;
-    instance.timeUpdateEventInterval = 0.25;
-    instance.audioMixingMode = "mixWithOthers";
-  });
-  const preloadPlayer = useVideoPlayer(
-    preloadType === "video" && active && optimizedPreloadUri
-      ? optimizedPreloadUri
-      : null,
+  const player = useVideoPlayer(
+    type === "video" && active ? mediaUri : null,
     (instance) => {
       instance.muted = true;
       instance.loop = false;
-      instance.pause();
+      instance.timeUpdateEventInterval = 0.25;
+      instance.audioMixingMode = "mixWithOthers";
     },
   );
+
+  useEffect(() => {
+    if (type !== "video") return;
+    setProgress(0);
+    setDuration(player.duration || 0);
+    setIsPlaying(player.playing);
+    setIsBuffering(player.status === "loading");
+    setPlaybackError(
+      player.status === "error"
+        ? "Lecture vidéo indisponible."
+        : "",
+    );
+  }, [mediaUri, player, type]);
 
   useEffect(() => {
     if (type !== "video") return;
@@ -217,18 +231,25 @@ export default function FeedMedia({
       setIsPlaying(playing);
     });
     const statusSubscription = player.addListener("statusChange", ({ status, error }) => {
+      setIsBuffering(status === "loading");
       if (status === "error") {
-        setPlaybackError(error?.message ?? "Lecture vidéo indisponible.");
+        const message = error?.message ?? "Lecture vidéo indisponible.";
+        console.error("Feed video playback failed:", { uri: mediaUri, error });
+        setPlaybackError(message);
         player.pause();
       } else {
         setPlaybackError("");
       }
     });
+    const endSubscription = player.addListener("playToEnd", () => {
+      if (active) onPlaybackEnd?.();
+    });
     return () => {
       subscription.remove();
       statusSubscription.remove();
+      endSubscription.remove();
     };
-  }, [player, type]);
+  }, [active, mediaUri, onPlaybackEnd, player, type]);
 
   useEffect(() => {
     if (optimizedPreloadUri && preloadType === "image") {
@@ -370,6 +391,11 @@ export default function FeedMedia({
       >
         {!viewerOpen ? <VideoView contentFit="cover" nativeControls={false} player={player} style={StyleSheet.absoluteFill} /> : null}
       </Pressable>
+      {active && isBuffering ? (
+        <View pointerEvents="none" style={styles.bufferingOverlay}>
+          <ActivityIndicator color="#ffffff" size="large" />
+        </View>
+      ) : null}
       {showControls && immersive && !isPlaying ? (
         <Pressable
           accessibilityLabel="Lire la vidéo"
@@ -430,7 +456,13 @@ export default function FeedMedia({
         </View>
       ) : null}
       {playbackError ? <Text style={styles.playbackError}>{playbackError}</Text> : null}
-      <View style={styles.progressTrack} pointerEvents="none">
+      <View
+        pointerEvents="none"
+        style={[
+          styles.progressTrack,
+          immersive ? { bottom: progressBottom } : null,
+        ]}
+      >
         <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
       </View>
       <Modal
@@ -454,7 +486,13 @@ export default function FeedMedia({
           <Pressable accessibilityLabel={isPlaying ? "Mettre en pause" : "Lire"} accessibilityRole="button" onPress={() => player.playing ? player.pause() : player.play()} style={styles.viewerPlayButton}>
             {isPlaying ? <Pause color="#ffffff" size={30} /> : <Play color="#ffffff" size={30} />}
           </Pressable>
-          <View style={styles.viewerProgressTrack} pointerEvents="none">
+          <View
+            pointerEvents="none"
+            style={[
+              styles.viewerProgressTrack,
+              { bottom: Math.max(insets.bottom, 4) },
+            ]}
+          >
             <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
           </View>
         </View>
@@ -519,6 +557,12 @@ const styles = StyleSheet.create({
     left: 12,
     position: "absolute",
     right: 52,
+    zIndex: 2,
+  },
+  bufferingOverlay: {
+    alignItems: "center",
+    justifyContent: "center",
+    ...StyleSheet.absoluteFill,
     zIndex: 2,
   },
   videoControlButton: {

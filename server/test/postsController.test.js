@@ -149,13 +149,13 @@ test("video signatures include timestamp, folder and public ID without exposing 
   assert.equal(response.payload.resource_type, "video");
   assert.equal(response.payload.max_duration_seconds, 420);
   assert.equal(response.payload.max_bytes, 100 * 1024 * 1024);
-  assert.equal(response.payload.context, "trim_video=true");
+  assert.equal(response.payload.context, undefined);
   assert.ok(Math.abs(Math.floor(Date.now() / 1000) - timestamp) <= 1);
   assert.equal(
     signature,
     createHash("sha1")
       .update(
-        `context=trim_video=true&folder=${folder}&public_id=${publicId}&timestamp=${timestamp}test-api-secret`,
+        `folder=${folder}&public_id=${publicId}&timestamp=${timestamp}test-api-secret`,
       )
       .digest("hex"),
   );
@@ -522,6 +522,7 @@ test("server rejects oversized photos and caps overlong videos", async (context)
         scope: "country",
         media_type: "video",
         media_public_id: `${USER_ID}_video`,
+        trim_video: true,
       },
     },
     videoResponse,
@@ -547,7 +548,6 @@ test("server accepts short videos through the exact seven-minute maximum", async
     bytes: 80 * 1024 * 1024,
     resource_type: "video",
     duration: 420,
-    context: { custom: { trim_video: "true" } },
   };
   context.mock.method(pool, "query", async () => ({
     rowCount: 1,
@@ -594,7 +594,7 @@ test("server accepts short videos through the exact seven-minute maximum", async
   assert.deepEqual(insertedDurations, [3, 419.99, 420]);
 });
 
-test("server automatically caps overlong videos that carry the signed duration cap", async (context) => {
+test("server caps overlong videos only after the user authorizes trimming", async (context) => {
   const asset = {
     public_id: `${USER_ID}_video`,
     secure_url:
@@ -662,6 +662,52 @@ test("server automatically caps overlong videos that carry the signed duration c
   assert.equal(insert.values[11], 420);
 });
 
+test("server does not silently cap videos when trimming was not authorized", async (context) => {
+  let asset = {
+    public_id: `${USER_ID}_untrimmed_video`,
+    secure_url:
+      "https://res.cloudinary.com/quartierplus-test/video/upload/video.mp4",
+    format: "mp4",
+    bytes: 1000,
+    resource_type: "video",
+    duration: 421,
+    context: { custom: { trim_video: "true" } },
+  };
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return asset;
+    },
+  }));
+
+  for (const [duration, expectedStatus] of [[421, 400], [null, 503]]) {
+    asset = { ...asset, duration };
+    const response = createResponse();
+    await createPost(
+      {
+        auth: { userId: USER_ID },
+        body: {
+          scope: "country",
+          media_type: "video",
+          media_public_id: asset.public_id,
+        },
+      },
+      response,
+      (error) => {
+        throw error;
+      },
+    );
+
+    assert.equal(response.statusCode, expectedStatus);
+    assert.equal(response.payload.video_trimmed, undefined);
+  }
+});
+
 test("server caps videos when Cloudinary has not returned readable duration metadata", async (context) => {
   const asset = {
     public_id: `${USER_ID}_unknown_duration`,
@@ -711,6 +757,7 @@ test("server caps videos when Cloudinary has not returned readable duration meta
         scope: "country",
         media_type: "video",
         media_public_id: asset.public_id,
+        trim_video: true,
       },
     },
     response,
@@ -761,6 +808,7 @@ test("server reads explicit millisecond duration metadata and applies the cap", 
         scope: "country",
         media_type: "video",
         media_public_id: asset.public_id,
+        trim_video: true,
       },
     },
     response,
