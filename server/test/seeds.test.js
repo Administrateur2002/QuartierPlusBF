@@ -40,6 +40,10 @@ const seriesMigration = readFileSync(
   new URL("../../migrations/041_series_core.sql", import.meta.url),
   "utf8",
 );
+const marketplaceMigration = readFileSync(
+  new URL("../../migrations/042_marketplace_commerce.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -137,6 +141,14 @@ test("profile photos and feed carousel migrations are additive and documented fo
   assert.match(seriesMigration, /PRIMARY KEY \(poll_id, user_id\)/);
   assert.match(seriesMigration, /CREATE TABLE IF NOT EXISTS series_episode_progress/);
   assert.doesNotMatch(seriesMigration, /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i);
+  assert.match(marketplaceMigration, /CREATE TABLE IF NOT EXISTS marketplace_orders/);
+  assert.match(marketplaceMigration, /CREATE TABLE IF NOT EXISTS marketplace_reviews/);
+  assert.match(marketplaceMigration, /CREATE TABLE IF NOT EXISTS marketplace_opportunities/);
+  assert.match(marketplaceMigration, /currency_code CHAR\(3\)/);
+  assert.doesNotMatch(
+    marketplaceMigration,
+    /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
+  );
   for (const [migration, version] of [
     [commerceGrowthMigration, "025_commerce_growth_offers.sql"],
     [profilePhotoMigration, "026_user_profile_photos.sql"],
@@ -146,6 +158,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     [grinModerationMigration, "034_grin_live_moderation.sql"],
     [adminWorkspaceMigration, "035_secure_admin_workspace.sql"],
     [seriesMigration, "041_series_core.sql"],
+    [marketplaceMigration, "042_marketplace_commerce.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -160,6 +173,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "034_grin_live_moderation.sql",
     "035_secure_admin_workspace.sql",
     "041_series_core.sql",
+    "042_marketplace_commerce.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));

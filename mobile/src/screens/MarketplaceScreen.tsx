@@ -45,8 +45,15 @@ import { openProfileStore } from "../storage/profileStore";
 import type { MainTabParamList } from "../navigation/types";
 import VoiceTextInput from "../components/VoiceTextInput";
 import { EMBEDDED_PHONE_COUNTRIES } from "./auth/phoneNumber";
+import MarketplaceCommercePanel from "./MarketplaceCommercePanel";
 
 type MarketTab = "Annonces" | "Local / Made in" | "Services & Métiers";
+type MarketSection =
+  | "explore"
+  | "shops"
+  | "orders"
+  | "opportunities"
+  | "deliveries";
 type ListingCategory =
   | "Tous"
   | "Alimentation"
@@ -68,13 +75,22 @@ type MarketplaceItem = {
   name: string;
   description: string;
   price: number | null;
+  promoPrice?: number | null;
+  isPromoted: boolean;
   isFree: boolean;
   currency: string;
+  currencyCode: string;
   location: string;
+  countryCode?: string;
+  city?: string;
+  languageCode?: string;
   category: string;
   countryOfOrigin?: string;
   seller: string;
   verified: boolean;
+  sellerRating: number;
+  sellerReviewCount: number;
+  shopName?: string;
   phone: string;
   whatsappPhone: string;
   imageUrl?: string;
@@ -86,6 +102,13 @@ const TABS: MarketTab[] = [
   "Annonces",
   "Local / Made in",
   "Services & Métiers",
+];
+const MARKET_SECTIONS: { id: MarketSection; label: string }[] = [
+  { id: "explore", label: "Explorer" },
+  { id: "shops", label: "Boutiques" },
+  { id: "orders", label: "Commandes" },
+  { id: "opportunities", label: "Opportunités" },
+  { id: "deliveries", label: "Livraisons" },
 ];
 const LISTING_CATEGORIES: ListingCategory[] = [
   "Tous",
@@ -112,8 +135,22 @@ const MARKET_COUNTRIES =
     ? EMBEDDED_PHONE_COUNTRIES
     : FALLBACK_COUNTRIES;
 const COUNTRY_OPTIONS = [
-  { code: "ALL", name: "Tous les pays" },
+  { code: "ALL", name: "À proximité" },
+  { code: "INT", name: "International" },
   ...MARKET_COUNTRIES,
+];
+const MARKET_CURRENCIES = [
+  { code: "XOF", name: "FCFA (UEMOA)" },
+  { code: "XAF", name: "FCFA (CEMAC)" },
+  { code: "USD", name: "Dollar US" },
+  { code: "EUR", name: "Euro" },
+  { code: "GBP", name: "Livre sterling" },
+  { code: "NGN", name: "Naira" },
+  { code: "GHS", name: "Cedi" },
+  { code: "MAD", name: "Dirham marocain" },
+  { code: "KES", name: "Shilling kényan" },
+  { code: "ZAR", name: "Rand" },
+  { code: "CAD", name: "Dollar canadien" },
 ];
 const MAX_IMAGE_BYTES = 300 * 1024;
 const VALIDATION_FIELD_LABELS: Record<string, string> = {
@@ -123,6 +160,8 @@ const VALIDATION_FIELD_LABELS: Record<string, string> = {
   item_type: "Portée",
   price: "Prix",
   currency: "Devise",
+  currency_code: "Devise",
+  promo_price: "Prix promotionnel",
   country_code: "Pays",
   country_of_origin: "Pays d'origine",
   "location.latitude": "Position (latitude)",
@@ -151,6 +190,17 @@ const normalizeItem = (value: unknown): MarketplaceItem | null => {
     value.item_type ?? value.itemType ?? value.type ?? "listing",
   ).toLowerCase();
   const rawDistance = Number(value.distance_m ?? value.distanceMeters);
+  const rawCurrencyCode = String(value.currency_code ?? "").toUpperCase();
+  const promoPrice =
+    value.promo_price === null || value.promo_price === undefined
+      ? null
+      : Number(value.promo_price);
+  const isPromoted =
+    value.is_promoted === true ||
+    (promoPrice !== null &&
+      Number.isFinite(promoPrice) &&
+      (!value.promo_expires_at ||
+        new Date(String(value.promo_expires_at)).getTime() > Date.now()));
   if (
     !id ||
     !name ||
@@ -166,19 +216,36 @@ const normalizeItem = (value: unknown): MarketplaceItem | null => {
     name,
     description: String(value.description ?? ""),
     price,
+    promoPrice:
+      promoPrice !== null && Number.isFinite(promoPrice) ? promoPrice : null,
+    isPromoted,
     isFree,
-    currency: String(value.currency ?? "FCFA").toUpperCase(),
+    currency:
+      String(value.currency ?? "").toUpperCase() ||
+      (rawCurrencyCode === "XOF" ? "FCFA" : rawCurrencyCode || "FCFA"),
+    currencyCode: rawCurrencyCode || "XOF",
     location: String(
-      value.neighborhood ?? value.location_name ?? value.location ?? "",
+      value.neighborhood ?? value.city ?? value.location_name ?? value.location ?? "",
     ),
+    ...(typeof value.country_code === "string"
+      ? { countryCode: value.country_code }
+      : {}),
+    ...(typeof value.city === "string" ? { city: value.city } : {}),
+    ...(typeof value.language_code === "string"
+      ? { languageCode: value.language_code }
+      : {}),
     category: String(value.category ?? "Autre"),
     ...(typeof value.country_of_origin === "string"
       ? { countryOfOrigin: value.country_of_origin }
       : {}),
     seller: String(
+      value.shop_name ??
       seller?.name ?? value.seller_name ?? value.maker ?? value.provider_name ?? "Vendeur",
     ),
     verified: seller?.verified === true || value.seller_verified === true,
+    sellerRating: Number(value.seller_rating ?? 0),
+    sellerReviewCount: Number(value.seller_review_count ?? 0),
+    ...(typeof value.shop_name === "string" ? { shopName: value.shop_name } : {}),
     phone: String(seller?.phone ?? value.seller_phone ?? value.phone ?? ""),
     whatsappPhone: String(
       seller?.whatsapp ?? value.whatsapp_phone ?? value.whatsapp ?? "",
@@ -249,12 +316,17 @@ export default function MarketplaceScreen() {
     return true;
   };
   const [activeTab, setActiveTab] = useState<MarketTab>("Annonces");
+  const [marketSection, setMarketSection] = useState<MarketSection>("explore");
   const [selectedCountry, setSelectedCountry] = useState("ALL");
+  const [cityQuery, setCityQuery] = useState("");
+  const [languageCode, setLanguageCode] = useState("");
+  const [sortMode, setSortMode] = useState<"newest" | "promotions" | "popular">("newest");
   const [countryMenuOpen, setCountryMenuOpen] = useState(false);
   const [listingCategory, setListingCategory] =
     useState<ListingCategory>("Tous");
   const [tradeCategory, setTradeCategory] = useState<TradeCategory>("Tous");
   const [searchText, setSearchText] = useState("");
+  const [settledSearchText, setSettledSearchText] = useState("");
   const [userLocation, setUserLocation] =
     useState<Location.LocationObjectCoords | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -271,6 +343,8 @@ export default function MarketplaceScreen() {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftDescription, setDraftDescription] = useState("");
   const [draftPrice, setDraftPrice] = useState("");
+  const [draftCurrencyCode, setDraftCurrencyCode] = useState("XOF");
+  const [draftPromoPrice, setDraftPromoPrice] = useState("");
   const [isFreeListing, setIsFreeListing] = useState(false);
   const [draftCategory, setDraftCategory] = useState("");
   const [draftImage, setDraftImage] = useState<{
@@ -285,6 +359,17 @@ export default function MarketplaceScreen() {
     useState<MarketplaceItem | null>(null);
   const [reportReason, setReportReason] = useState("");
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
+  const [comparedIds, setComparedIds] = useState<string[]>([]);
+  const [compareModalVisible, setCompareModalVisible] = useState(false);
+  const [selectedSellerId, setSelectedSellerId] = useState<string | null>(null);
+  const [orderItem, setOrderItem] = useState<MarketplaceItem | null>(null);
+  const [orderDeliveryMethod, setOrderDeliveryMethod] = useState<
+    "HOME_DELIVERY" | "PICKUP"
+  >("HOME_DELIVERY");
+  const [orderAddress, setOrderAddress] = useState("");
+  const [orderCity, setOrderCity] = useState("");
+  const [orderNote, setOrderNote] = useState("");
+  const [isCreatingOrder, setIsCreatingOrder] = useState(false);
   const handledVoiceRequestRef = useRef<string | null>(null);
 
   const filteredItems = useMemo(() => {
@@ -301,9 +386,20 @@ export default function MarketplaceScreen() {
         normalizeSearchText(
           `${item.name} ${item.seller} ${item.location} ${item.category}`,
         ).includes(query);
-      return matchesType && matchesSearch;
+      const matchesPromotion = sortMode !== "promotions" || item.isPromoted;
+      return matchesType && matchesSearch && matchesPromotion;
     });
-  }, [activeTab, items, searchText]);
+  }, [activeTab, items, searchText, sortMode]);
+
+  const compareItems = useMemo(
+    () => items.filter((item) => comparedIds.includes(item.id)),
+    [comparedIds, items],
+  );
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSettledSearchText(searchText.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [searchText]);
 
   useEffect(() => {
     const params = route.params;
@@ -385,6 +481,11 @@ export default function MarketplaceScreen() {
   }, []);
 
   useEffect(() => {
+    if (marketSection !== "explore") {
+      setIsLoading(false);
+      setIsRefreshing(false);
+      return;
+    }
     if (!API_BASE_URL) {
       setLoadError(
         "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
@@ -393,7 +494,7 @@ export default function MarketplaceScreen() {
       setIsRefreshing(false);
       return;
     }
-    if (!userLocation) {
+    if (!userLocation && selectedCountry !== "INT") {
       setIsLoading(false);
       return;
     }
@@ -403,28 +504,37 @@ export default function MarketplaceScreen() {
       setLoadError(null);
       try {
         const query = new URLSearchParams({
-          latitude: String(userLocation.latitude),
-          longitude: String(userLocation.longitude),
-          radius_m: "100000",
           item_type:
             activeTab === "Annonces"
               ? "listing"
               : activeTab === "Local / Made in"
                 ? "local"
                 : "service",
+          sort: sortMode,
         });
+        if (userLocation) {
+          query.set("latitude", String(userLocation.latitude));
+          query.set("longitude", String(userLocation.longitude));
+          query.set("radius_m", "100000");
+        }
         const selectedCategory = categoryQuery(
           activeTab,
+          marketSection,
           listingCategory,
           tradeCategory,
         );
         if (selectedCategory !== "ALL") {
           query.set("category", selectedCategory);
         }
-        if (selectedCountry !== "ALL") {
+        if (selectedCountry === "INT") {
+          query.set("scope", "international");
+        } else if (selectedCountry !== "ALL") {
           query.set("country_code", selectedCountry);
           query.set("scope", "country");
         }
+        if (settledSearchText) query.set("q", settledSearchText);
+        if (cityQuery.trim()) query.set("city", cityQuery.trim());
+        if (languageCode.trim()) query.set("language_code", languageCode.trim());
         const response = await apiFetch(
           `${API_BASE_URL}/v1/public/marketplace?${query.toString()}`,
           { signal: controller.signal },
@@ -466,14 +576,18 @@ export default function MarketplaceScreen() {
     activeTab,
     isOffline,
     listingCategory,
+    cityQuery,
+    languageCode,
     refreshKey,
     selectedCountry,
+    settledSearchText,
+    sortMode,
     tradeCategory,
     userLocation,
   ]);
 
   const refreshItems = () => {
-    if (!userLocation) {
+    if (!userLocation && selectedCountry !== "INT") {
       void Location.requestForegroundPermissionsAsync()
         .then(async (permission) => {
           if (permission.status !== "granted") {
@@ -501,7 +615,9 @@ export default function MarketplaceScreen() {
   const formatPrice = (item: MarketplaceItem) =>
     item.isFree
       ? "Gratuit / Don"
-      : `${new Intl.NumberFormat("fr-FR").format(item.price ?? 0)} ${item.currency}`;
+      : `${new Intl.NumberFormat("fr-FR").format(
+          item.isPromoted ? item.promoPrice ?? item.price ?? 0 : item.price ?? 0,
+        )} ${item.currency}`;
 
   const contactSeller = async (item: MarketplaceItem) => {
     if (!requireConnectedUser()) return;
@@ -592,6 +708,8 @@ export default function MarketplaceScreen() {
     setDraftTitle("");
     setDraftDescription("");
     setDraftPrice("");
+    setDraftCurrencyCode("XOF");
+    setDraftPromoPrice("");
     setDraftCategory(
       activeTab === "Annonces"
         ? listingCategory === "Tous"
@@ -680,7 +798,23 @@ export default function MarketplaceScreen() {
     ) {
       Alert.alert(
         "Prix invalide",
-        "Saisissez un prix valide en FCFA ou choisissez « Gratuit / Don ».",
+        `Saisissez un prix valide en ${draftCurrencyCode === "XOF" ? "FCFA" : draftCurrencyCode} ou choisissez « Gratuit / Don ».`,
+      );
+      return;
+    }
+    const numericPromoPrice = draftPromoPrice.trim()
+      ? Number(draftPromoPrice.replace(/\s/g, "").replace(",", "."))
+      : null;
+    if (
+      numericPromoPrice !== null &&
+      (!Number.isFinite(numericPromoPrice) ||
+        isFreeListing ||
+        numericPromoPrice <= 0 ||
+        numericPromoPrice >= numericPrice)
+    ) {
+      Alert.alert(
+        "Promotion invalide",
+        "Le prix promotionnel doit être positif et inférieur au prix normal.",
       );
       return;
     }
@@ -722,6 +856,12 @@ export default function MarketplaceScreen() {
                 : "service",
           is_free: String(isFreeListing),
           currency: "FCFA",
+          currency_code: draftCurrencyCode,
+          language_code: languageCode || "fr",
+          ...(cityQuery.trim() ? { city: cityQuery.trim() } : {}),
+          ...(numericPromoPrice !== null
+            ? { promo_price: String(numericPromoPrice) }
+            : {}),
           ...(user?.country_code ? { country_code: user.country_code } : {}),
           ...(activeTab === "Local / Made in"
             ? { country_of_origin: countryOfOrigin }
@@ -765,6 +905,10 @@ export default function MarketplaceScreen() {
           is_free: isFreeListing,
           price: isFreeListing ? 0 : numericPrice,
           currency: "FCFA",
+          currency_code: draftCurrencyCode,
+          language_code: languageCode || "fr",
+          ...(cityQuery.trim() ? { city: cityQuery.trim() } : {}),
+          ...(numericPromoPrice !== null ? { promo_price: numericPromoPrice } : {}),
           ...(user?.country_code ? { country_code: user.country_code } : {}),
           ...(activeTab === "Local / Made in"
             ? { country_of_origin: countryOfOrigin }
@@ -888,6 +1032,126 @@ export default function MarketplaceScreen() {
     }
   };
 
+  const openOrderForm = (item: MarketplaceItem) => {
+    if (!requireConnectedUser()) return;
+    if (!item.id || item.itemType === "service" || item.isFree) {
+      Alert.alert(
+        "Commande indisponible",
+        "Cette annonce ne peut pas faire l’objet d’une commande en ligne.",
+      );
+      return;
+    }
+    setOrderItem(item);
+    setOrderDeliveryMethod("HOME_DELIVERY");
+    setOrderAddress("");
+    setOrderCity(cityQuery);
+    setOrderNote("");
+  };
+
+  const submitMarketplaceOrder = async () => {
+    if (!requireConnectedUser() || !orderItem) return;
+    if (!API_BASE_URL) {
+      Alert.alert("Commande indisponible", "L’adresse du serveur n’est pas configurée.");
+      return;
+    }
+    if (
+      orderDeliveryMethod === "HOME_DELIVERY" &&
+      (!orderAddress.trim() || !orderCity.trim())
+    ) {
+      Alert.alert("Adresse requise", "Saisissez l’adresse et la ville de livraison.");
+      return;
+    }
+    if (isOffline) {
+      Alert.alert(
+        "Connexion requise",
+        "La commande doit être transmise au vendeur en ligne. Aucun paiement ne sera prélevé dans l’application.",
+      );
+      return;
+    }
+    setIsCreatingOrder(true);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/marketplace/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_id: orderItem.id,
+          delivery_method: orderDeliveryMethod,
+          ...(orderDeliveryMethod === "HOME_DELIVERY"
+            ? {
+                delivery_address: orderAddress.trim(),
+                delivery_city: orderCity.trim(),
+                delivery_country_code:
+                  selectedCountry !== "ALL" && selectedCountry !== "INT"
+                    ? selectedCountry
+                    : user?.country_code,
+              }
+            : {}),
+          buyer_note: orderNote.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const payload: unknown = await response.json();
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `La commande n’a pas été créée (HTTP ${response.status}).`,
+        );
+      }
+      setOrderItem(null);
+      setMarketSection("orders");
+      Alert.alert(
+        "Commande envoyée",
+        "Le vendeur a reçu votre demande. Le paiement se règle directement entre vous et lui.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "Commande impossible",
+        error instanceof Error ? error.message : "Réessayez plus tard.",
+      );
+    } finally {
+      setIsCreatingOrder(false);
+    }
+  };
+
+  const toggleComparedItem = (item: MarketplaceItem) => {
+    setComparedIds((current) => {
+      if (current.includes(item.id)) return current.filter((id) => id !== item.id);
+      if (current.length >= 3) {
+        Alert.alert("Comparaison limitée", "Comparez jusqu’à trois produits à la fois.");
+        return current;
+      }
+      return [...current, item.id];
+    });
+  };
+
+  const handleCommercePanelOrder = (product: {
+    id: string;
+    title: string;
+    description?: string;
+    price: number | string | null;
+    currency?: string;
+    currency_code?: string;
+    category?: string;
+    item_type?: string;
+    seller_id?: string;
+    seller_name?: string;
+    seller_verified?: boolean;
+    seller_rating?: number;
+  }) => {
+    const item = normalizeItem({
+      ...product,
+      seller_id: product.seller_id,
+      seller_name: product.seller_name,
+      seller_verified: product.seller_verified,
+      title: product.title,
+      price: product.price,
+      currency: product.currency,
+      currency_code: product.currency_code,
+      item_type: product.item_type ?? "listing",
+    });
+    if (item) openOrderForm(item);
+  };
+
   const renderItemCard = (item: MarketplaceItem) => (
     <View key={item.id} style={[styles.listingCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <View style={styles.listingImage}>
@@ -904,6 +1168,14 @@ export default function MarketplaceScreen() {
       <View style={styles.listingBody}>
         <Text numberOfLines={2} style={[styles.listingName, { color: colors.text }]}>{item.name}</Text>
         <Text style={styles.listingPrice}>{formatPrice(item)}</Text>
+        {item.isPromoted && item.price !== null && (
+          <Text style={styles.originalPrice}>
+            {new Intl.NumberFormat("fr-FR").format(item.price)} {item.currency}
+          </Text>
+        )}
+        {item.isPromoted && (
+          <Text style={styles.promotionBadge}>Promotion · prix vendeur</Text>
+        )}
         <View style={styles.locationRow}>
           <MapPin color={colors.secondaryText} size={13} />
           <Text numberOfLines={1} style={[styles.locationText, { color: colors.secondaryText }]}>
@@ -931,6 +1203,54 @@ export default function MarketplaceScreen() {
             </Pressable>
           ) : null}
         </View>
+        {item.sellerReviewCount > 0 && (
+          <Text style={styles.sellerRating}>
+            ★ {item.sellerRating.toFixed(1)} · {item.sellerReviewCount} avis après achat
+          </Text>
+        )}
+        <View style={styles.cardActions}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => toggleComparedItem(item)}
+            style={[
+              styles.compareButton,
+              comparedIds.includes(item.id) && styles.compareButtonSelected,
+            ]}
+          >
+            <Text
+              style={[
+                styles.compareButtonText,
+                comparedIds.includes(item.id) && styles.compareButtonTextSelected,
+              ]}
+            >
+              {comparedIds.includes(item.id) ? "✓ Comparé" : "Comparer"}
+            </Text>
+          </Pressable>
+          {item.itemType !== "service" && !item.isFree && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => openOrderForm(item)}
+              style={styles.orderButton}
+            >
+              <Text style={styles.orderButtonText}>Commander</Text>
+            </Pressable>
+          )}
+        </View>
+        {item.sellerId && item.shopName && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setSelectedSellerId(item.sellerId ?? null);
+              setMarketSection("shops");
+            }}
+            style={styles.storeButton}
+          >
+            <Store color="#2563eb" size={13} />
+            <Text style={styles.storeButtonText}>
+              {item.shopName ? `Vitrine · ${item.shopName}` : "Voir le vendeur"}
+            </Text>
+          </Pressable>
+        )}
         <Pressable
           accessibilityRole="button"
           onPress={() => void contactSeller(item)}
@@ -987,34 +1307,64 @@ export default function MarketplaceScreen() {
           <ChevronRight color={colors.secondaryText} size={19} />
         </Pressable>
 
-        <ScrollView
-          contentContainerStyle={styles.tabs}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-        >
-          {TABS.map((tab) => {
-            const isSelected = activeTab === tab;
-            return (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ selected: isSelected }}
-                key={tab}
-                onPress={() => setActiveTab(tab)}
-                style={[styles.tab, isSelected && styles.tabSelected]}
+        <ScrollView contentContainerStyle={styles.marketSections} horizontal showsHorizontalScrollIndicator={false}>
+          {MARKET_SECTIONS.map(({ id, label }) => (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: marketSection === id }}
+              key={id}
+              onPress={() => {
+                setSelectedSellerId(null);
+                setMarketSection(id);
+              }}
+              style={[
+                styles.marketSectionButton,
+                { borderColor: marketSection === id ? colors.primary : colors.border },
+                marketSection === id && { backgroundColor: colors.primary },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.marketSectionText,
+                  { color: marketSection === id ? "#ffffff" : colors.text },
+                ]}
               >
-                <Text
-                  style={[styles.tabText, isSelected && styles.tabTextSelected]}
-                >
-                  {tab === "Annonces"
-                    ? t("marketListings")
-                    : tab === "Local / Made in"
-                      ? t("marketLocal")
-                      : t("marketServices")}
-                </Text>
-              </Pressable>
-            );
-          })}
+                {label}
+              </Text>
+            </Pressable>
+          ))}
         </ScrollView>
+
+        {marketSection === "explore" && (
+          <ScrollView
+            contentContainerStyle={styles.tabs}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+          >
+            {TABS.map((tab) => {
+              const isSelected = activeTab === tab;
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  key={tab}
+                  onPress={() => setActiveTab(tab)}
+                  style={[styles.tab, isSelected && styles.tabSelected]}
+                >
+                  <Text
+                    style={[styles.tabText, isSelected && styles.tabTextSelected]}
+                  >
+                    {tab === "Annonces"
+                      ? t("marketListings")
+                      : tab === "Local / Made in"
+                        ? t("marketLocal")
+                        : t("marketServices")}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
 
         <View style={styles.countryContainer}>
           <Pressable
@@ -1032,7 +1382,11 @@ export default function MarketplaceScreen() {
             <Text style={styles.chevron}>{countryMenuOpen ? "⌃" : "⌄"}</Text>
           </Pressable>
           {countryMenuOpen && (
-            <View style={styles.countryOptions}>
+            <ScrollView
+              nestedScrollEnabled
+              style={styles.countryOptions}
+              showsVerticalScrollIndicator
+            >
               {COUNTRY_OPTIONS.map((country) => (
                 <Pressable
                   accessibilityRole="button"
@@ -1054,16 +1408,91 @@ export default function MarketplaceScreen() {
                   </Text>
                 </Pressable>
               ))}
-            </View>
+            </ScrollView>
           )}
           <View style={styles.rangeNote}>
             <MapPin color="#64748b" size={14} />
             <Text style={styles.rangeText}>
               {selectedCountry === "ALL"
                 ? "Portée locale : 0–100 km"
-                : `Affichage par pays : ${COUNTRY_OPTIONS.find((country) => country.code === selectedCountry)?.name ?? selectedCountry}`}
+                : selectedCountry === "INT"
+                  ? "Recherche internationale · prix affichés dans la devise du vendeur"
+                  : `Affichage par pays : ${COUNTRY_OPTIONS.find((country) => country.code === selectedCountry)?.name ?? selectedCountry}`}
             </Text>
           </View>
+          <View style={styles.internationalFilters}>
+            <TextInput
+              accessibilityLabel="Filtrer par ville"
+              onChangeText={setCityQuery}
+              placeholder="Ville (facultatif)"
+              placeholderTextColor="#94a3b8"
+              style={styles.internationalInput}
+              value={cityQuery}
+            />
+            <View style={styles.languageOptions}>
+              {[
+                { code: "", label: "Toutes langues" },
+                { code: "fr", label: "FR" },
+                { code: "en", label: "EN" },
+                { code: "pt", label: "PT" },
+                { code: "ar", label: "AR" },
+                { code: "sw", label: "SW" },
+              ].map(({ code, label }) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: languageCode === code }}
+                  key={label}
+                  onPress={() => setLanguageCode(code)}
+                  style={[
+                    styles.languageChip,
+                    languageCode === code && styles.languageChipSelected,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.languageChipText,
+                      languageCode === code && styles.languageChipTextSelected,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          {marketSection === "explore" && (
+            <ScrollView
+              contentContainerStyle={styles.filters}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+            >
+              {[
+                { id: "newest" as const, label: "Nouveautés" },
+                { id: "promotions" as const, label: "Promotions" },
+                { id: "popular" as const, label: "Populaires" },
+              ].map(({ id, label }) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: sortMode === id }}
+                  key={id}
+                  onPress={() => setSortMode(id)}
+                  style={[
+                    styles.filterChip,
+                    sortMode === id && styles.filterChipSelected,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.filterText,
+                      sortMode === id && styles.filterTextSelected,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
         </View>
 
         {locationError && (
@@ -1076,6 +1505,20 @@ export default function MarketplaceScreen() {
             {loadError}
           </Text>
         )}
+        {marketSection !== "explore" && (
+          <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Search color="#94a3b8" size={19} />
+            <VoiceTextInput
+              accessibilityLabel="Rechercher une boutique ou une opportunité"
+              onChangeText={setSearchText}
+              placeholder="Rechercher une boutique ou une opportunité"
+              placeholderTextColor="#94a3b8"
+              returnKeyType="search"
+              style={styles.searchInput}
+              value={searchText}
+            />
+          </View>
+        )}
         {isLoading && (
           <View style={styles.loadingState}>
             <ActivityIndicator color="#2563eb" size="large" />
@@ -1083,7 +1526,7 @@ export default function MarketplaceScreen() {
           </View>
         )}
 
-        {activeTab === "Annonces" && (
+        {marketSection === "explore" && activeTab === "Annonces" && (
           <View style={[styles.section, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.searchBar}>
               <Search color="#94a3b8" size={19} />
@@ -1135,10 +1578,21 @@ export default function MarketplaceScreen() {
                 </Text>
               )}
             </View>
+            {comparedIds.length > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setCompareModalVisible(true)}
+                style={styles.compareLaunchButton}
+              >
+                <Text style={styles.compareLaunchText}>
+                  Comparer {comparedIds.length} produit{comparedIds.length > 1 ? "s" : ""}
+                </Text>
+              </Pressable>
+            )}
           </View>
         )}
 
-        {activeTab === "Local / Made in" && (
+        {marketSection === "explore" && activeTab === "Local / Made in" && (
           <View style={[styles.section, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.localBanner}>
               <View style={styles.flagIcon}>
@@ -1164,13 +1618,24 @@ export default function MarketplaceScreen() {
               </Text>
             </Pressable>
             {filteredItems.map(renderItemCard)}
+            {comparedIds.length > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setCompareModalVisible(true)}
+                style={styles.compareLaunchButton}
+              >
+                <Text style={styles.compareLaunchText}>
+                  Comparer {comparedIds.length} produit{comparedIds.length > 1 ? "s" : ""}
+                </Text>
+              </Pressable>
+            )}
             {!isLoading && !loadError && filteredItems.length === 0 && (
               <Text style={styles.emptyText}>Aucun produit local disponible.</Text>
             )}
           </View>
         )}
 
-        {activeTab === "Services & Métiers" && (
+        {marketSection === "explore" && activeTab === "Services & Métiers" && (
           <View style={[styles.section, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={styles.servicesInfo}>
               <View style={styles.servicesIcon}>
@@ -1231,6 +1696,17 @@ export default function MarketplaceScreen() {
               })}
             </ScrollView>
             {filteredItems.map(renderItemCard)}
+            {comparedIds.length > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setCompareModalVisible(true)}
+                style={styles.compareLaunchButton}
+              >
+                <Text style={styles.compareLaunchText}>
+                  Comparer {comparedIds.length} produit{comparedIds.length > 1 ? "s" : ""}
+                </Text>
+              </Pressable>
+            )}
             {!isLoading && !loadError && filteredItems.length === 0 && (
               <Text style={styles.emptyText}>
                 Aucun service trouvé dans cette catégorie.
@@ -1238,8 +1714,22 @@ export default function MarketplaceScreen() {
             )}
           </View>
         )}
+        {marketSection !== "explore" && (
+          <MarketplaceCommercePanel
+            city={cityQuery.trim()}
+            countryCode={selectedCountry}
+            initialSellerId={selectedSellerId}
+            languageCode={languageCode}
+            latitude={userLocation?.latitude}
+            longitude={userLocation?.longitude}
+            mode={marketSection}
+            onOrderProduct={handleCommercePanelOrder}
+            search={searchText}
+          />
+        )}
       </ScrollView>
 
+      {marketSection === "explore" && (
       <Pressable
         accessibilityLabel={
           activeTab === "Annonces"
@@ -1254,6 +1744,7 @@ export default function MarketplaceScreen() {
       >
         <Plus color="#ffffff" size={27} />
       </Pressable>
+      )}
 
       <Modal
         animationType="slide"
@@ -1351,9 +1842,39 @@ export default function MarketplaceScreen() {
                   </Pressable>
                 </>
               )}
-              <Text style={styles.formLabel}>Prix en FCFA</Text>
+              <Text style={styles.formLabel}>
+                Devise · {draftCurrencyCode === "XOF" ? "FCFA" : draftCurrencyCode}
+              </Text>
+              <ScrollView
+                contentContainerStyle={styles.formCategoryList}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+              >
+                {MARKET_CURRENCIES.map((currency) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: draftCurrencyCode === currency.code }}
+                    key={currency.code}
+                    onPress={() => setDraftCurrencyCode(currency.code)}
+                    style={[
+                      styles.filterChip,
+                      draftCurrencyCode === currency.code && styles.filterChipSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.filterText,
+                        draftCurrencyCode === currency.code && styles.filterTextSelected,
+                      ]}
+                    >
+                      {currency.code}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <Text style={styles.formLabel}>Prix · {draftCurrencyCode === "XOF" ? "FCFA" : draftCurrencyCode}</Text>
               <TextInput
-                accessibilityLabel="Prix en FCFA"
+                accessibilityLabel={`Prix en ${draftCurrencyCode}`}
                 editable={!isFreeListing}
                 keyboardType="decimal-pad"
                 onChangeText={setDraftPrice}
@@ -1362,12 +1883,27 @@ export default function MarketplaceScreen() {
                 style={[styles.formInput, isFreeListing && styles.disabledInput]}
                 value={draftPrice}
               />
+              {activeTab !== "Services & Métiers" && !isFreeListing && (
+                <>
+                  <Text style={styles.formLabel}>Promotion (facultatif, 30 jours)</Text>
+                  <TextInput
+                    accessibilityLabel="Prix promotionnel"
+                    keyboardType="decimal-pad"
+                    onChangeText={setDraftPromoPrice}
+                    placeholder={`Prix réduit en ${draftCurrencyCode}`}
+                    placeholderTextColor="#94a3b8"
+                    style={styles.formInput}
+                    value={draftPromoPrice}
+                  />
+                </>
+              )}
               <Pressable
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: isFreeListing }}
                 onPress={() => {
                   setIsFreeListing((current) => !current);
                   setDraftPrice("");
+                  setDraftPromoPrice("");
                 }}
                 style={styles.freeOption}
               >
@@ -1529,6 +2065,162 @@ export default function MarketplaceScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setOrderItem(null)}
+        transparent
+        visible={orderItem !== null}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.formModal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Confirmer la commande</Text>
+              <Pressable
+                accessibilityLabel="Fermer la commande"
+                accessibilityRole="button"
+                onPress={() => setOrderItem(null)}
+                style={styles.closeButton}
+              >
+                <X color="#64748b" size={21} />
+              </Pressable>
+            </View>
+            {orderItem && (
+              <>
+                <Text style={styles.reportItemName}>{orderItem.name}</Text>
+                <Text style={styles.listingPrice}>{formatPrice(orderItem)}</Text>
+                <Text style={styles.orderDisclaimer}>
+                  La demande est envoyée au vendeur. QuartierPlus ne prélève ni ne conserve de fonds.
+                </Text>
+                <View style={styles.formCategoryList}>
+                  {[
+                    { value: "HOME_DELIVERY" as const, label: "Livraison à domicile" },
+                    { value: "PICKUP" as const, label: "Retrait" },
+                  ].map(({ value, label }) => (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: orderDeliveryMethod === value }}
+                      key={value}
+                      onPress={() => setOrderDeliveryMethod(value)}
+                      style={[
+                        styles.filterChip,
+                        orderDeliveryMethod === value && styles.filterChipSelected,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.filterText,
+                          orderDeliveryMethod === value && styles.filterTextSelected,
+                        ]}
+                      >
+                        {label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+                {orderDeliveryMethod === "HOME_DELIVERY" && (
+                  <>
+                    <TextInput
+                      accessibilityLabel="Adresse de livraison"
+                      onChangeText={setOrderAddress}
+                      placeholder="Adresse de livraison"
+                      placeholderTextColor="#94a3b8"
+                      style={styles.formInput}
+                      value={orderAddress}
+                    />
+                    <TextInput
+                      accessibilityLabel="Ville de livraison"
+                      onChangeText={setOrderCity}
+                      placeholder="Ville"
+                      placeholderTextColor="#94a3b8"
+                      style={styles.formInput}
+                      value={orderCity}
+                    />
+                  </>
+                )}
+                <TextInput
+                  accessibilityLabel="Note pour le vendeur"
+                  multiline
+                  maxLength={1000}
+                  onChangeText={setOrderNote}
+                  placeholder="Note pour le vendeur (facultatif)"
+                  placeholderTextColor="#94a3b8"
+                  style={[styles.formInput, styles.descriptionInput]}
+                  value={orderNote}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isCreatingOrder}
+                  onPress={() => void submitMarketplaceOrder()}
+                  style={[
+                    styles.publishButton,
+                    isCreatingOrder && styles.disabledButton,
+                  ]}
+                >
+                  {isCreatingOrder ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <Text style={styles.publishButtonText}>Envoyer la commande</Text>
+                  )}
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setCompareModalVisible(false)}
+        transparent
+        visible={compareModalVisible}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.compareModal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Comparateur</Text>
+              <Pressable
+                accessibilityLabel="Fermer le comparateur"
+                accessibilityRole="button"
+                onPress={() => setCompareModalVisible(false)}
+                style={styles.closeButton}
+              >
+                <X color="#64748b" size={21} />
+              </Pressable>
+            </View>
+            <Text style={styles.compareNote}>
+              Les prix restent dans leur devise d’origine et ne sont pas convertis.
+            </Text>
+            <ScrollView contentContainerStyle={styles.compareList}>
+              {compareItems.map((item) => (
+                <View key={item.id} style={styles.compareRow}>
+                  <Text style={styles.compareName}>{item.name}</Text>
+                  <Text style={styles.comparePrice}>{formatPrice(item)}</Text>
+                  <Text style={styles.compareDetail}>Catégorie : {item.category}</Text>
+                  <Text style={styles.compareDetail}>Vendeur : {item.seller}</Text>
+                  <Text style={styles.compareDetail}>
+                    Réputation : ★ {item.sellerRating.toFixed(1)} ({item.sellerReviewCount} avis)
+                  </Text>
+                  <Text style={styles.compareDetail}>
+                    Provenance : {item.countryCode ?? item.countryOfOrigin ?? "Non renseignée"}
+                    {item.location ? ` · ${item.location}` : ""}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => toggleComparedItem(item)}
+                    style={styles.removeComparedButton}
+                  >
+                    <Text style={styles.removeComparedText}>Retirer</Text>
+                  </Pressable>
+                </View>
+              ))}
+              {compareItems.length === 0 && (
+                <Text style={styles.emptyText}>Sélectionnez des produits à comparer.</Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1580,9 +2272,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  compareLaunchButton: {
+    alignItems: "center",
+    backgroundColor: "#1d4ed8",
+    borderRadius: 10,
+    marginTop: 6,
+    minHeight: 42,
+    justifyContent: "center",
+  },
+  compareLaunchText: { color: "#ffffff", fontSize: 12, fontWeight: "800" },
   wholesalerEntryCopy: { flex: 1 },
   wholesalerEntryTitle: { fontSize: 13, fontWeight: "800" },
   wholesalerEntrySubtitle: { fontSize: 11, marginTop: 2 },
+  marketSections: { gap: 7, marginBottom: 13 },
+  marketSectionButton: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  marketSectionText: { fontSize: 11, fontWeight: "700" },
   headerIcon: {
     alignItems: "center",
     backgroundColor: "#dbeafe",
@@ -1596,6 +2305,31 @@ const styles = StyleSheet.create({
     fontSize: 25,
     fontWeight: "700",
   },
+  sellerRating: { color: "#a16207", fontSize: 9, marginTop: 5 },
+  cardActions: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 8 },
+  compareButton: {
+    alignItems: "center",
+    borderColor: "#bfdbfe",
+    borderRadius: 7,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: 30,
+    paddingHorizontal: 7,
+  },
+  compareButtonSelected: { backgroundColor: "#dbeafe" },
+  compareButtonText: { color: "#1d4ed8", fontSize: 9, fontWeight: "700" },
+  compareButtonTextSelected: { color: "#1e40af" },
+  orderButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 7,
+    justifyContent: "center",
+    minHeight: 30,
+    paddingHorizontal: 7,
+  },
+  orderButtonText: { color: "#ffffff", fontSize: 9, fontWeight: "800" },
+  storeButton: { alignItems: "center", flexDirection: "row", gap: 4, marginTop: 7, minHeight: 25 },
+  storeButtonText: { color: "#2563eb", fontSize: 9, fontWeight: "700" },
   tabs: {
     gap: 8,
     paddingBottom: 16,
@@ -1652,6 +2386,7 @@ const styles = StyleSheet.create({
   countryOptions: {
     borderTopColor: "#e2e8f0",
     borderTopWidth: 1,
+    maxHeight: 240,
     marginTop: 10,
   },
   countryOption: {
@@ -1678,6 +2413,28 @@ const styles = StyleSheet.create({
     color: "#64748b",
     fontSize: 11,
   },
+  internationalFilters: { gap: 9, marginTop: 12 },
+  internationalInput: {
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 10,
+    borderWidth: 1,
+    color: "#172b4d",
+    fontSize: 13,
+    minHeight: 40,
+    paddingHorizontal: 11,
+  },
+  languageOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  languageChip: {
+    borderColor: "#e2e8f0",
+    borderRadius: 15,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  languageChipSelected: { backgroundColor: "#dbeafe", borderColor: "#bfdbfe" },
+  languageChipText: { color: "#475569", fontSize: 10, fontWeight: "700" },
+  languageChipTextSelected: { color: "#1d4ed8" },
   section: {
     gap: 13,
   },
@@ -1756,6 +2513,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     marginTop: 6,
+  },
+  originalPrice: {
+    color: "#64748b",
+    fontSize: 10,
+    textDecorationLine: "line-through",
+  },
+  promotionBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "#fef3c7",
+    borderRadius: 5,
+    color: "#92400e",
+    fontSize: 9,
+    fontWeight: "800",
+    marginTop: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 3,
   },
   locationRow: {
     alignItems: "center",
@@ -2052,6 +2825,29 @@ const styles = StyleSheet.create({
     gap: 9,
     marginBottom: 12,
   },
+  orderDisclaimer: {
+    backgroundColor: "#eff6ff",
+    borderRadius: 9,
+    color: "#1e3a8a",
+    fontSize: 11,
+    lineHeight: 17,
+    padding: 10,
+  },
+  compareModal: {
+    backgroundColor: "#ffffff",
+    borderRadius: 18,
+    maxHeight: "88%",
+    padding: 18,
+    width: "100%",
+  },
+  compareNote: { color: "#64748b", fontSize: 11, marginBottom: 10 },
+  compareList: { gap: 10, paddingBottom: 12 },
+  compareRow: { backgroundColor: "#f8fafc", borderRadius: 11, gap: 5, padding: 12 },
+  compareName: { color: "#172b4d", fontSize: 14, fontWeight: "800" },
+  comparePrice: { color: "#15803d", fontSize: 13, fontWeight: "800" },
+  compareDetail: { color: "#475569", fontSize: 11, lineHeight: 16 },
+  removeComparedButton: { alignSelf: "flex-start", paddingVertical: 5 },
+  removeComparedText: { color: "#b91c1c", fontSize: 11, fontWeight: "700" },
   modalTitle: {
     color: "#172b4d",
     flex: 1,

@@ -146,6 +146,18 @@ const buildQueuedRequestBody = async (action: SyncAction) => {
       ...(typeof action.payload.country_code === "string"
         ? { country_code: action.payload.country_code }
         : {}),
+      ...(typeof action.payload.currency_code === "string"
+        ? { currency_code: action.payload.currency_code }
+        : {}),
+      ...(typeof action.payload.city === "string"
+        ? { city: action.payload.city }
+        : {}),
+      ...(typeof action.payload.language_code === "string"
+        ? { language_code: action.payload.language_code }
+        : {}),
+      ...(typeof action.payload.promo_price === "string"
+        ? { promo_price: Number(action.payload.promo_price) }
+        : {}),
       ...(typeof action.payload.country_of_origin === "string"
         ? { country_of_origin: action.payload.country_of_origin }
         : {}),

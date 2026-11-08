@@ -351,6 +351,22 @@ export const deleteCurrentUser = async (request, response, next) => {
        WHERE sender_id = $1`,
       [request.auth.userId],
     );
+    const marketplaceOrders = await client.query(
+      `UPDATE marketplace_orders
+       SET status = 'CANCELLED', updated_at = NOW()
+       WHERE (buyer_id = $1 OR seller_id = $1 OR courier_id = $1)
+         AND status NOT IN ('DELIVERED', 'CANCELLED')
+       RETURNING id`,
+      [request.auth.userId],
+    );
+    for (const order of marketplaceOrders.rows) {
+      await client.query(
+        `INSERT INTO marketplace_order_events
+           (order_id, status, note)
+         VALUES ($1, 'CANCELLED', 'Commande annulée suite à la suppression du compte participant')`,
+        [order.id],
+      );
+    }
     const deleted = await client.query(
       "DELETE FROM users WHERE id = $1 RETURNING id",
       [request.auth.userId],

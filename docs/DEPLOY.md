@@ -91,6 +91,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 43. `migrations/039_usage_limits.sql`
 44. `migrations/040_account_deletion_retention.sql`
 45. `migrations/041_series_core.sql`
+46. `migrations/042_marketplace_commerce.sql`
 
 La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
 progression de lecture et votes de fin d'épisode. Elle est additive et conserve
@@ -99,6 +100,12 @@ les données existantes. Appliquez-la après 040 et avant de déployer les route
 déblocage payant ou abonnement n'est simulé. N'activez pas de flux payant avant
 la configuration et la validation réglementaire d'un prestataire autorisé pour
 chaque pays concerné.
+
+La migration 042 étend le Marché avec les vitrines vendeur, la recherche
+internationale, les commandes, les étapes de livraison, les avis après livraison
+confirmée, les profils de livreurs indépendants et les opportunités commerciales.
+Les achats restent des accords directs entre acheteur et vendeur : l’API ne
+collecte pas de paiement et ne conserve pas de fonds.
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes

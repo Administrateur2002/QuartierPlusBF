@@ -105,6 +105,19 @@ export const listPublicMarketplace = async (_request, response, next) => {
     typeof _request.query.category === "string"
       ? _request.query.category.toUpperCase()
       : null;
+  const searchText =
+    typeof _request.query.q === "string" ? _request.query.q.trim().slice(0, 120) : "";
+  const city =
+    typeof _request.query.city === "string" ? _request.query.city.trim().slice(0, 120) : "";
+  const languageCode =
+    typeof _request.query.language_code === "string"
+      ? _request.query.language_code.trim().toLowerCase()
+      : "";
+  const sort =
+    typeof _request.query.sort === "string" ? _request.query.sort.toLowerCase() : "newest";
+  if (!["newest", "popular", "promotions"].includes(sort)) {
+    return response.status(400).json({ error: "Le tri du marché est invalide." });
+  }
   const offset = _request.query.offset === undefined ? 0 : Number(_request.query.offset);
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) {
     return response.status(400).json({ error: "La page des annonces est invalide." });
@@ -113,9 +126,28 @@ export const listPublicMarketplace = async (_request, response, next) => {
     const result = await pool.query(
       `SELECT item.id, item.title, item.description, item.category,
               item.item_type,
-              item.price_fcfa AS price, item.price_fcfa = 0 AS is_free,
-              item.country_of_origin, item.created_at, user_profile.neighborhood,
+              item.price_amount AS price, item.price_amount = 0 AS is_free,
+              item.currency_code,
+              CASE WHEN item.currency_code = 'XOF' THEN 'FCFA'
+                   ELSE item.currency_code END AS currency,
+              item.promo_price, item.promo_expires_at,
+              (item.promo_price IS NOT NULL AND item.promo_expires_at > NOW()) AS is_promoted,
+              item.completed_sales,
+              COALESCE(item.country_code, user_profile.country_code) AS country_code,
+              item.city, item.language_code, item.country_of_origin,
+              item.created_at, user_profile.neighborhood,
               user_profile.id AS seller_id,
+              user_profile.is_verified AS seller_verified,
+              shop.business_name AS shop_name,
+              COALESCE(rating.average_rating, 0) AS seller_rating,
+              COALESCE(rating.review_count, 0)::INTEGER AS seller_review_count,
+              COALESCE(
+                ROUND(ST_Distance(
+                  item.location::geography,
+                  ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography
+                ))::INTEGER,
+                NULL
+              ) AS distance_m,
               CASE WHEN $8::uuid IS NULL THEN FALSE ELSE EXISTS (
                 SELECT 1 FROM user_alliances alliance
                 WHERE alliance.status = 'ALLIED'
@@ -133,9 +165,17 @@ export const listPublicMarketplace = async (_request, response, next) => {
               item.whatsapp_phone, item.image_urls[1] AS image_url
        FROM marketplace_items AS item
        LEFT JOIN users AS user_profile ON user_profile.id = item.seller_id
+       LEFT JOIN marketplace_shops shop ON shop.seller_id = user_profile.id
+         AND shop.is_active = TRUE
+       LEFT JOIN LATERAL (
+         SELECT ROUND(AVG(reviews.rating)::numeric, 1) AS average_rating,
+                COUNT(*) AS review_count
+         FROM marketplace_reviews reviews
+         WHERE reviews.seller_id = item.seller_id
+       ) rating ON TRUE
        WHERE CASE
          WHEN $5 = 'international' THEN TRUE
-         WHEN $5 = 'country' THEN user_profile.country_code = $4
+         WHEN $5 = 'country' THEN COALESCE(item.country_code, user_profile.country_code) = $4
          WHEN $5 = 'neighborhood' THEN ST_DWithin(
            item.location::geography,
            ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
@@ -156,6 +196,14 @@ export const listPublicMarketplace = async (_request, response, next) => {
          )
        END
          AND ($6::text IS NULL OR item.item_type = $6)
+         AND ($10::text = '' OR
+           item.title ILIKE '%' || $10 || '%' OR
+           item.description ILIKE '%' || $10 || '%' OR
+           item.category ILIKE '%' || $10 || '%' OR
+           user_profile.full_name ILIKE '%' || $10 || '%' OR
+           shop.business_name ILIKE '%' || $10 || '%')
+         AND ($11::text = '' OR LOWER(COALESCE(NULLIF(item.city, ''), user_profile.neighborhood, '')) = LOWER($11))
+         AND ($12::text = '' OR item.language_code = $12)
          AND (
            $7::text IS NULL OR
            UPPER(REGEXP_REPLACE(TRANSLATE(
@@ -164,7 +212,11 @@ export const listPublicMarketplace = async (_request, response, next) => {
              'EEEEAAAIIOOUUUCeeeeaaaiioouuuc'
            ), '[^A-Za-z0-9]+', '_', 'g')) = $7
          )
-       ORDER BY item.created_at DESC
+       ORDER BY
+         CASE WHEN $13 = 'popular' THEN item.completed_sales END DESC NULLS LAST,
+         CASE WHEN $13 = 'promotions' AND item.promo_expires_at > NOW()
+           THEN item.promo_expires_at END DESC NULLS LAST,
+         item.created_at DESC
        LIMIT 100 OFFSET $9`,
       [
         ...filter.values,
@@ -174,6 +226,10 @@ export const listPublicMarketplace = async (_request, response, next) => {
           : requestedCategory,
         _request.auth?.userId ?? null,
         offset,
+        searchText,
+        city,
+        languageCode,
+        sort,
       ],
     );
     return response.status(200).json({ items: result.rows });

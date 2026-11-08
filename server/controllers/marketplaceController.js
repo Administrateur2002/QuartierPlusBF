@@ -59,6 +59,24 @@ export const createMarketplaceItem = async (request, response, next) => {
     typeof request.body?.country_of_origin === "string"
       ? request.body.country_of_origin.trim().toUpperCase()
       : null;
+  const currencyCode =
+    typeof request.body?.currency_code === "string"
+      ? request.body.currency_code.trim().toUpperCase()
+      : "XOF";
+  const city =
+    typeof request.body?.city === "string"
+      ? request.body.city.trim().slice(0, 120)
+      : "";
+  const languageCode =
+    typeof request.body?.language_code === "string"
+      ? request.body.language_code.trim().toLowerCase()
+      : "fr";
+  const promoPrice =
+    request.body?.promo_price === undefined ||
+    request.body?.promo_price === null ||
+    request.body?.promo_price === ""
+      ? null
+      : Number(request.body.promo_price);
   const category =
     typeof request.body?.category === "string"
       ? request.body.category.trim().slice(0, 30)
@@ -104,11 +122,19 @@ export const createMarketplaceItem = async (request, response, next) => {
   } else if (isFree && request.body?.price !== undefined && Number(request.body.price) !== 0) {
     addError("price", "Le prix d'une annonce gratuite doit être égal à zéro.");
   }
+  if (!/^[A-Z]{3}$/.test(currencyCode)) {
+    addError("currency_code", "Utilisez un code devise ISO 4217 à trois lettres.");
+  }
   if (
-    request.body?.currency !== undefined &&
-    request.body.currency !== "FCFA"
+    promoPrice !== null &&
+    (!Number.isFinite(promoPrice) || promoPrice <= 0 || promoPrice >= price)
   ) {
-    addError("currency", "La devise acceptée est le FCFA.");
+    addError("promo_price", "Le prix promotionnel doit être positif et inférieur au prix normal.");
+  }
+  if (
+    !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(languageCode)
+  ) {
+    addError("language_code", "Choisissez un code de langue valide.");
   }
   if (
     countryCode !== null &&
@@ -144,22 +170,31 @@ export const createMarketplaceItem = async (request, response, next) => {
     }
     const result = await pool.query(
       `INSERT INTO marketplace_items
-         (seller_id, title, description, price_fcfa, category, item_type,
-          image_urls, location, contact_phone, whatsapp_phone, country_of_origin)
-       SELECT profile.id, $2, $3, $4, $5, $6,
+         (seller_id, title, description, price_fcfa, price_amount, currency_code,
+          category, item_type, image_urls, location, contact_phone,
+          whatsapp_phone, country_of_origin, country_code, city, language_code,
+          promo_price, promo_expires_at)
+       SELECT profile.id, $2, $3, $4, $4, $12, $5, $6,
               CASE WHEN $7::text IS NULL THEN NULL ELSE ARRAY[$7::text] END,
               ST_SetSRID(ST_MakePoint($9, $8), 4326),
-              profile.phone_number, profile.phone_number, $11
+              profile.phone_number, profile.phone_number, $11, profile.country_code,
+              COALESCE(NULLIF($13, ''), profile.neighborhood), $14,
+              $15, CASE WHEN $15::numeric IS NULL THEN NULL
+                        ELSE NOW() + INTERVAL '30 days' END
        FROM users AS profile
        WHERE profile.id = $1
          AND ($10::text IS NULL OR profile.country_code = $10)
-       RETURNING id, title, description, price_fcfa AS price,
-                 price_fcfa = 0 AS is_free, category, item_type,
-                 image_urls[1] AS image_url, country_of_origin, created_at,
+       RETURNING id, seller_id, title, description, price_amount AS price,
+                 price_amount, currency_code, currency_code AS currency,
+                 price_amount = 0 AS is_free, category, item_type,
+                 image_urls[1] AS image_url, country_of_origin, country_code,
+                 city, language_code, promo_price, promo_expires_at, created_at,
                  (SELECT profile.full_name FROM users AS profile
                   WHERE profile.id = seller_id) AS seller_name,
                  (SELECT profile.phone_number FROM users AS profile
-                  WHERE profile.id = seller_id) AS seller_phone`,
+                  WHERE profile.id = seller_id) AS seller_phone,
+                 (SELECT profile.is_verified FROM users AS profile
+                  WHERE profile.id = seller_id) AS seller_verified`,
       [
         request.auth.userId,
         title,
@@ -172,6 +207,10 @@ export const createMarketplaceItem = async (request, response, next) => {
         longitude,
         countryCode,
         countryOfOrigin,
+        currencyCode,
+        city,
+        languageCode,
+        promoPrice,
       ],
     );
     if (!result.rowCount) {
@@ -199,7 +238,10 @@ export const createMarketplaceItem = async (request, response, next) => {
     return response.status(201).json({
       item: {
         ...result.rows[0],
-        currency: "FCFA",
+        currency:
+          result.rows[0].currency_code === "XOF"
+            ? "FCFA"
+            : result.rows[0].currency_code,
         seller_name: result.rows[0].seller_name ?? "Vendeur",
         seller_phone: result.rows[0].seller_phone ?? "",
         whatsapp_phone: result.rows[0].seller_phone ?? "",
