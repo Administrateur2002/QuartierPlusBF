@@ -116,7 +116,7 @@ les secrets doivent rester dans **Secrets**.
 | `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` | Variable GitHub Actions et environnement EAS `preview` |
 | `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` | Environnement EAS `preview` ; le workflow de build l'extrait aussi de Firebase |
 | `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` | Environnement EAS `preview` ; le workflow de build l'extrait aussi de Firebase |
-| `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` | Variable GitHub Actions et environnement EAS `preview`, si iOS est activé |
+| `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` | Variable GitHub Actions ou environnement EAS `preview`, si iOS est activé |
 | `EXPO_PUBLIC_EAS_PROJECT_ID` | Variable GitHub Actions et environnement EAS `preview`, uniquement si absent de `app.json` |
 | `EXPO_PUBLIC_LIVEKIT_URL` | Variable GitHub Actions et environnement EAS `preview` |
 
@@ -131,8 +131,13 @@ Le préflight du workflow Android exige `EXPO_TOKEN`, l'un de
 le package Android et la présence des clients OAuth Android et Web dans le JSON,
 sans afficher leur contenu. Les clients Google Android/Web et le projet Firebase
 sont extraits de ce fichier ; les autres variables client ne sont pas des
-secrets requis par le préflight. Configurez les valeurs utilisées par l'OTA dans
-l'environnement EAS `preview`.
+secrets requis par le préflight. Le workflow EAS Update utilise en priorité la
+variable GitHub `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, puis la récupère de
+l'environnement EAS `preview` si elle n'est pas définie sur GitHub. Comme il
+s'agit d'un identifiant client public, configurez-le comme variable, pas comme
+secret serveur. Les mises à jour Android restent possibles sans cet identifiant
+lorsque iOS n'est pas activé. Configurez les autres valeurs utilisées par l'OTA
+de façon cohérente dans GitHub Actions et l'environnement EAS `preview`.
 `ADMIN_EMAIL` se configure dans l'environnement du service Render et doit
 correspondre à l'adresse vérifiée du compte portant le rôle `admin` en base.
 
