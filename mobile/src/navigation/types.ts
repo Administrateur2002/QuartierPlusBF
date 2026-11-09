@@ -57,6 +57,15 @@ export type VoyageStackParamList = {
   VoyageAgentScanner: { tripId: string };
 };
 
+export type ShareablePost = {
+  id: string;
+  title: string;
+  caption: string;
+  mediaUrl: string;
+  mediaType: "image" | "video";
+  authorName?: string;
+};
+
 export type RootStackParamList = {
   Welcome: undefined;
   PhoneAuth: { mode?: "login" | "register" } | undefined;
@@ -75,6 +84,10 @@ export type RootStackParamList = {
       }
     | undefined;
   AlliancePlus: undefined;
+  CommunityShare: {
+    destinationType: "alliance" | "group";
+    post: ShareablePost;
+  };
   AlliancePeople: undefined;
   MyActivity: { activity: "listings" | "services" | "alerts" };
   CommerceGrowth: undefined;

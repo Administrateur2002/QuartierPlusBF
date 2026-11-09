@@ -24,6 +24,7 @@ import {
   Users,
 } from "lucide-react-native";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
+import type { NavigationProp } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -55,7 +56,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useVoiceAssistant } from "../context/VoiceAssistantContext";
-import type { MainTabParamList } from "../navigation/types";
+import type { MainTabParamList, RootStackParamList } from "../navigation/types";
 import {
   cacheAlerts,
   cachePosts,
@@ -108,6 +109,7 @@ type FeedEntry = {
   authorName?: string;
   authorPhotoUrl?: string;
   authorBadge?: string | null;
+  shareable: boolean;
   likesCount: number;
   commentsCount: number;
   sharesCount: number;
@@ -279,6 +281,7 @@ const normalizePost = (value: unknown): FeedEntry | null => {
     imageUrls,
     mediaType,
     authorId: typeof value.author_id === "string" ? value.author_id : undefined,
+    shareable: typeof value.author_id === "string",
     authorName:
       typeof value.author_name === "string" ? value.author_name : undefined,
     authorPhotoUrl:
@@ -324,6 +327,7 @@ const normalizeAlert = (value: unknown): FeedEntry | null => {
     sharesCount: 0,
     likedByMe: false,
     authorIsAlly: false,
+    shareable: false,
   };
 };
 
@@ -354,6 +358,7 @@ const formatDate = (date: string) => {
 export default function FeedScreen() {
   const navigation =
     useNavigation<BottomTabNavigationProp<MainTabParamList>>();
+  const rootNavigation = useNavigation<NavigationProp<RootStackParamList>>();
   const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -3695,21 +3700,37 @@ export default function FeedScreen() {
                 <Text style={[styles.actionOptionText, { color: colors.text }]}>Envoyer à un ami</Text>
                 <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Ouvrir les options de partage de l’appareil</Text>
               </Pressable>
-              {(["une alliance", "un groupe"] as const).map((destination) => (
+              {actionPost?.shareable && actionPost.imageUrl && (["une alliance", "un groupe"] as const).map((destination) => (
                 <Pressable
                   accessibilityRole="button"
                   key={destination}
                   onPress={() => {
+                    if (!actionPost) return;
+                    if (authStatus !== "connected") {
+                      setActionPost(null);
+                      requestAuthentication();
+                      return;
+                    }
+                    const post = actionPost;
+                    const mediaUrl = post.imageUrl;
+                    if (!mediaUrl) return;
                     setActionPost(null);
-                    Alert.alert(
-                      `Partager dans ${destination}`,
-                      "Cette destination n’est pas encore reliée à une route de partage sur le serveur.",
-                    );
+                    rootNavigation.navigate("CommunityShare", {
+                      destinationType: destination === "une alliance" ? "alliance" : "group",
+                      post: {
+                        id: post.id,
+                        title: post.title,
+                        caption: post.body,
+                        mediaUrl,
+                        mediaType: post.mediaType === "video" ? "video" : "image",
+                        authorName: post.authorName,
+                      },
+                    });
                   }}
                   style={styles.actionOption}
                 >
                   <Text style={[styles.actionOptionText, { color: colors.text }]}>Partager dans {destination}</Text>
-                  <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Destination interne indisponible</Text>
+                  <Text style={[styles.actionOptionDescription, { color: colors.secondaryText }]}>Choisir un espace et confirmer le partage</Text>
                 </Pressable>
               ))}
               <Pressable

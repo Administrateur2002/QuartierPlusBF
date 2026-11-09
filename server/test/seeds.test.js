@@ -44,6 +44,10 @@ const marketplaceMigration = readFileSync(
   new URL("../../migrations/042_marketplace_commerce.sql", import.meta.url),
   "utf8",
 );
+const communityShareMigration = readFileSync(
+  new URL("../../migrations/044_community_groups_and_post_shares.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -149,6 +153,15 @@ test("profile photos and feed carousel migrations are additive and documented fo
     marketplaceMigration,
     /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
   );
+  assert.match(communityShareMigration, /CREATE TABLE IF NOT EXISTS community_groups/);
+  assert.match(communityShareMigration, /CREATE TABLE IF NOT EXISTS community_group_members/);
+  assert.match(communityShareMigration, /CREATE TABLE IF NOT EXISTS community_post_shares/);
+  assert.match(communityShareMigration, /target_type = 'ALLIANCE'/);
+  assert.match(communityShareMigration, /target_type = 'GROUP'/);
+  assert.doesNotMatch(
+    communityShareMigration,
+    /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
+  );
   for (const [migration, version] of [
     [commerceGrowthMigration, "025_commerce_growth_offers.sql"],
     [profilePhotoMigration, "026_user_profile_photos.sql"],
@@ -159,6 +172,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     [adminWorkspaceMigration, "035_secure_admin_workspace.sql"],
     [seriesMigration, "041_series_core.sql"],
     [marketplaceMigration, "042_marketplace_commerce.sql"],
+    [communityShareMigration, "044_community_groups_and_post_shares.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -174,6 +188,8 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "035_secure_admin_workspace.sql",
     "041_series_core.sql",
     "042_marketplace_commerce.sql",
+    "043_geographic_communications.sql",
+    "044_community_groups_and_post_shares.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));

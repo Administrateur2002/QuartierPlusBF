@@ -742,6 +742,8 @@ export const listFeed = async (request, response, next) => {
                WHERE like_row.post_id = post.id) AS likes_count,
               (SELECT COUNT(*)::int FROM post_comments comment_row
                WHERE comment_row.post_id = post.id) AS comments_count,
+              (SELECT COUNT(*)::int FROM community_post_shares share
+               WHERE share.post_id = post.id) AS shares_count,
               CASE WHEN $5::uuid IS NULL THEN FALSE ELSE EXISTS (
                 SELECT 1 FROM post_likes like_row
                 WHERE like_row.post_id = post.id AND like_row.user_id = $5

@@ -93,6 +93,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 45. `migrations/041_series_core.sql`
 46. `migrations/042_marketplace_commerce.sql`
 47. `migrations/043_geographic_communications.sql`
+48. `migrations/044_community_groups_and_post_shares.sql`
 
 La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
 progression de lecture et votes de fin d'épisode. Elle est additive et conserve
@@ -119,6 +120,12 @@ pas disponibles. Les demandes de vérification institutionnelle doivent aussi
 être examinées et approuvées par un administrateur; une demande seule ne donne
 aucun droit de publication officielle. La migration n'est pas appliquée
 automatiquement au démarrage.
+
+La migration 044 ajoute les groupes communautaires avec leur visibilité,
+l'appartenance de leurs membres et les partages persistants des médias dans les
+alliances ou les groupes. Appliquez-la après 043 et avant de déployer les
+nouvelles routes sociales. Les groupes privés et les fils de partage restent
+réservés à leurs membres; les groupes publics peuvent être découverts et rejoints.
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes

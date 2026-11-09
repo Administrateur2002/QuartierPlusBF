@@ -29,6 +29,14 @@ import {
   updatePostComment,
   updateLocationShare,
 } from "../controllers/socialController.js";
+import {
+  createCommunityGroup,
+  createPostShare,
+  joinCommunityGroup,
+  listCommunitySharedPosts,
+  listDiscoverableGroups,
+  listShareDestinations,
+} from "../controllers/communityShareController.js";
 import { checkPublicText } from "../controllers/conflictController.js";
 
 const router = Router();
@@ -63,6 +71,12 @@ router.get("/allies", listAllies);
 router.get("/allies/counter", getAllyCounter);
 router.post("/alliances", createCommunityAlliance);
 router.patch("/alliances/:allianceId/status", updateCommunityAllianceStatus);
+router.get("/share-destinations/:type", listShareDestinations);
+router.get("/groups/discover", listDiscoverableGroups);
+router.post("/groups", createCommunityGroup);
+router.post("/groups/:groupId/join", joinCommunityGroup);
+router.get("/destinations/:type/:destinationId/feed", listCommunitySharedPosts);
+router.post("/posts/:postId/share", createPostShare);
 router.post("/alliance/:userId", requestAlliance);
 router.post("/alliance/:userId/accept", acceptAlliance);
 router.post("/alliance/:userId/decline", declineAlliance);
