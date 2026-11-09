@@ -94,6 +94,7 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 46. `migrations/042_marketplace_commerce.sql`
 47. `migrations/043_geographic_communications.sql`
 48. `migrations/044_community_groups_and_post_shares.sql`
+49. `migrations/045_community_alliance_projects.sql`
 
 La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
 progression de lecture et votes de fin d'épisode. Elle est additive et conserve
@@ -126,6 +127,11 @@ l'appartenance de leurs membres et les partages persistants des médias dans les
 alliances ou les groupes. Appliquez-la après 043 et avant de déployer les
 nouvelles routes sociales. Les groupes privés et les fils de partage restent
 réservés à leurs membres; les groupes publics peuvent être découverts et rejoints.
+
+La migration 045 ajoute les invitations aux projets Alliance+ et leurs
+confirmations de réalisation. Elle recopie aussi les créateurs et participants
+déjà enregistrés dans le JSON historique vers la table normalisée des membres.
+Appliquez-la après 044 et avant de déployer les routes et l’écran Alliance+.
 
 Pour une base Neon neuve, exécutez chaque fichier une seule fois dans l'éditeur
 SQL, dans cet ordre. `auth-migration.sql` utilise des opérations idempotentes

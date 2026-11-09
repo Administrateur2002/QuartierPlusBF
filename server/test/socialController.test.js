@@ -259,9 +259,6 @@ test("community alliance creation stores a valid payload and creator membership"
         }],
       };
     }
-    if (statement.includes("INSERT INTO community_alliance_members")) {
-      return { rowCount: 1, rows: [] };
-    }
     return { rowCount: 0, rows: [] };
   });
 
@@ -284,7 +281,9 @@ test("community alliance creation stores a valid payload and creator membership"
   assert.equal(response.statusCode, 201);
   assert.equal(response.payload.alliance.title, "Nettoyage du square");
   assert.deepEqual(response.payload.alliance.participants, ["1b490a29-02dd-44ad-8c9f-81d9cadc0001"]);
+  assert.equal(statements.length, 1);
   assert.match(statements[0].statement, /INSERT INTO community_alliances/i);
+  assert.match(statements[0].statement, /INSERT INTO community_alliance_members/i);
 });
 
 test("community alliance completion requires a real validation proof", async (context) => {
@@ -315,6 +314,152 @@ test("community alliance completion requires a real validation proof", async (co
 
   assert.equal(response.statusCode, 400);
   assert.match(response.payload.error, /validation/i);
+});
+
+test("only the project creator can change its status", async (context) => {
+  let calls = 0;
+  context.mock.method(pool, "query", async () => {
+    calls += 1;
+    return {
+      rowCount: 1,
+      rows: [{
+        id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+        creator_id: "2b490a29-02dd-44ad-8c9f-81d9cadc0002",
+        status: "PENDING",
+        participants: ["1b490a29-02dd-44ad-8c9f-81d9cadc0001"],
+      }],
+    };
+  });
+  const response = createResponse();
+  await updateCommunityAllianceStatus(
+    {
+      params: { allianceId: "3b490a29-02dd-44ad-8c9f-81d9cadc0003" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: { status: "IN_PROGRESS" },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(calls, 1);
+});
+
+test("project completion cannot be unlocked by a client-supplied confirmation count", async (context) => {
+  let calls = 0;
+  context.mock.method(pool, "query", async () => {
+    calls += 1;
+    return {
+      rowCount: 1,
+      rows: [{
+        id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+        creator_id: "1b490a29-02dd-44ad-8c9f-81d9cadc0001",
+        status: "IN_PROGRESS",
+        participant_count: 2,
+        validation_note: "Fait",
+        proof_url: "https://example.test/proof",
+        completion_confirmations: 0,
+      }],
+    };
+  });
+  const response = createResponse();
+  await updateCommunityAllianceStatus(
+    {
+      params: { allianceId: "3b490a29-02dd-44ad-8c9f-81d9cadc0003" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: {
+        status: "COMPLETED",
+        validation_note: "Fait",
+        proof_url: "https://example.test/proof",
+        completion_confirmations: 100,
+      },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(calls, 1);
+  assert.match(response.payload.error, /confirmation/i);
+});
+
+test("the project creator can persist HTTPS completion proof before other members confirm", async (context) => {
+  const statements = [];
+  context.mock.method(pool, "query", async (statement, values) => {
+    statements.push({ statement, values });
+    if (statement.includes("SELECT id, creator_id, status")) {
+      return {
+        rowCount: 1,
+        rows: [{
+          id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+          creator_id: "1b490a29-02dd-44ad-8c9f-81d9cadc0001",
+          status: "IN_PROGRESS",
+          participant_count: 2,
+          validation_note: null,
+          proof_url: null,
+          completion_confirmations: 0,
+        }],
+      };
+    }
+    return {
+      rowCount: 1,
+      rows: [{ id: values[3], status: "IN_PROGRESS", validation_note: values[1], proof_url: values[2] }],
+    };
+  });
+  const response = createResponse();
+  await updateCommunityAllianceStatus(
+    {
+      params: { allianceId: "3b490a29-02dd-44ad-8c9f-81d9cadc0003" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: {
+        status: "IN_PROGRESS",
+        validation_note: "Nettoyage effectué",
+        proof_url: "https://example.test/preuve",
+      },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(statements.length, 2);
+  assert.deepEqual(statements[1].values, [
+    "IN_PROGRESS",
+    "Nettoyage effectué",
+    "https://example.test/preuve",
+    "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+  ]);
+});
+
+test("project completion proof rejects non-HTTPS links", async (context) => {
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [{
+      id: "3b490a29-02dd-44ad-8c9f-81d9cadc0003",
+      creator_id: "1b490a29-02dd-44ad-8c9f-81d9cadc0001",
+      status: "IN_PROGRESS",
+      participant_count: 2,
+      validation_note: null,
+      proof_url: null,
+      completion_confirmations: 0,
+    }],
+  }));
+  const response = createResponse();
+  await updateCommunityAllianceStatus(
+    {
+      params: { allianceId: "3b490a29-02dd-44ad-8c9f-81d9cadc0003" },
+      auth: { userId: "1b490a29-02dd-44ad-8c9f-81d9cadc0001" },
+      body: {
+        status: "IN_PROGRESS",
+        validation_note: "Nettoyage effectué",
+        proof_url: "javascript:alert(1)",
+      },
+    },
+    response,
+    (error) => { throw error; },
+  );
+
+  assert.equal(response.statusCode, 400);
 });
 
 test("comment listing rejects invalid pagination parameters", async (context) => {

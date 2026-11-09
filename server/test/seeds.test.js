@@ -48,6 +48,10 @@ const communityShareMigration = readFileSync(
   new URL("../../migrations/044_community_groups_and_post_shares.sql", import.meta.url),
   "utf8",
 );
+const communityAllianceProjectsMigration = readFileSync(
+  new URL("../../migrations/045_community_alliance_projects.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -162,6 +166,14 @@ test("profile photos and feed carousel migrations are additive and documented fo
     communityShareMigration,
     /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
   );
+  assert.match(communityAllianceProjectsMigration, /CREATE TABLE IF NOT EXISTS community_alliance_invitations/);
+  assert.match(communityAllianceProjectsMigration, /CREATE TABLE IF NOT EXISTS community_alliance_completion_confirmations/);
+  assert.match(communityAllianceProjectsMigration, /jsonb_array_elements_text\(alliance\.participants\)/);
+  assert.match(communityAllianceProjectsMigration, /VALUES \('045_community_alliance_projects\.sql'\)/);
+  assert.doesNotMatch(
+    communityAllianceProjectsMigration,
+    /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
+  );
   for (const [migration, version] of [
     [commerceGrowthMigration, "025_commerce_growth_offers.sql"],
     [profilePhotoMigration, "026_user_profile_photos.sql"],
@@ -173,6 +185,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     [seriesMigration, "041_series_core.sql"],
     [marketplaceMigration, "042_marketplace_commerce.sql"],
     [communityShareMigration, "044_community_groups_and_post_shares.sql"],
+    [communityAllianceProjectsMigration, "045_community_alliance_projects.sql"],
   ]) {
     assert.ok(migration.includes(`VALUES ('${version}')`));
   }
@@ -190,6 +203,7 @@ test("profile photos and feed carousel migrations are additive and documented fo
     "042_marketplace_commerce.sql",
     "043_geographic_communications.sql",
     "044_community_groups_and_post_shares.sql",
+    "045_community_alliance_projects.sql",
   ];
   const positions = versions.map((version) => deployGuide.indexOf(`migrations/${version}`));
   assert.ok(positions.every((position) => position >= 0));

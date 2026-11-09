@@ -37,6 +37,18 @@ import {
   listDiscoverableGroups,
   listShareDestinations,
 } from "../controllers/communityShareController.js";
+import {
+  confirmCommunityAllianceCompletion,
+  getCommunityAlliance,
+  getCommunityAllianceInvitationCounter,
+  inviteCommunityAllianceMember,
+  joinCommunityAlliance,
+  listCommunityAllianceInvitations,
+  listCommunityAllianceParticipants,
+  listCommunityAlliances,
+  listMyCommunityAlliances,
+  respondToCommunityAllianceInvitation,
+} from "../controllers/allianceProjectsController.js";
 import { checkPublicText } from "../controllers/conflictController.js";
 
 const router = Router();
@@ -77,6 +89,16 @@ router.post("/groups", createCommunityGroup);
 router.post("/groups/:groupId/join", joinCommunityGroup);
 router.get("/destinations/:type/:destinationId/feed", listCommunitySharedPosts);
 router.post("/posts/:postId/share", createPostShare);
+router.get("/alliances/invitations/counter", getCommunityAllianceInvitationCounter);
+router.get("/alliances/invitations/:direction", listCommunityAllianceInvitations);
+router.post("/alliances/invitations/:invitationId/respond", respondToCommunityAllianceInvitation);
+router.get("/alliances/mine", listMyCommunityAlliances);
+router.get("/alliances", listCommunityAlliances);
+router.get("/alliances/:allianceId/participants", listCommunityAllianceParticipants);
+router.get("/alliances/:allianceId", getCommunityAlliance);
+router.post("/alliances/:allianceId/join", joinCommunityAlliance);
+router.post("/alliances/:allianceId/invitations", inviteCommunityAllianceMember);
+router.post("/alliances/:allianceId/completion-confirmation", confirmCommunityAllianceCompletion);
 router.post("/alliance/:userId", requestAlliance);
 router.post("/alliance/:userId/accept", acceptAlliance);
 router.post("/alliance/:userId/decline", declineAlliance);

@@ -8,6 +8,13 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const validId = (value) =>
   typeof value === "string" && UUID_PATTERN.test(value);
+const isHttpsUrl = (value) => {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+};
 
 const VALID_ALLIANCE_CATEGORIES = new Set([
   "ENTRAIDE",
@@ -281,12 +288,22 @@ export const createCommunityAlliance = async (request, response, next) => {
   }];
   try {
     const result = await pool.query(
-      `INSERT INTO community_alliances (
-         title, description, category, creator_id, objective, due_date, location,
-         status, participants, history, notifications, participant_count
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8::jsonb, $9::jsonb, $10::jsonb, 1)
-       RETURNING id, title, description, category, creator_id, objective, due_date, location,
-                 status, participants, history, notifications, participant_count`,
+      `WITH created_alliance AS (
+         INSERT INTO community_alliances (
+           title, description, category, creator_id, objective, due_date, location,
+           status, participants, history, notifications, participant_count
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8::jsonb, $9::jsonb, $10::jsonb, 1)
+         RETURNING id, title, description, category, creator_id, objective, due_date, location,
+                   status, participants, history, notifications, participant_count
+       ), creator_membership AS (
+         INSERT INTO community_alliance_members (alliance_id, user_id, role)
+         SELECT id, $4, 'CREATOR' FROM created_alliance
+         ON CONFLICT (alliance_id, user_id) DO NOTHING
+         RETURNING alliance_id
+       )
+       SELECT created_alliance.*
+       FROM created_alliance
+       JOIN creator_membership ON creator_membership.alliance_id = created_alliance.id`,
       [
         title,
         description,
@@ -302,12 +319,6 @@ export const createCommunityAlliance = async (request, response, next) => {
     );
 
     const alliance = result.rows[0];
-    await pool.query(
-      `INSERT INTO community_alliance_members (alliance_id, user_id, role)
-       VALUES ($1, $2, 'CREATOR')
-       ON CONFLICT (alliance_id, user_id) DO NOTHING`,
-      [alliance.id, userId],
-    );
 
     return response.status(201).json({
       alliance: {
@@ -345,21 +356,48 @@ export const updateCommunityAllianceStatus = async (request, response, next) => 
       return response.status(404).json({ error: "Alliance introuvable." });
     }
     const alliance = allianceResult.rows[0];
-    const participants = readJsonArray(alliance.participants);
-    const isAuthorized = alliance.creator_id === userId || participants.includes(userId);
-    if (!isAuthorized) {
-      return response.status(403).json({ error: "Vous n’êtes pas participant à cette alliance." });
+    if (alliance.creator_id !== userId) {
+      return response.status(403).json({ error: "Seul le créateur du projet peut modifier son statut." });
+    }
+
+    const validationNote = typeof request.body?.validation_note === "string"
+      ? request.body.validation_note.trim()
+      : "";
+    const proofUrl = typeof request.body?.proof_url === "string"
+      ? request.body.proof_url.trim()
+      : "";
+    if (proofUrl && !isHttpsUrl(proofUrl)) {
+      return response.status(400).json({ error: "Le lien de preuve doit être une URL HTTPS valide." });
+    }
+    const savingCompletionProof =
+      nextStatus === "IN_PROGRESS" &&
+      alliance.status === "IN_PROGRESS" &&
+      Boolean(validationNote) &&
+      Boolean(proofUrl);
+    const allowedTransitions = {
+      PENDING: ["ACCEPTED", "IN_PROGRESS", "CANCELLED"],
+      ACCEPTED: ["IN_PROGRESS", "CANCELLED"],
+      IN_PROGRESS: ["COMPLETED", "CANCELLED"],
+      COMPLETED: ["DISPUTED"],
+      CANCELLED: [],
+      DISPUTED: [],
+    };
+    if (!allowedTransitions[alliance.status]?.includes(nextStatus) && !savingCompletionProof) {
+      return response.status(409).json({ error: "Transition de statut du projet invalide." });
+    }
+    if (
+      nextStatus === "IN_PROGRESS" &&
+      alliance.status === "IN_PROGRESS" &&
+      (!validationNote || !proofUrl)
+    ) {
+      return response.status(400).json({ error: "Ajoutez une note et une preuve avant de les enregistrer." });
     }
 
     if (nextStatus === "COMPLETED") {
-      const validationNote = typeof request.body?.validation_note === "string"
-        ? request.body.validation_note.trim()
-        : "";
-      const proofUrl = typeof request.body?.proof_url === "string"
-        ? request.body.proof_url.trim()
-        : "";
-      const completionConfirmations = Number(request.body?.completion_confirmations ?? alliance.completion_confirmations ?? 0);
-      const validCompletion = Boolean(validationNote) && Boolean(proofUrl)
+      const completionNote = validationNote || String(alliance.validation_note ?? "").trim();
+      const completionProof = proofUrl || String(alliance.proof_url ?? "").trim();
+      const completionConfirmations = Number(alliance.completion_confirmations ?? 0);
+      const validCompletion = Boolean(completionNote) && Boolean(completionProof)
         && Number(alliance.participant_count ?? 1) >= 2
         && completionConfirmations >= 1;
       if (!validCompletion) {
@@ -374,18 +412,14 @@ export const updateCommunityAllianceStatus = async (request, response, next) => 
        SET status = $1,
            validation_note = COALESCE($2, validation_note),
            proof_url = COALESCE($3, proof_url),
-           completion_confirmations = COALESCE($4, completion_confirmations),
            updated_at = NOW()
-       WHERE id = $5
+       WHERE id = $4
        RETURNING id, title, description, category, creator_id, objective, due_date, location,
                  status, participants, validation_note, proof_url, completion_confirmations, participant_count`,
       [
         nextStatus,
-        typeof request.body?.validation_note === "string" ? request.body.validation_note.trim() : null,
-        typeof request.body?.proof_url === "string" ? request.body.proof_url.trim() : null,
-        Number.isInteger(Number(request.body?.completion_confirmations))
-          ? Number(request.body.completion_confirmations)
-          : alliance.completion_confirmations,
+        validationNote || null,
+        proofUrl || null,
         allianceId,
       ],
     );
