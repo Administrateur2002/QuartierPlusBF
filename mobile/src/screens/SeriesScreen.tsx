@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -389,9 +390,11 @@ export default function SeriesScreen() {
                 ))}
               </View>
             )}
-            <Pressable accessibilityRole="button" onPress={() => { setDetail(null); setActiveEpisode(null); }} style={styles.closeButton}>
-              <Text style={styles.closeText}>Fermer</Text>
-            </Pressable>
+            {!activeEpisode && (
+              <Pressable accessibilityRole="button" onPress={() => setDetail(null)} style={styles.closeButton}>
+                <Text style={styles.closeText}>Fermer</Text>
+              </Pressable>
+            )}
           </View>
           {detail.seasons.map((season) => (
             <View key={season.id} style={styles.season}>
@@ -424,6 +427,7 @@ export default function SeriesScreen() {
       )}
       {activeEpisode && activeEpisode.video_url && (
         <EpisodePlayback
+          key={activeEpisode.id}
           episode={activeEpisode}
           isCreator={detail?.creator_id === user?.id}
           onClose={() => setActiveEpisode(null)}
@@ -507,7 +511,7 @@ function EpisodePlayback({
   const [optionOne, setOptionOne] = useState("");
   const [optionTwo, setOptionTwo] = useState("");
   const [results, setResults] = useState<{ option_id: string; label: string; votes: number }[]>([]);
-  const lastSavedPosition = useRef(0);
+  const lastSavedPosition = useRef(episode.progress_seconds);
   const player = useVideoPlayer(episode.video_url, (instance) => {
     instance.muted = false;
     instance.timeUpdateEventInterval = 5;
@@ -517,20 +521,34 @@ function EpisodePlayback({
 
   useEffect(() => {
     const subscription = player.addListener("timeUpdate", ({ currentTime }) => {
-      const finished = player.duration > 0 && currentTime >= player.duration - 2;
+      const finished = episode.duration_seconds !== null
+        && episode.duration_seconds > 0
+        && currentTime >= episode.duration_seconds - 2;
       if (finished || currentTime - lastSavedPosition.current >= 10) {
         lastSavedPosition.current = currentTime;
         onProgress(currentTime, finished);
       }
     });
-    return () => {
-      if (player.currentTime > lastSavedPosition.current) {
-        onProgress(player.currentTime, false);
-      }
-      subscription.remove();
-      player.pause();
-    };
-  }, [onProgress, player]);
+    return () => subscription.remove();
+  }, [episode.duration_seconds, onProgress, player]);
+
+  const closePlayback = useCallback(() => {
+    const currentTime = player.currentTime;
+    if (currentTime > lastSavedPosition.current) {
+      lastSavedPosition.current = currentTime;
+      onProgress(currentTime, false);
+    }
+    player.pause();
+    onClose();
+  }, [onClose, onProgress, player]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      closePlayback();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [closePlayback]);
 
   const loadPoll = useCallback(async () => {
     try {
@@ -605,7 +623,7 @@ function EpisodePlayback({
     <View style={styles.playerBlock}>
       <View style={styles.detailHeader}>
         <Text style={styles.sectionTitle}>{episode.title}</Text>
-        <Pressable accessibilityRole="button" onPress={onClose} style={styles.closeButton}><Text style={styles.closeText}>Fermer</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={closePlayback} style={styles.closeButton}><Text style={styles.closeText}>Fermer</Text></Pressable>
       </View>
       <VideoView nativeControls player={player} contentFit="contain" style={styles.video} />
       {episode.description ? <Text style={styles.seriesDescription}>{episode.description}</Text> : null}
