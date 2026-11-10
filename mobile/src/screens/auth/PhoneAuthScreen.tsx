@@ -1,5 +1,6 @@
 import axios from "axios";
 import { useEffect, useMemo, useState } from "react";
+import type { ConfirmationResult } from "@react-native-firebase/auth";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
@@ -16,10 +17,12 @@ import {
 import { useAuth, type AuthUser } from "../../context/AuthContext";
 import api from "../../services/api";
 import {
+  confirmFirebasePhoneCode,
   exchangeFirebaseSession,
   firebaseAuthErrorMessage,
   getFirebaseUser,
   isStrongPassword,
+  requestFirebasePhoneCode,
   registerWithEmailPassword,
   resendEmailVerification,
   resetPasswordForEmail,
@@ -123,6 +126,7 @@ export default function PhoneAuthScreen() {
   const [otpChannel, setOtpChannel] = useState<"sms" | "email">("sms");
   const [otpIdentifier, setOtpIdentifier] = useState("");
   const [otpRequested, setOtpRequested] = useState(false);
+  const [phoneConfirmation, setPhoneConfirmation] = useState<ConfirmationResult | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +181,7 @@ export default function PhoneAuthScreen() {
     setVerificationPending(false);
     setOfferRegistration(false);
     setOtpRequested(false);
+    setPhoneConfirmation(null);
     setOtp("");
   };
 
@@ -237,6 +242,28 @@ export default function PhoneAuthScreen() {
       return;
     }
 
+    if (otpChannel === "sms") {
+      const phoneNumber = mode === "register" ? fullPhoneNumber() : normalizedIdentifier();
+      if (!phoneNumber?.startsWith("+")) {
+        setError("Pour recevoir un SMS Firebase, saisissez un numéro au format international.");
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const confirmation = await requestFirebasePhoneCode(phoneNumber);
+        setPhoneConfirmation(confirmation);
+        setOtpRequested(true);
+        setOtp("");
+        setOtpIdentifier(phoneNumber);
+        setSecondsRemaining(60);
+      } catch (phoneError) {
+        setError(firebaseAuthErrorMessage(phoneError));
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     setIsLoading(true);
     try {
       const response = await requestWhileServerWakes<{ challenge_identifier?: string }>(
@@ -265,6 +292,21 @@ export default function PhoneAuthScreen() {
     setSuccessMessage(null);
     setIsLoading(true);
     try {
+      if (phoneConfirmation) {
+        const firebaseUser = await confirmFirebasePhoneCode(phoneConfirmation, otp);
+        const result = await exchangeFirebaseSession(firebaseUser, {
+          first_name: mode === "register" ? firstName.trim() : undefined,
+          last_name: mode === "register" ? lastName.trim() : undefined,
+          terms_accepted: mode === "register" && termsAccepted,
+          age_16_or_older: mode === "register" && ageConfirmed,
+          auth_flow: mode,
+        });
+        if (result.kind === "email-verification-required") {
+          throw new Error("Firebase n’a pas confirmé le numéro.");
+        }
+        await setSession(result.token, result.user);
+        return;
+      }
       const response = await requestWhileServerWakes<{ token?: unknown; user?: unknown }>(
         "/api/v1/auth/verify-otp",
         {

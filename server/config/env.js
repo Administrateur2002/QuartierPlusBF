@@ -127,7 +127,11 @@ const positiveInteger = (name, fallback) => {
 };
 
 const googleClientId = optional("GOOGLE_CLIENT_ID");
+const adminEmail = optional("ADMIN_EMAIL").toLowerCase();
 const firebaseProjectId = optional("FIREBASE_PROJECT_ID");
+if (isProduction && !adminEmail) {
+  throw new Error("ADMIN_EMAIL is required in production.");
+}
 if (isProduction && !firebaseProjectId) {
   throw new Error("FIREBASE_PROJECT_ID is required in production.");
 }
@@ -322,7 +326,6 @@ const grinModeratorIds = [
       .filter(Boolean),
   ),
 ];
-const adminEmail = optional("ADMIN_EMAIL").toLowerCase();
 const supportNotifyEmail = optional("SUPPORT_NOTIFY_EMAIL").toLowerCase();
 if (
   supportNotifyEmail &&

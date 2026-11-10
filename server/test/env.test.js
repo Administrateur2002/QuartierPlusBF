@@ -15,6 +15,7 @@ const productionEnv = {
   SMS_DELIVERY_URL: "https://sms.example.invalid/send",
   SMS_DELIVERY_TOKEN: "fake-sms-token",
   GOOGLE_CLIENT_ID: "fake-google-client-id",
+  FIREBASE_PROJECT_ID: "quartierplus-final",
   ADMIN_EMAIL: "verified-admin@example.com",
   LIVEKIT_API_KEY: "APITestUnitKey12345",
   LIVEKIT_API_SECRET:

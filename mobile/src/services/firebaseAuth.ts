@@ -1,9 +1,11 @@
 import {
   createUserWithEmailAndPassword,
   getAuth,
+  signInWithPhoneNumber,
   sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
+  type ConfirmationResult,
   type User,
 } from "@react-native-firebase/auth";
 import api from "./api";
@@ -14,6 +16,7 @@ export type FirebaseRegistration = {
   last_name?: string;
   terms_accepted: boolean;
   age_16_or_older: boolean;
+  auth_flow?: "login" | "register";
 };
 
 export type FirebaseSessionResult =
@@ -21,6 +24,18 @@ export type FirebaseSessionResult =
   | { kind: "email-verification-required" };
 
 export const getFirebaseUser = () => getAuth().currentUser;
+
+export const requestFirebasePhoneCode = (phoneNumber: string) =>
+  signInWithPhoneNumber(getAuth(), phoneNumber);
+
+export const confirmFirebasePhoneCode = async (
+  confirmation: ConfirmationResult,
+  code: string,
+) => {
+  const credential = await confirmation.confirm(code);
+  if (!credential?.user) throw new Error("Firebase n’a pas confirmé le numéro.");
+  return credential.user;
+};
 
 export const isStrongPassword = (password: string) => {
   const trimmed = password.trim();

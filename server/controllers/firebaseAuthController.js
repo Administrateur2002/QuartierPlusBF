@@ -78,14 +78,21 @@ export const createFirebaseAuthController = ({
     return response.status(401).json({ error: "Ce fournisseur Firebase n’est pas autorisé." });
   }
 
-  const email = typeof identity.email === "string" ? identity.email.trim().toLowerCase() : null;
+  const verifiedEmail = typeof identity.email === "string" ? identity.email.trim().toLowerCase() : null;
   const emailVerified = identity.email_verified === true;
+  const suppliedRegistrationEmail =
+    provider === "phone" && request.body?.auth_flow === "register" &&
+    typeof request.body?.email === "string"
+      ? request.body.email.trim().toLowerCase()
+      : null;
+  const email = verifiedEmail ?? suppliedRegistrationEmail;
   const phoneNumber = typeof identity.phone_number === "string" ? identity.phone_number : null;
   const validPhone = phoneNumber && E164_PATTERN.test(phoneNumber) ? phoneNumber : null;
   const googleId = typeof identity.firebase?.identities?.["google.com"]?.[0] === "string"
     ? identity.firebase.identities["google.com"][0]
     : null;
-  if (email && !EMAIL_PATTERN.test(email)) {
+  if ((verifiedEmail && !EMAIL_PATTERN.test(verifiedEmail)) ||
+      (suppliedRegistrationEmail && !EMAIL_PATTERN.test(suppliedRegistrationEmail))) {
     return response.status(401).json({ error: "L’adresse e-mail du compte Firebase est invalide." });
   }
   if (provider === "phone" && !validPhone) {
@@ -113,7 +120,7 @@ export const createFirebaseAuthController = ({
                 regexp_replace(COALESCE(phone_e164, phone_number), '[^0-9]', '', 'g') = regexp_replace($4, '[^0-9]', '', 'g')
              ))
        FOR UPDATE`,
-      [uid, googleId, email, validPhone],
+      [uid, googleId, verifiedEmail, validPhone],
     );
     const distinctUsers = new Map(matches.rows.map((user) => [user.id, user]));
     if (distinctUsers.size > 1) {
@@ -125,6 +132,13 @@ export const createFirebaseAuthController = ({
     }
 
     let user = [...distinctUsers.values()][0] ?? null;
+    if (!user && request.body?.auth_flow === "login") {
+      await client.query("ROLLBACK");
+      return response.status(404).json({
+        error: "Aucun compte QuartierPlus ne correspond à ces identifiants. Inscrivez-vous d’abord.",
+        code: "AUTH_ACCOUNT_NOT_FOUND",
+      });
+    }
     if (requiresEmailVerification) {
       if (!user && !requiresRegistrationConsent) {
         await client.query("ROLLBACK");
