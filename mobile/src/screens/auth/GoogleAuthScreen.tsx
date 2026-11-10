@@ -16,10 +16,11 @@ const initialConfigurationError = (() => {
   if (!validGoogleClientId(googleWebClientId)) {
     return "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID invalide (code GOOGLE_WEB_CLIENT_ID_INVALID).";
   }
+  if (Platform.OS === "ios" && !googleIosClientId) {
+    return "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID manquant. Configurez le client OAuth iOS et son URL Scheme, puis créez un nouveau build natif.";
+  }
   if (Platform.OS === "ios" && !validGoogleClientId(googleIosClientId)) {
-    if (googleIosClientId) {
-      return "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID invalide (code GOOGLE_IOS_CLIENT_ID_INVALID).";
-    }
+    return "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID invalide (code GOOGLE_IOS_CLIENT_ID_INVALID).";
   }
   return null;
 })();

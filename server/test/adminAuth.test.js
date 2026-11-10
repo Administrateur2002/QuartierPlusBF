@@ -4,7 +4,7 @@ import { test } from "node:test";
 process.env.NODE_ENV ??= "test";
 process.env.DATABASE_URL ??= "postgres://localhost/quartierplus_test";
 process.env.JWT_SECRET ??= "test-secret-that-is-long-enough-for-jwt";
-process.env.ADMIN_EMAIL = "administrateurquartierplus@gmail.com";
+process.env.ADMIN_EMAIL = "verified-admin@example.com";
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
 
 const { adminAuthMiddleware } = await import("../middlewares/adminAuthMiddleware.js");
@@ -24,7 +24,7 @@ const createResponse = () => ({
 
 test("verified database admins can open the dashboard with SMS, email, or Google sessions", async (context) => {
   context.mock.method(pool, "query", async (_query, values) => {
-    assert.equal(values[1], "administrateurquartierplus@gmail.com");
+    assert.equal(values[1], "verified-admin@example.com");
     const query = _query;
     assert.match(query, /LOWER\(role\) = 'admin'/);
     assert.match(query, /LOWER\(email\) = LOWER\(\$2\)/);

@@ -1,5 +1,6 @@
 import * as SMS from "expo-sms";
 import * as ImagePicker from "expo-image-picker";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
@@ -13,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Pressable,
   StyleSheet,
@@ -94,9 +96,12 @@ export default function SosButton({
   const [trackingAlert, setTrackingAlert] = useState<TrackingAlert | null>(null);
   const [cancelSeconds, setCancelSeconds] = useState(0);
   const [emergencyPhoto, setEmergencyPhoto] = useState<EmergencyPhoto | null>(null);
+  const [pendingEmergencyPhoto, setPendingEmergencyPhoto] =
+    useState<EmergencyPhoto | null>(null);
   const [emergencyAudioUri, setEmergencyAudioUri] = useState<string | null>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
   useEffect(() => {
@@ -152,58 +157,62 @@ export default function SosButton({
     }
   }, [emergencyAudioUri, emergencyPhoto, emergencyType]);
 
-  const chooseEmergencyPhoto = () => {
-    Alert.alert("Ajouter une photo", "Choisissez une source.", [
-      {
-        text: "Prendre une photo",
-        onPress: () => void selectEmergencyPhoto("camera"),
-      },
-      {
-        text: "Choisir dans la galerie",
-        onPress: () => void selectEmergencyPhoto("library"),
-      },
-      { text: "Annuler", style: "cancel" },
-    ]);
-  };
-
-  const selectEmergencyPhoto = async (source: "camera" | "library") => {
+  const captureEmergencyPhoto = async () => {
     try {
-      const permission =
-        source === "camera"
-          ? await ImagePicker.requestCameraPermissionsAsync()
-          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        throw new Error(
-          source === "camera"
-            ? "L’accès à la caméra est nécessaire pour prendre une photo."
-            : "L’accès à la photothèque est nécessaire pour joindre une photo.",
-        );
+        const message =
+          "L'accès à la caméra est refusé. Vous pouvez envoyer le SOS sans photo ou appeler directement les secours.";
+        setMediaError(message);
+        Alert.alert("Caméra indisponible", message, [
+          { text: "Continuer sans photo", style: "cancel" },
+          {
+            text: "Appeler les secours",
+            onPress: () => void openEmergencyCall(),
+          },
+        ]);
+        return;
       }
-      const selection =
-        source === "camera"
-          ? await ImagePicker.launchCameraAsync({
-              mediaTypes: ["images"],
-              allowsEditing: false,
-              quality: 0.8,
-            })
-          : await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ["images"],
-              allowsEditing: false,
-              quality: 0.8,
-            });
+      const selection = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        allowsEditing: false,
+        quality: 1,
+      });
       if (selection.canceled) return;
       const asset = selection.assets[0];
-      if (!asset?.uri) throw new Error("La photo sélectionnée est indisponible.");
-      setEmergencyPhoto({
-        uri: asset.uri,
-        filename: asset.fileName ?? `sos-${Date.now()}.jpg`,
-        mimeType: asset.mimeType ?? "image/jpeg",
+      if (!asset?.uri) throw new Error("La photo capturée est indisponible.");
+      const resizeAction =
+        asset.width > 1600 || asset.height > 1600
+          ? [
+              asset.width >= asset.height
+                ? { resize: { width: 1600 } }
+                : { resize: { height: 1600 } },
+            ]
+          : [];
+      const compressed = await manipulateAsync(asset.uri, resizeAction, {
+        compress: 0.72,
+        format: SaveFormat.JPEG,
+      });
+      setPendingEmergencyPhoto({
+        uri: compressed.uri,
+        filename: `sos-${Date.now()}.jpg`,
+        mimeType: "image/jpeg",
       });
       setMediaError(null);
     } catch (error) {
       const message = errorMessage(error);
       setMediaError(message);
-      Alert.alert("Photo indisponible", message);
+      Alert.alert(
+        "Photo indisponible",
+        `${message} Vous pouvez toujours envoyer le SOS sans photo ou appeler directement les secours.`,
+        [
+          { text: "Continuer sans photo", style: "cancel" },
+          {
+            text: "Appeler les secours",
+            onPress: () => void openEmergencyCall(),
+          },
+        ],
+      );
     }
   };
 
@@ -311,6 +320,7 @@ export default function SosButton({
         await sendOfflineSms(coordinates);
         setIsOpen(false);
         setEmergencyPhoto(null);
+        setPendingEmergencyPhoto(null);
         setEmergencyAudioUri(null);
         return;
       }
@@ -330,9 +340,12 @@ export default function SosButton({
             emergencyPhoto.filename,
             emergencyPhoto.mimeType,
             "image",
+            (progress) => setUploadProgress(progress),
           );
         } catch (error) {
           mediaWarnings.push(errorMessage(error));
+        } finally {
+          setUploadProgress(null);
         }
       }
       if (emergencyAudioUri) {
@@ -391,6 +404,7 @@ export default function SosButton({
       }
       setIsOpen(false);
       setEmergencyPhoto(null);
+      setPendingEmergencyPhoto(null);
       setEmergencyAudioUri(null);
       if (alertId) {
         setTrackingAlert({
@@ -428,6 +442,7 @@ export default function SosButton({
     onAlert,
     sendOfflineSms,
     socket,
+    setUploadProgress,
   ]);
 
   useEffect(() => {
@@ -590,6 +605,7 @@ export default function SosButton({
     setCountdown(null);
     setIsOpen(false);
     setEmergencyPhoto(null);
+    setPendingEmergencyPhoto(null);
     setEmergencyAudioUri(null);
     setMediaError(null);
   };
@@ -712,15 +728,54 @@ export default function SosButton({
                   })}
                 </View>
                 <Text style={styles.sectionLabel}>Média facultatif</Text>
+                {pendingEmergencyPhoto || emergencyPhoto ? (
+                  <View style={styles.photoPreview}>
+                    <Image
+                      accessibilityLabel="Aperçu de la photo capturée pour le SOS"
+                      source={{ uri: (pendingEmergencyPhoto ?? emergencyPhoto)?.uri }}
+                      style={styles.photoPreviewImage}
+                    />
+                    {pendingEmergencyPhoto ? (
+                      <View style={styles.photoActions}>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => setPendingEmergencyPhoto(null)}
+                          style={styles.photoSecondaryAction}
+                        >
+                          <Text style={styles.photoSecondaryActionText}>Reprendre</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => {
+                            setEmergencyPhoto(pendingEmergencyPhoto);
+                            setPendingEmergencyPhoto(null);
+                            setMediaError(null);
+                          }}
+                          style={styles.photoConfirmAction}
+                        >
+                          <Text style={styles.photoConfirmActionText}>
+                            Confirmer la photo
+                          </Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <Text style={styles.mediaStatus}>
+                        Photo confirmée et prête à être jointe
+                      </Text>
+                    )}
+                  </View>
+                ) : null}
                 <View style={styles.mediaActions}>
                   <Pressable
                     accessibilityRole="button"
-                    onPress={chooseEmergencyPhoto}
+                    onPress={() => void captureEmergencyPhoto()}
                     style={styles.mediaButton}
                   >
                     <Camera color="#1d4ed8" size={17} />
                     <Text style={styles.mediaButtonText}>
-                      {emergencyPhoto ? "Changer la photo" : "Ajouter une photo"}
+                      {emergencyPhoto || pendingEmergencyPhoto
+                        ? "Refaire la photo"
+                        : "Prendre une photo"}
                     </Text>
                   </Pressable>
                   <Pressable
@@ -800,8 +855,24 @@ export default function SosButton({
                   <>
                     <ActivityIndicator color="#dc2626" size="large" />
                     <Text style={styles.countdownDescription}>
-                      Transmission de votre alerte...
+                      {uploadProgress === null
+                        ? "Transmission de votre alerte..."
+                        : `Envoi de la photo : ${uploadProgress} %`}
                     </Text>
+                    {uploadProgress !== null ? (
+                      <View
+                        accessibilityLabel={`Envoi de la photo, ${uploadProgress} %`}
+                        accessibilityRole="progressbar"
+                        style={styles.progressTrack}
+                      >
+                        <View
+                          style={[
+                            styles.progressFill,
+                            { width: `${uploadProgress}%` },
+                          ]}
+                        />
+                      </View>
+                    ) : null}
                   </>
                 ) : (
                   <>
@@ -933,8 +1004,17 @@ const styles = StyleSheet.create({
   mediaActions: { flexDirection: "row", gap: 8 },
   mediaButton: { alignItems: "center", backgroundColor: "#eff6ff", borderRadius: 10, flex: 1, flexDirection: "row", gap: 6, justifyContent: "center", minHeight: 44, paddingHorizontal: 6 },
   mediaButtonText: { color: "#1e3a8a", fontSize: 11, fontWeight: "700", textAlign: "center" },
+  photoPreview: { marginBottom: 10 },
+  photoPreviewImage: { backgroundColor: "#0f172a", borderRadius: 12, height: 180, width: "100%" },
+  photoActions: { flexDirection: "row", gap: 8, marginTop: 8 },
+  photoSecondaryAction: { alignItems: "center", borderColor: "#94a3b8", borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 42 },
+  photoSecondaryActionText: { color: "#334155", fontSize: 13, fontWeight: "700" },
+  photoConfirmAction: { alignItems: "center", backgroundColor: "#15803d", borderRadius: 10, flex: 1, justifyContent: "center", minHeight: 42 },
+  photoConfirmActionText: { color: "#ffffff", fontSize: 13, fontWeight: "700" },
   mediaStatus: { color: "#15803d", fontSize: 12, marginTop: 6 },
   mediaError: { color: "#b91c1c", fontSize: 12, lineHeight: 17, marginTop: 8 },
+  progressTrack: { backgroundColor: "#fee2e2", borderRadius: 5, height: 8, marginBottom: 20, overflow: "hidden", width: "100%" },
+  progressFill: { backgroundColor: "#dc2626", height: "100%" },
   trigger: { alignItems: "center", backgroundColor: "#dc2626", borderRadius: 12, flexDirection: "row", gap: 8, justifyContent: "center", marginTop: 24, minHeight: 52, paddingHorizontal: 12 },
   triggerText: { color: "#ffffff", fontSize: 15, fontWeight: "800" },
   disabled: { opacity: 0.5 },

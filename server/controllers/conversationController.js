@@ -126,7 +126,7 @@ export const createPrivateMessage = async (request, response, next) => {
   if (
     content.length > 5000 ||
     (!content && !hasMedia) ||
-    (hasMedia && (!mediaUrl || !mediaPublicId || !["image", "video"].includes(mediaType)))
+    (hasMedia && (!mediaUrl || !mediaPublicId || !["image", "video", "audio"].includes(mediaType)))
   ) {
     return response.status(400).json({ error: "Contenu du message invalide." });
   }

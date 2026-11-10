@@ -3,6 +3,15 @@ import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import { File } from "expo-file-system";
+import {
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioPlayer,
+  useAudioPlayerStatus,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from "expo-audio";
 import { VideoView, useVideoPlayer } from "expo-video";
 import {
   AlertTriangle,
@@ -14,6 +23,8 @@ import {
   Megaphone,
   MessageSquare,
   Mic,
+  Pause,
+  Play,
   Radio,
   RefreshCw,
   Send,
@@ -64,6 +75,7 @@ type GeographicScope =
   | "country"
   | "international";
 type InformationCategory = "COMMUNITY" | "OFFICIAL" | "SOS" | "EMERGENCY_CHAT";
+type MessageMediaType = CloudinaryMediaType | "audio";
 type Channel = {
   id: ChannelId;
   label: string;
@@ -90,7 +102,7 @@ type ChatMessage = {
   createdAt: string;
   isOwnMessage: boolean;
   imageUrl?: string;
-  mediaType?: CloudinaryMediaType;
+  mediaType?: MessageMediaType;
   informationType: "COMMUNITY" | "OFFICIAL";
   institutionName?: string | null;
   institutionId?: string | null;
@@ -115,7 +127,7 @@ type SosAlert = {
 type UploadedMessageMedia = {
   publicId: string;
   secureUrl: string;
-  mediaType: CloudinaryMediaType;
+  mediaType: MessageMediaType;
 };
 type PrivateConversation = {
   id: string;
@@ -174,6 +186,11 @@ const REPORT_REASONS = [
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const formatAudioTime = (seconds: number) => {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  return `${Math.floor(safeSeconds / 60)}:${String(safeSeconds % 60).padStart(2, "0")}`;
+};
 
 const normalizeChannel = (value: unknown): Channel | null => {
   if (!isRecord(value)) return null;
@@ -276,7 +293,14 @@ const normalizeMessage = (
         : typeof value.imageUrl === "string"
           ? value.imageUrl
           : undefined,
-    mediaType: value.media_type === "video" ? "video" : value.media_url || value.image_url ? "image" : undefined,
+    mediaType:
+      value.media_type === "audio"
+        ? "audio"
+        : value.media_type === "video"
+          ? "video"
+          : value.media_url || value.image_url
+            ? "image"
+            : undefined,
     informationType:
       value.information_type === "OFFICIAL" ? "OFFICIAL" : "COMMUNITY",
     institutionName:
@@ -292,6 +316,280 @@ function PrivateMessageVideo({ uri }: { uri: string }) {
   });
   return <VideoView contentFit="contain" nativeControls player={player} style={styles.messagePhoto} />;
 }
+
+function AudioMessagePlayer({ uri }: { uri: string }) {
+  const player = useAudioPlayer(uri, { updateInterval: 150 });
+  const status = useAudioPlayerStatus(player);
+  const duration = status.duration || 0;
+  const progress = duration > 0 ? status.currentTime / duration : 0;
+  return (
+    <View style={styles.audioMessagePlayer}>
+      <Pressable
+        accessibilityLabel={status.playing ? "Mettre le vocal en pause" : "Lire le message vocal"}
+        accessibilityRole="button"
+        onPress={() => {
+          if (status.playing) player.pause();
+          else {
+            if (status.didJustFinish) void player.seekTo(0);
+            player.play();
+          }
+        }}
+        style={styles.audioPlayButton}
+      >
+        {status.playing ? <Pause color="#ffffff" size={17} /> : <Play color="#ffffff" size={17} />}
+      </Pressable>
+      <View style={styles.audioWaveform}>
+        {Array.from({ length: 28 }, (_, index) => {
+          const height = 6 + ((index * 13) % 17);
+          return (
+            <View
+              key={index}
+              style={[
+                styles.audioWaveformBar,
+                { height, backgroundColor: index / 28 <= progress ? "#16856b" : "#a9c5bb" },
+              ]}
+            />
+          );
+        })}
+      </View>
+      <Text style={styles.audioDuration}>{formatAudioTime(status.currentTime || duration)}</Text>
+    </View>
+  );
+}
+
+function VoiceRecorderModal({
+  visible,
+  uploadProgress,
+  onClose,
+  onSend,
+}: {
+  visible: boolean;
+  uploadProgress: number | null;
+  onClose: () => void;
+  onSend: (uri: string, durationSeconds: number) => Promise<boolean>;
+}) {
+  const recorder = useAudioRecorder({
+    ...RecordingPresets.HIGH_QUALITY,
+    extension: ".m4a",
+    numberOfChannels: 1,
+    bitRate: 64_000,
+    isMeteringEnabled: true,
+  });
+  const recorderState = useAudioRecorderState(recorder, 100);
+  const [phase, setPhase] = useState<"idle" | "recording" | "paused" | "preview" | "uploading">("idle");
+  const [recordingUri, setRecordingUri] = useState<string | null>(null);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const isFinalizingRef = useRef(false);
+  const player = useAudioPlayer(recordingUri, { updateInterval: 150 });
+  const playerStatus = useAudioPlayerStatus(player);
+  const isRecording = phase === "recording" || phase === "paused";
+  const elapsedSeconds = isRecording
+    ? recorderState.durationMillis / 1000
+    : durationSeconds;
+  const meter = typeof recorderState.metering === "number"
+    ? Math.max(0, Math.min(1, (recorderState.metering + 60) / 60))
+    : 0.12;
+
+  const stopRecording = async () => {
+    if (isFinalizingRef.current) return;
+    isFinalizingRef.current = true;
+    try {
+      await recorder.stop();
+      const uri = recorder.uri;
+      if (!uri) throw new Error("Le fichier enregistré est introuvable.");
+      const duration = Math.max(1, Math.ceil(recorder.currentTime || recorderState.durationMillis / 1000));
+      setRecordingUri(uri);
+      setDurationSeconds(duration);
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      setPhase("preview");
+    } catch (error) {
+      Alert.alert("Enregistrement interrompu", error instanceof Error ? error.message : "Le vocal n’a pas pu être finalisé.");
+      setPhase("idle");
+    } finally {
+      isFinalizingRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    if (phase === "recording" && recorderState.durationMillis >= 420_000) {
+      void stopRecording();
+    }
+  }, [phase, recorderState.durationMillis]);
+
+  const clearRecording = async () => {
+    player.pause();
+    const fileUri = recordingUri ?? recorder.uri;
+    if (fileUri) {
+      try {
+        new File(fileUri).delete();
+      } catch {
+        setRecordingUri(null);
+      }
+    }
+    setRecordingUri(null);
+    setDurationSeconds(0);
+    setPhase("idle");
+    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+  };
+
+  const closeRecorder = async () => {
+    if (phase === "uploading") return;
+    if (phase === "recording" || phase === "paused") {
+      await recorder.stop().catch(() => undefined);
+    }
+    await clearRecording();
+    onClose();
+  };
+
+  const startRecording = async () => {
+    try {
+      const permission = await requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error("Autorisez l’accès au microphone dans les réglages pour enregistrer un vocal.");
+      }
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setPhase("recording");
+    } catch (error) {
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => undefined);
+      Alert.alert("Microphone indisponible", error instanceof Error ? error.message : "Impossible de démarrer l’enregistrement.");
+    }
+  };
+
+  const sendRecording = async () => {
+    if (!recordingUri) return;
+    setPhase("uploading");
+    const sent = await onSend(recordingUri, durationSeconds);
+    if (!sent) {
+      setPhase("preview");
+      return;
+    }
+    await clearRecording();
+    onClose();
+  };
+
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={() => void closeRecorder()}
+      transparent
+      visible={visible}
+    >
+      <View style={styles.voiceBackdrop}>
+        <View style={styles.voicePanel}>
+          <View style={styles.voiceHeader}>
+            <View>
+              <Text style={styles.voiceEyebrow}>VOIX DU QUARTIER</Text>
+              <Text style={styles.voiceTitle}>Message vocal</Text>
+            </View>
+            <Pressable
+              accessibilityLabel="Fermer l’enregistreur"
+              accessibilityRole="button"
+              disabled={phase === "uploading"}
+              onPress={() => void closeRecorder()}
+              style={styles.closeButton}
+            >
+              <X color="#64748b" size={20} />
+            </Pressable>
+          </View>
+          <View style={styles.voiceWaveformBox}>
+            <View style={styles.audioWaveform} accessibilityLabel="Niveau audio en temps réel">
+              {Array.from({ length: 32 }, (_, index) => {
+                const variation = 0.35 + ((index * 7) % 13) / 20;
+                const height = 5 + meter * variation * 34;
+                const played = phase === "recording" || phase === "paused" || (playerStatus.duration > 0 && index / 32 <= playerStatus.currentTime / playerStatus.duration);
+                return (
+                  <View
+                    key={index}
+                    style={[
+                      styles.audioWaveformBar,
+                      styles.voiceWaveBar,
+                      { height, backgroundColor: played ? "#16856b" : "#c8d8d1" },
+                    ]}
+                  />
+                );
+              })}
+            </View>
+            <Text style={styles.voiceTimer}>{formatAudioTime(elapsedSeconds)}</Text>
+            <Text style={styles.voiceStatus}>
+              {phase === "recording" ? "Enregistrement en cours" : phase === "paused" ? "Enregistrement en pause" : phase === "preview" ? "Écoute avant envoi" : phase === "uploading" ? "Envoi du vocal…" : "Votre voix, à votre rythme"}
+            </Text>
+          </View>
+          {phase === "idle" && (
+            <Pressable accessibilityRole="button" onPress={() => void startRecording()} style={styles.voicePrimaryButton}>
+              <Mic color="#ffffff" size={18} />
+              <Text style={styles.voicePrimaryText}>Commencer l’enregistrement</Text>
+            </Pressable>
+          )}
+          {phase === "recording" && (
+            <View style={styles.voiceActions}>
+              <Pressable accessibilityRole="button" onPress={() => { recorder.pause(); setPhase("paused"); }} style={styles.voiceSecondaryButton}>
+                <Pause color="#35564a" size={17} />
+                <Text style={styles.voiceSecondaryText}>Pause</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => void stopRecording()} style={styles.voicePrimaryButton}>
+                <Text style={styles.voicePrimaryText}>Terminer</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => void closeRecorder()} style={styles.voiceCancelButton}>
+                <Text style={styles.voiceCancelText}>Annuler</Text>
+              </Pressable>
+            </View>
+          )}
+          {phase === "paused" && (
+            <View style={styles.voiceActions}>
+              <Pressable accessibilityRole="button" onPress={() => { recorder.record(); setPhase("recording"); }} style={styles.voicePrimaryButton}>
+                <Play color="#ffffff" size={17} />
+                <Text style={styles.voicePrimaryText}>Reprendre</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => void stopRecording()} style={styles.voiceSecondaryButton}>
+                <Text style={styles.voiceSecondaryText}>Écouter</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => void closeRecorder()} style={styles.voiceCancelButton}>
+                <Text style={styles.voiceCancelText}>Annuler</Text>
+              </Pressable>
+            </View>
+          )}
+          {phase === "preview" && (
+            <View style={styles.voiceActions}>
+              <Pressable accessibilityRole="button" onPress={() => statusPlayPause(player, playerStatus)} style={styles.voiceSecondaryButton}>
+                {playerStatus.playing ? <Pause color="#35564a" size={17} /> : <Play color="#35564a" size={17} />}
+                <Text style={styles.voiceSecondaryText}>{playerStatus.playing ? "Pause" : "Écouter"}</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => void clearRecording()} style={styles.voiceCancelButton}>
+                <Text style={styles.voiceCancelText}>Recommencer</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={() => void sendRecording()} style={styles.voicePrimaryButton}>
+                <Send color="#ffffff" size={16} />
+                <Text style={styles.voicePrimaryText}>Envoyer</Text>
+              </Pressable>
+            </View>
+          )}
+          {phase === "uploading" && (
+            <View style={styles.voiceUploading}>
+              <ActivityIndicator color="#16856b" />
+              <View style={styles.voiceUploadTrack}>
+                <View style={[styles.voiceUploadBar, { width: `${uploadProgress ?? 0}%` }]} />
+              </View>
+              <Text style={styles.voiceStatus}>{uploadProgress ?? 0}% · Original conservé</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const statusPlayPause = (
+  player: ReturnType<typeof useAudioPlayer>,
+  status: ReturnType<typeof useAudioPlayerStatus>,
+) => {
+  if (status.playing) player.pause();
+  else {
+    if (status.didJustFinish) void player.seekTo(0);
+    player.play();
+  }
+};
 
 const normalizeConversation = (value: unknown): PrivateConversation | null => {
   if (!isRecord(value)) return null;
@@ -403,6 +701,7 @@ export default function MessagesScreen() {
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [draftMessage, setDraftMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isVoiceRecorderVisible, setIsVoiceRecorderVisible] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [isCompressingMedia, setIsCompressingMedia] = useState(false);
   const [mediaUploadProgress, setMediaUploadProgress] = useState<number | null>(null);
@@ -1409,13 +1708,13 @@ export default function MessagesScreen() {
     });
   };
 
-  const sendMessage = async (media?: UploadedMessageMedia) => {
+  const sendMessage = async (media?: UploadedMessageMedia): Promise<boolean> => {
     const text = draftMessage.trim();
     const isOfficialPublication =
       activeTab === "Canaux" && informationCategory === "OFFICIAL";
     if (!text && !media) {
       Alert.alert("Message vide", "Saisissez un message ou joignez une photo.");
-      return;
+      return false;
     }
     if (
       isOfficialPublication &&
@@ -1427,18 +1726,18 @@ export default function MessagesScreen() {
         "Publication officielle indisponible",
         "Sélectionnez une institution vérifiée et autorisée pour ce canal.",
       );
-      return;
+      return false;
     }
     if (!user?.id || !token) {
       requestAuthentication();
-      return;
+      return false;
     }
     if (!API_BASE_URL) {
       Alert.alert(
         "Envoi indisponible",
         "L'adresse du serveur n'est pas configurée (EXPO_PUBLIC_API_URL).",
       );
-      return;
+      return false;
     }
     setIsSending(true);
     try {
@@ -1491,7 +1790,7 @@ export default function MessagesScreen() {
             conversation.id === selectedConversation.id
               ? {
                   ...conversation,
-                  lastMessage: text || (media?.mediaType === "video" ? "Vidéo" : "Photo"),
+                  lastMessage: text || (media?.mediaType === "audio" ? "Message vocal" : media?.mediaType === "video" ? "Vidéo" : "Photo"),
                   updatedAt: message.createdAt,
                 }
               : conversation,
@@ -1499,13 +1798,73 @@ export default function MessagesScreen() {
         );
       }
       setDraftMessage("");
+      return true;
     } catch (error) {
       Alert.alert(
         "Envoi impossible",
         error instanceof Error ? error.message : "Une erreur est survenue.",
       );
+      return false;
     } finally {
       setIsSending(false);
+    }
+  };
+
+  const sendVoiceMessage = async (uri: string, durationSeconds: number) => {
+    if (!API_BASE_URL) {
+      Alert.alert("Envoi indisponible", "L'adresse du serveur n'est pas configurée.");
+      return false;
+    }
+    setIsUploadingMedia(true);
+    setMediaUploadProgress(0);
+    try {
+      const size = new File(uri).size;
+      const signatureResponse = await apiFetch(`${API_BASE_URL}/v1/posts/media/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ media_type: "video" }),
+      });
+      if (!signatureResponse.ok) {
+        throw new Error(`Préparation du vocal refusée (HTTP ${signatureResponse.status}).`);
+      }
+      const signaturePayload: unknown = await signatureResponse.json();
+      if (
+        !isRecord(signaturePayload) ||
+        typeof signaturePayload.apiKey !== "string" ||
+        typeof signaturePayload.cloudName !== "string" ||
+        typeof signaturePayload.folder !== "string" ||
+        typeof signaturePayload.public_id !== "string" ||
+        typeof signaturePayload.signature !== "string" ||
+        typeof signaturePayload.timestamp !== "number" ||
+        typeof signaturePayload.max_bytes !== "number" ||
+        typeof signaturePayload.max_duration_seconds !== "number" ||
+        signaturePayload.resource_type !== "video"
+      ) {
+        throw new Error("La signature de téléversement audio est invalide.");
+      }
+      if (size > signaturePayload.max_bytes) {
+        throw new Error("Le message vocal dépasse la taille maximale autorisée.");
+      }
+      if (exceedsVideoDurationLimit(durationSeconds, signaturePayload.max_duration_seconds)) {
+        throw new Error(`Le message vocal doit durer au maximum ${signaturePayload.max_duration_seconds} secondes.`);
+      }
+      const upload = await uploadCloudinaryMedia(
+        signaturePayload as unknown as CloudinaryUploadSignature,
+        { uri, name: `vocal-${Date.now()}.m4a`, type: "audio/mp4", size },
+        { onProgress: setMediaUploadProgress },
+      );
+      if (!upload.secureUrl) throw new Error("Le stockage n’a pas confirmé le message vocal.");
+      return await sendMessage({
+        publicId: upload.publicId,
+        secureUrl: upload.secureUrl,
+        mediaType: "audio",
+      });
+    } catch (error) {
+      Alert.alert("Envoi du vocal impossible", error instanceof Error ? error.message : "Une erreur est survenue.");
+      return false;
+    } finally {
+      setIsUploadingMedia(false);
+      setMediaUploadProgress(null);
     }
   };
 
@@ -1889,11 +2248,7 @@ export default function MessagesScreen() {
               Canaux et informations selon votre position et vos abonnements
             </Text>
           </View>
-          <ScrollView
-            horizontal
-            contentContainerStyle={styles.scopeList}
-            showsHorizontalScrollIndicator={false}
-          >
+          <View style={styles.scopeList}>
             {GEOGRAPHIC_SCOPES.map((scope) => (
               <Pressable
                 accessibilityRole="tab"
@@ -1918,18 +2273,14 @@ export default function MessagesScreen() {
                 </Text>
               </Pressable>
             ))}
-          </ScrollView>
+          </View>
 
-          <ScrollView
-            horizontal
-            contentContainerStyle={styles.categoryList}
-            showsHorizontalScrollIndicator={false}
-          >
+          <View style={styles.categoryList}>
             {[
-              { id: "COMMUNITY" as const, label: "Communautaire" },
-              { id: "OFFICIAL" as const, label: "Institutionnel officiel" },
-              { id: "SOS" as const, label: "Alertes SOS" },
-              { id: "EMERGENCY_CHAT" as const, label: "Talkie-walkie" },
+              { id: "COMMUNITY" as const, label: "Communautaire", icon: MessageSquare, color: "#16856b" },
+              { id: "OFFICIAL" as const, label: "Institutionnel officiel", icon: Building2, color: "#a16207" },
+              { id: "SOS" as const, label: "Alertes SOS", icon: ShieldAlert, color: "#dc2626" },
+              { id: "EMERGENCY_CHAT" as const, label: "Talkie-walkie", icon: Radio, color: "#2563eb" },
             ].map((category) => (
               <Pressable
                 accessibilityRole="tab"
@@ -1960,6 +2311,7 @@ export default function MessagesScreen() {
                     styles.categoryButtonSelected,
                 ]}
               >
+                <category.icon color={category.color} size={15} />
                 <Text
                   style={[
                     styles.categoryButtonText,
@@ -1971,7 +2323,7 @@ export default function MessagesScreen() {
                 </Text>
               </Pressable>
             ))}
-          </ScrollView>
+          </View>
 
           {informationCategory !== "SOS" && (
             <>
@@ -1981,11 +2333,7 @@ export default function MessagesScreen() {
                 </Text>
               )}
               {visibleChannels.length > 0 ? (
-                <ScrollView
-                  horizontal
-                  contentContainerStyle={styles.channelList}
-                  showsHorizontalScrollIndicator={false}
-                >
+                <View style={styles.channelList}>
                   {visibleChannels.map((channel) => {
                     const Icon = channel.icon;
                     const isSelected = selectedChannelId === channel.id;
@@ -2016,7 +2364,7 @@ export default function MessagesScreen() {
                       </Pressable>
                     );
                   })}
-                </ScrollView>
+                </View>
               ) : (
                 <Text style={styles.emptyText}>
                   Aucun canal configuré dans cette portée. Recherchez une autre zone ci-dessous.
@@ -2463,7 +2811,9 @@ export default function MessagesScreen() {
                     </Text>
                   </View>
                 )}
-              {message.imageUrl && message.mediaType === "video" ? (
+              {message.imageUrl && message.mediaType === "audio" ? (
+                <AudioMessagePlayer uri={message.imageUrl} />
+              ) : message.imageUrl && message.mediaType === "video" ? (
                 <PrivateMessageVideo uri={message.imageUrl} />
               ) : message.imageUrl ? (
                 <Image
@@ -2508,6 +2858,17 @@ export default function MessagesScreen() {
         >
           <ImagePlus color="#475569" size={20} />
         </Pressable>
+        {selectedConversation && (
+          <Pressable
+            accessibilityLabel="Enregistrer un message vocal"
+            accessibilityRole="button"
+            disabled={isSending || isUploadingMedia}
+            onPress={() => setIsVoiceRecorderVisible(true)}
+            style={styles.attachButton}
+          >
+            <Mic color="#16856b" size={19} />
+          </Pressable>
+        )}
         {mediaUploadProgress !== null ? (
           <Text accessibilityRole="text" style={styles.mediaUploadProgress}>
             {isCompressingMedia
@@ -2807,6 +3168,13 @@ export default function MessagesScreen() {
         </View>
       </Modal>
 
+      <VoiceRecorderModal
+        visible={isVoiceRecorderVisible}
+        uploadProgress={mediaUploadProgress}
+        onClose={() => setIsVoiceRecorderVisible(false)}
+        onSend={sendVoiceMessage}
+      />
+
       <Modal
         animationType="fade"
         onRequestClose={closePtt}
@@ -2953,6 +3321,8 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   scopeList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -2965,6 +3335,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     minHeight: 34,
     paddingHorizontal: 12,
+    width: "31%",
   },
   scopeButtonSelected: {
     backgroundColor: "#dbeafe",
@@ -2979,6 +3350,8 @@ const styles = StyleSheet.create({
     color: "#1d4ed8",
   },
   categoryList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     paddingHorizontal: 20,
     paddingTop: 8,
@@ -2988,13 +3361,17 @@ const styles = StyleSheet.create({
     borderColor: "#e2e8f0",
     borderRadius: 9,
     borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
     justifyContent: "center",
-    minHeight: 34,
+    minHeight: 42,
     paddingHorizontal: 11,
+    width: "48%",
   },
   categoryButtonSelected: {
-    backgroundColor: "#f1f5f9",
-    borderColor: "#94a3b8",
+    backgroundColor: "#eff6ff",
+    borderColor: "#93c5fd",
   },
   categoryButtonText: {
     color: "#64748b",
@@ -3007,6 +3384,7 @@ const styles = StyleSheet.create({
   channelList: {
     alignItems: "center",
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 9,
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -3024,6 +3402,7 @@ const styles = StyleSheet.create({
     maxWidth: 220,
     minWidth: 125,
     paddingHorizontal: 10,
+    flexGrow: 1,
   },
   channelButtonSelected: {
     backgroundColor: "#eff6ff",
@@ -3505,6 +3884,167 @@ const styles = StyleSheet.create({
     height: 180,
     marginBottom: 5,
     width: 220,
+  },
+  audioMessagePlayer: {
+    alignItems: "center",
+    backgroundColor: "#edf5f1",
+    borderRadius: 11,
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 4,
+    minWidth: 230,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+  },
+  audioPlayButton: {
+    alignItems: "center",
+    backgroundColor: "#16856b",
+    borderRadius: 18,
+    height: 36,
+    justifyContent: "center",
+    width: 36,
+  },
+  audioWaveform: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row",
+    gap: 2,
+    height: 30,
+    justifyContent: "center",
+  },
+  audioWaveformBar: {
+    borderRadius: 2,
+    width: 3,
+  },
+  audioDuration: {
+    color: "#35564a",
+    fontSize: 10,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "700",
+  },
+  voiceBackdrop: {
+    alignItems: "center",
+    backgroundColor: "rgba(15, 23, 42, 0.48)",
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  voicePanel: {
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    gap: 18,
+    maxWidth: 480,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    width: "100%",
+  },
+  voiceHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  voiceEyebrow: {
+    color: "#16856b",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  voiceTitle: {
+    color: "#173f36",
+    fontSize: 22,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  voiceWaveformBox: {
+    alignItems: "center",
+    backgroundColor: "#f1f7f4",
+    borderRadius: 14,
+    gap: 10,
+    minHeight: 140,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 18,
+  },
+  voiceWaveBar: {
+    width: 4,
+  },
+  voiceTimer: {
+    color: "#173f36",
+    fontSize: 30,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "800",
+  },
+  voiceStatus: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  voiceActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  voicePrimaryButton: {
+    alignItems: "center",
+    backgroundColor: "#16856b",
+    borderRadius: 10,
+    flex: 1,
+    flexDirection: "row",
+    gap: 7,
+    justifyContent: "center",
+    minHeight: 46,
+    paddingHorizontal: 10,
+  },
+  voicePrimaryText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  voiceSecondaryButton: {
+    alignItems: "center",
+    backgroundColor: "#edf5f1",
+    borderRadius: 10,
+    flex: 1,
+    flexDirection: "row",
+    gap: 6,
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: 9,
+  },
+  voiceSecondaryText: {
+    color: "#35564a",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  voiceCancelButton: {
+    alignItems: "center",
+    borderColor: "#dbe3ee",
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: 8,
+  },
+  voiceCancelText: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  voiceUploading: {
+    alignItems: "center",
+    gap: 10,
+  },
+  voiceUploadTrack: {
+    backgroundColor: "#dce9e3",
+    borderRadius: 4,
+    height: 7,
+    overflow: "hidden",
+    width: "100%",
+  },
+  voiceUploadBar: {
+    backgroundColor: "#16856b",
+    height: "100%",
   },
   messageTime: {
     alignSelf: "flex-end",

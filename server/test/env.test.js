@@ -15,6 +15,7 @@ const productionEnv = {
   SMS_DELIVERY_URL: "https://sms.example.invalid/send",
   SMS_DELIVERY_TOKEN: "fake-sms-token",
   GOOGLE_CLIENT_ID: "fake-google-client-id",
+  ADMIN_EMAIL: "verified-admin@example.com",
   LIVEKIT_API_KEY: "APITestUnitKey12345",
   LIVEKIT_API_SECRET:
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -53,6 +54,12 @@ test("administrator email is normalized and validated", () => {
   const malformed = loadProductionConfig({ ADMIN_EMAIL: "not-an-email" });
   assert.notEqual(malformed.status, 0);
   assert.match(malformed.stderr, /ADMIN_EMAIL/);
+});
+
+test("production environment requires an explicitly configured admin email", () => {
+  const missing = loadProductionConfig({ ADMIN_EMAIL: "" });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /ADMIN_EMAIL is required in production/);
 });
 
 test("live Grin moderation requires a strong webhook secret when enabled", () => {

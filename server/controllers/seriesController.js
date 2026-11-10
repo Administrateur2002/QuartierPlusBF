@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
+import { createCloudinaryUploadSignature } from "../services/cloudinary.js";
 
 const isUuid = (value) =>
   typeof value === "string" &&
@@ -78,6 +81,43 @@ export const listMySeries = async (request, response, next) => {
   }
 };
 
+export const signSeriesMediaUpload = async (request, response, next) => {
+  const seriesId = request.params.seriesId;
+  const mediaType = request.body?.media_type;
+  if (!isUuid(seriesId) || !["image", "video"].includes(mediaType)) {
+    return response.status(400).json({ error: "Type de média ou série invalide." });
+  }
+  try {
+    const series = await pool.query(
+      `SELECT id FROM series
+       WHERE id = $1 AND creator_id = $2 AND status <> 'ARCHIVED'`,
+      [seriesId, request.auth.userId],
+    );
+    if (!series.rowCount) {
+      return response.status(404).json({ error: "Série introuvable ou accès refusé." });
+    }
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = `quartierplus/series/${seriesId}`;
+    const publicId = `${request.auth.userId}_${randomUUID()}`;
+    const signature = createCloudinaryUploadSignature({
+      folder,
+      public_id: publicId,
+      timestamp,
+    });
+    return response.status(200).json({
+      ...signature,
+      folder,
+      public_id: publicId,
+      resource_type: mediaType,
+      timestamp,
+      max_bytes: mediaType === "image" ? env.postMaxPhotoBytes : env.postMaxVideoBytes,
+      max_duration_seconds: mediaType === "video" ? env.postMaxVideoSeconds : null,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 export const getSeries = async (request, response, next) => {
   if (!isUuid(request.params.seriesId)) return response.status(400).json({ error: "Identifiant de série invalide." });
   try {
@@ -90,7 +130,8 @@ export const getSeries = async (request, response, next) => {
               e.subtitles, e.release_at, p.position_seconds, p.completed
        FROM series s
        LEFT JOIN series_seasons season ON season.series_id = s.id
-       LEFT JOIN series_episodes e ON e.season_id = season.id AND e.is_published = TRUE
+       LEFT JOIN series_episodes e ON e.season_id = season.id
+         AND (e.is_published = TRUE OR s.creator_id = $2)
        LEFT JOIN series_episode_progress p ON p.episode_id = e.id AND p.user_id = $2
        WHERE s.id = $1 AND (s.status = 'PUBLISHED' OR s.creator_id = $2)
        ORDER BY season.season_number, e.episode_number`,

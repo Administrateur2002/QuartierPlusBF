@@ -15,6 +15,16 @@ import {
 } from "react-native";
 import { useAuth, type AuthUser } from "../../context/AuthContext";
 import api from "../../services/api";
+import {
+  exchangeFirebaseSession,
+  firebaseAuthErrorMessage,
+  getFirebaseUser,
+  isStrongPassword,
+  registerWithEmailPassword,
+  resendEmailVerification,
+  resetPasswordForEmail,
+  signInWithEmailPassword,
+} from "../../services/firebaseAuth";
 import GoogleAuthScreen from "./GoogleAuthScreen";
 import LegalDocumentsModal from "../../components/LegalDocumentsModal";
 import {
@@ -26,6 +36,7 @@ import {
 import type { RootStackParamList } from "../../navigation/types";
 
 type AuthMode = "login" | "register";
+type AuthProvider = "phone" | "email";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -93,12 +104,18 @@ export default function PhoneAuthScreen() {
   const route = useRoute<RouteProp<RootStackParamList, "PhoneAuth">>();
   const { setSession, user } = useAuth();
   const [mode, setMode] = useState<AuthMode>(route.params?.mode ?? "login");
+  const [authProvider, setAuthProvider] = useState<AuthProvider>("phone");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
   const [manualCountryCode, setManualCountryCode] = useState<string | undefined>();
   const [email, setEmail] = useState("");
   const [identifier, setIdentifier] = useState("");
+  const [emailPassword, setEmailPassword] = useState({
+    email: "",
+    password: "",
+    confirmPassword: "",
+  });
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [ageConfirmed, setAgeConfirmed] = useState(false);
   const [legalDocumentsVisible, setLegalDocumentsVisible] = useState(false);
@@ -109,7 +126,11 @@ export default function PhoneAuthScreen() {
   const [secondsRemaining, setSecondsRemaining] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [offerRegistration, setOfferRegistration] = useState(false);
+  const [verificationPending, setVerificationPending] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const detectedPhone = useMemo(
     () => parseInternationalPhone(phone, manualCountryCode),
@@ -141,9 +162,7 @@ export default function PhoneAuthScreen() {
     return () => clearTimeout(timer);
   }, [secondsRemaining]);
 
-  const fullPhoneNumber = () => {
-    return formatPhoneNumberE164(phone, manualCountryCode);
-  };
+  const fullPhoneNumber = () => formatPhoneNumberE164(phone, manualCountryCode);
 
   const normalizedIdentifier = () => {
     const value = identifier.trim();
@@ -154,6 +173,8 @@ export default function PhoneAuthScreen() {
   const switchMode = (nextMode: AuthMode) => {
     setMode(nextMode);
     setError(null);
+    setSuccessMessage(null);
+    setVerificationPending(false);
     setOfferRegistration(false);
     setOtpRequested(false);
     setOtp("");
@@ -161,6 +182,8 @@ export default function PhoneAuthScreen() {
 
   const requestOtp = async () => {
     setError(null);
+    setSuccessMessage(null);
+    setVerificationPending(false);
     setOfferRegistration(false);
 
     let payload: Record<string, unknown>;
@@ -216,9 +239,7 @@ export default function PhoneAuthScreen() {
 
     setIsLoading(true);
     try {
-      const response = await requestWhileServerWakes<{
-        challenge_identifier?: string;
-      }>(
+      const response = await requestWhileServerWakes<{ challenge_identifier?: string }>(
         `/api/v1/auth/request-otp?channel=${otpChannel}`,
         payload,
       );
@@ -241,16 +262,17 @@ export default function PhoneAuthScreen() {
 
   const verifyOtp = async () => {
     setError(null);
+    setSuccessMessage(null);
     setIsLoading(true);
     try {
-      const response = await requestWhileServerWakes<{
-        token?: unknown;
-        user?: unknown;
-      }>("/api/v1/auth/verify-otp", {
-        identifier: otpIdentifier,
-        code: otp,
-        channel: otpChannel,
-      });
+      const response = await requestWhileServerWakes<{ token?: unknown; user?: unknown }>(
+        "/api/v1/auth/verify-otp",
+        {
+          identifier: otpIdentifier,
+          code: otp,
+          channel: otpChannel,
+        },
+      );
       const data = response.data;
       const user = data.user as AuthUser | undefined;
       if (typeof data.token !== "string" || !user || typeof user.id !== "string") {
@@ -282,7 +304,7 @@ export default function PhoneAuthScreen() {
         <Text style={styles.subtitle}>
           {mode === "register"
             ? "Rejoignez votre communauté en quelques étapes."
-            : "Connectez-vous avec votre téléphone ou votre adresse e-mail."}
+            : "Connectez-vous avec votre téléphone, votre e-mail ou Google."}
         </Text>
 
         <View style={styles.modeSwitch}>
@@ -308,306 +330,598 @@ export default function PhoneAuthScreen() {
           </Pressable>
         </View>
 
-        {mode === "register" ? (
-          <>
-            <Text style={styles.label}>Prénom(s)</Text>
-            <TextInput
-              accessibilityLabel="Prénom(s)"
-              autoCapitalize="words"
-              autoComplete="given-name"
-              onChangeText={setFirstName}
-              placeholder="Votre prénom"
-              placeholderTextColor="#94a3b8"
-              style={styles.textInput}
-              value={firstName}
-            />
-            <Text style={styles.label}>Nom</Text>
-            <TextInput
-              accessibilityLabel="Nom"
-              autoCapitalize="words"
-              autoComplete="family-name"
-              onChangeText={setLastName}
-              placeholder="Votre nom"
-              placeholderTextColor="#94a3b8"
-              style={styles.textInput}
-              value={lastName}
-            />
-
-            <Text style={styles.label}>Téléphone avec indicatif</Text>
-            <TextInput
-              accessibilityLabel="Téléphone avec indicatif"
-              autoComplete="tel"
-              keyboardType="phone-pad"
-              onChangeText={(value) => {
-                setPhone(value);
-                setManualCountryCode(undefined);
-              }}
-              placeholder="+226 56 11 95 67 ou 0022656119567"
-              placeholderTextColor="#94a3b8"
-              style={styles.textInput}
-              value={phone}
-            />
-            <Text style={styles.helper}>
-              {phone.trim() && !phone.trim().startsWith("+") && !phone.trim().startsWith("00")
-                ? "Saisissez l’indicatif, par exemple +226…"
-                : detectedPhone?.country || manuallySelectedCountry
-                  ? `${detectedPhone?.country?.name ?? manuallySelectedCountry?.name} détecté · ${detectedPhone?.e164 ?? fullPhoneNumber()}`
-                  : "Saisissez le numéro complet, avec son indicatif international."}
+        <View style={styles.modeSwitch}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: authProvider === "phone" }}
+            onPress={() => setAuthProvider("phone")}
+            style={[styles.modeButton, authProvider === "phone" && styles.modeButtonSelected]}
+          >
+            <Text style={[styles.modeText, authProvider === "phone" && styles.modeTextSelected]}>
+              Téléphone
             </Text>
-            {!detectedPhone?.country && ambiguousCountries.length > 1 && (
-              <View style={styles.countryList}>
-                {ambiguousCountries.map((country: PhoneCountry) => {
-                  const selected = manualCountryCode === country.code;
-                  return (
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: authProvider === "email" }}
+            onPress={() => setAuthProvider("email")}
+            style={[styles.modeButton, authProvider === "email" && styles.modeButtonSelected]}
+          >
+            <Text style={[styles.modeText, authProvider === "email" && styles.modeTextSelected]}>
+              E-mail
+            </Text>
+          </Pressable>
+        </View>
+
+        {authProvider === "phone" ? (
+          <>
+            {mode === "register" ? (
+              <>
+                <Text style={styles.label}>Prénom(s)</Text>
+                <TextInput
+                  accessibilityLabel="Prénom(s)"
+                  autoCapitalize="words"
+                  autoComplete="given-name"
+                  onChangeText={setFirstName}
+                  placeholder="Votre prénom"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.textInput}
+                  value={firstName}
+                />
+                <Text style={styles.label}>Nom</Text>
+                <TextInput
+                  accessibilityLabel="Nom"
+                  autoCapitalize="words"
+                  autoComplete="family-name"
+                  onChangeText={setLastName}
+                  placeholder="Votre nom"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.textInput}
+                  value={lastName}
+                />
+
+                <Text style={styles.label}>Téléphone avec indicatif</Text>
+                <TextInput
+                  accessibilityLabel="Téléphone avec indicatif"
+                  autoComplete="tel"
+                  keyboardType="phone-pad"
+                  onChangeText={(value) => {
+                    setPhone(value);
+                    setManualCountryCode(undefined);
+                  }}
+                  placeholder="+226 56 11 95 67 ou 0022656119567"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.textInput}
+                  value={phone}
+                />
+                <Text style={styles.helper}>
+                  {phone.trim() && !phone.trim().startsWith("+") && !phone.trim().startsWith("00")
+                    ? "Saisissez l’indicatif, par exemple +226…"
+                    : detectedPhone?.country || manuallySelectedCountry
+                      ? `${detectedPhone?.country?.name ?? manuallySelectedCountry?.name} détecté · ${detectedPhone?.e164 ?? fullPhoneNumber()}`
+                      : "Saisissez le numéro complet, avec son indicatif international."}
+                </Text>
+                {!detectedPhone?.country && ambiguousCountries.length > 1 && (
+                  <View style={styles.countryList}>
+                    {ambiguousCountries.map((country: PhoneCountry) => {
+                      const selected = manualCountryCode === country.code;
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{ selected }}
+                          key={country.code}
+                          onPress={() => setManualCountryCode(country.code)}
+                          style={[styles.countryOption, selected && styles.countryOptionSelected]}
+                        >
+                          <Text
+                            style={[
+                              styles.countryOptionText,
+                              selected && styles.countryOptionTextSelected,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {country.name}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+
+                <Text style={styles.label}>E-mail</Text>
+                <TextInput
+                  accessibilityLabel="Adresse e-mail"
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  keyboardType="email-address"
+                  onChangeText={setEmail}
+                  placeholder="vous@exemple.com"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.textInput}
+                  value={email}
+                />
+                <Text style={styles.label}>Recevoir le code par</Text>
+                <View style={styles.modeSwitch}>
+                  {(["sms", "email"] as const).map((channel) => (
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      key={country.code}
-                      onPress={() => setManualCountryCode(country.code)}
-                      style={[styles.countryOption, selected && styles.countryOptionSelected]}
+                      accessibilityState={{ selected: otpChannel === channel }}
+                      key={channel}
+                      onPress={() => setOtpChannel(channel)}
+                      style={[styles.modeButton, otpChannel === channel && styles.modeButtonSelected]}
                     >
                       <Text
-                        style={[
-                          styles.countryOptionText,
-                          selected && styles.countryOptionTextSelected,
-                        ]}
+                        style={[styles.modeText, otpChannel === channel && styles.modeTextSelected]}
                         numberOfLines={1}
                       >
-                        {country.name}
+                        {channel === "sms" ? "SMS" : "E-mail"}
                       </Text>
                     </Pressable>
-                  );
-                })}
-              </View>
+                  ))}
+                </View>
+
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: termsAccepted }}
+                  onPress={() => setTermsAccepted((accepted) => !accepted)}
+                  style={styles.consentRow}
+                >
+                  <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
+                    {termsAccepted && <Text style={styles.checkboxTick}>✓</Text>}
+                  </View>
+                  <Text style={styles.consentText}>
+                    J’accepte les conditions d’utilisation et la politique de confidentialité.
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setLegalDocumentsVisible(true)}
+                  style={styles.consentLink}
+                >
+                  <Text style={styles.consentLinkText}>Lire les documents légaux</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: ageConfirmed }}
+                  onPress={() => setAgeConfirmed((confirmed) => !confirmed)}
+                  style={styles.consentRow}
+                >
+                  <View style={[styles.checkbox, ageConfirmed && styles.checkboxChecked]}>
+                    {ageConfirmed && <Text style={styles.checkboxTick}>✓</Text>}
+                  </View>
+                  <Text style={styles.consentText}>
+                    Je confirme avoir au moins 16 ans.
+                  </Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={styles.label}>Téléphone avec indicatif ou e-mail</Text>
+                <TextInput
+                  accessibilityLabel="Téléphone avec indicatif ou adresse e-mail"
+                  autoCapitalize="none"
+                  autoComplete="username"
+                  keyboardType="email-address"
+                  onChangeText={(value) => {
+                    setIdentifier(value);
+                    setPhone(value);
+                    setManualCountryCode(undefined);
+                    setOfferRegistration(false);
+                  }}
+                  placeholder="+226 70 00 00 00 ou vous@exemple.com"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.textInput}
+                  value={identifier}
+                />
+                {identifier.trim() && !identifier.includes("@") && (
+                  <Text style={styles.helper}>
+                    {detectedPhone?.country || manuallySelectedCountry
+                      ? `${detectedPhone?.country?.name ?? manuallySelectedCountry?.name} détecté · ${detectedPhone?.e164 ?? fullPhoneNumber()}`
+                      : !identifier.trim().startsWith("+") && !identifier.trim().startsWith("00")
+                        ? "Saisissez l’indicatif, par exemple +226…"
+                        : "Saisissez un numéro international valide."}
+                  </Text>
+                )}
+                {!identifier.includes("@") && !detectedPhone?.country && ambiguousCountries.length > 1 && (
+                  <View style={styles.countryList}>
+                    {ambiguousCountries.map((country) => (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: manualCountryCode === country.code }}
+                        key={country.code}
+                        onPress={() => setManualCountryCode(country.code)}
+                        style={[
+                          styles.countryOption,
+                          manualCountryCode === country.code && styles.countryOptionSelected,
+                        ]}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.countryOptionText,
+                            manualCountryCode === country.code && styles.countryOptionTextSelected,
+                          ]}
+                        >
+                          {country.name}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </>
             )}
 
-            <Text style={styles.label}>E-mail</Text>
+            {mode === "login" && !otpRequested && (
+              <>
+                <Text style={styles.label}>Recevoir le code par</Text>
+                <View style={styles.modeSwitch}>
+                  {(["sms", "email"] as const).map((channel) => (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: otpChannel === channel }}
+                      key={channel}
+                      onPress={() => setOtpChannel(channel)}
+                      style={[styles.modeButton, otpChannel === channel && styles.modeButtonSelected]}
+                    >
+                      <Text
+                        style={[styles.modeText, otpChannel === channel && styles.modeTextSelected]}
+                        numberOfLines={1}
+                      >
+                        {channel === "sms" ? "SMS" : "E-mail"}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </>
+            )}
+
+            {otpRequested && (
+              <>
+                <Text style={styles.label}>Code de vérification</Text>
+                <Text style={styles.helper}>
+                  Un code à six chiffres a été envoyé par {otpChannel === "sms" ? "SMS" : "e-mail"}.
+                </Text>
+                <TextInput
+                  accessibilityLabel="Code OTP à six chiffres"
+                  autoComplete="one-time-code"
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  onChangeText={(value) => setOtp(value.replace(/\D/g, ""))}
+                  placeholder="••••••"
+                  placeholderTextColor="#94a3b8"
+                  style={[styles.textInput, styles.otpInput]}
+                  value={otp}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={secondsRemaining > 0 || isLoading}
+                  onPress={() => void requestOtp()}
+                >
+                  <Text
+                    style={[
+                      styles.resend,
+                      (secondsRemaining > 0 || isLoading) && styles.disabledText,
+                    ]}
+                  >
+                    {secondsRemaining > 0
+                      ? `Renvoyer le code dans ${secondsRemaining}s`
+                      : "Renvoyer le code"}
+                  </Text>
+                </Pressable>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <Text style={styles.label}>Adresse e-mail</Text>
             <TextInput
               accessibilityLabel="Adresse e-mail"
               autoCapitalize="none"
               autoComplete="email"
               keyboardType="email-address"
-              onChangeText={setEmail}
+              value={emailPassword.email}
+              onChangeText={(value) => {
+                setEmailPassword((current) => ({ ...current, email: value }));
+                setError(null);
+              }}
               placeholder="vous@exemple.com"
               placeholderTextColor="#94a3b8"
               style={styles.textInput}
-              value={email}
             />
-            <Text style={styles.label}>Recevoir le code par</Text>
-            <View style={styles.modeSwitch}>
-              {(["sms", "email"] as const).map((channel) => (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: otpChannel === channel }}
-                  key={channel}
-                  onPress={() => setOtpChannel(channel)}
-                  style={[styles.modeButton, otpChannel === channel && styles.modeButtonSelected]}
-                >
-                  <Text
-                    style={[styles.modeText, otpChannel === channel && styles.modeTextSelected]}
-                    numberOfLines={1}
-                  >
-                    {channel === "sms" ? "SMS" : "E-mail"}
-                  </Text>
-                </Pressable>
-              ))}
+            <Text style={styles.label}>Mot de passe</Text>
+            <View style={styles.passwordWrap}>
+              <TextInput
+                accessibilityLabel="Mot de passe"
+                autoCapitalize="none"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                secureTextEntry={!showPassword}
+                value={emailPassword.password}
+                onChangeText={(value) => {
+                  setEmailPassword((current) => ({ ...current, password: value }));
+                  setError(null);
+                }}
+                placeholder="Choisissez un mot de passe robuste"
+                placeholderTextColor="#94a3b8"
+                style={styles.textInputPassword}
+              />
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setShowPassword((value) => !value)}
+                style={styles.passwordToggle}
+              >
+                <Text style={styles.passwordToggleText}>{showPassword ? "Masquer" : "Afficher"}</Text>
+              </Pressable>
             </View>
-
-            <Pressable
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: termsAccepted }}
-              onPress={() => setTermsAccepted((accepted) => !accepted)}
-              style={styles.consentRow}
-            >
-              <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
-                {termsAccepted && <Text style={styles.checkboxTick}>✓</Text>}
-              </View>
-              <Text style={styles.consentText}>
-                J’accepte les conditions d’utilisation et la politique de confidentialité.
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setLegalDocumentsVisible(true)}
-              style={styles.consentLink}
-            >
-              <Text style={styles.consentLinkText}>Lire les documents légaux</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: ageConfirmed }}
-              onPress={() => setAgeConfirmed((confirmed) => !confirmed)}
-              style={styles.consentRow}
-            >
-              <View style={[styles.checkbox, ageConfirmed && styles.checkboxChecked]}>
-                {ageConfirmed && <Text style={styles.checkboxTick}>✓</Text>}
-              </View>
-              <Text style={styles.consentText}>
-                Je confirme avoir au moins 16 ans.
-              </Text>
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <Text style={styles.label}>Téléphone avec indicatif ou e-mail</Text>
-            <TextInput
-              accessibilityLabel="Téléphone avec indicatif ou adresse e-mail"
-              autoCapitalize="none"
-              autoComplete="username"
-              keyboardType="email-address"
-              onChangeText={(value) => {
-                setIdentifier(value);
-                setPhone(value);
-                setManualCountryCode(undefined);
-                setOfferRegistration(false);
-              }}
-              placeholder="+226 70 00 00 00 ou vous@exemple.com"
-              placeholderTextColor="#94a3b8"
-              style={styles.textInput}
-              value={identifier}
-            />
-            {identifier.trim() && !identifier.includes("@") && (
-              <Text style={styles.helper}>
-                {detectedPhone?.country || manuallySelectedCountry
-                  ? `${detectedPhone?.country?.name ?? manuallySelectedCountry?.name} détecté · ${detectedPhone?.e164 ?? fullPhoneNumber()}`
-                  : !identifier.trim().startsWith("+") && !identifier.trim().startsWith("00")
-                    ? "Saisissez l’indicatif, par exemple +226…"
-                    : "Saisissez un numéro international valide."}
-              </Text>
-            )}
-            {!identifier.includes("@") && !detectedPhone?.country && ambiguousCountries.length > 1 && (
-              <View style={styles.countryList}>
-                {ambiguousCountries.map((country) => (
+            {mode === "register" && (
+              <>
+                <Text style={styles.label}>Confirmer le mot de passe</Text>
+                <View style={styles.passwordWrap}>
+                  <TextInput
+                    accessibilityLabel="Confirmer le mot de passe"
+                    autoCapitalize="none"
+                    autoComplete="new-password"
+                    secureTextEntry={!showConfirmPassword}
+                    value={emailPassword.confirmPassword}
+                    onChangeText={(value) => {
+                      setEmailPassword((current) => ({ ...current, confirmPassword: value }));
+                      setError(null);
+                    }}
+                    placeholder="Répétez votre mot de passe"
+                    placeholderTextColor="#94a3b8"
+                    style={styles.textInputPassword}
+                  />
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ selected: manualCountryCode === country.code }}
-                    key={country.code}
-                    onPress={() => setManualCountryCode(country.code)}
-                    style={[
-                      styles.countryOption,
-                      manualCountryCode === country.code && styles.countryOptionSelected,
-                    ]}
+                    onPress={() => setShowConfirmPassword((value) => !value)}
+                    style={styles.passwordToggle}
                   >
-                    <Text
-                      numberOfLines={1}
-                      style={[
-                        styles.countryOptionText,
-                        manualCountryCode === country.code && styles.countryOptionTextSelected,
-                      ]}
-                    >
-                      {country.name}
-                    </Text>
+                    <Text style={styles.passwordToggleText}>{showConfirmPassword ? "Masquer" : "Afficher"}</Text>
                   </Pressable>
-                ))}
-              </View>
+                </View>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: termsAccepted }}
+                  onPress={() => setTermsAccepted((accepted) => !accepted)}
+                  style={styles.consentRow}
+                >
+                  <View style={[styles.checkbox, termsAccepted && styles.checkboxChecked]}>
+                    {termsAccepted && <Text style={styles.checkboxTick}>✓</Text>}
+                  </View>
+                  <Text style={styles.consentText}>
+                    J’accepte les conditions d’utilisation et la politique de confidentialité.
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setLegalDocumentsVisible(true)}
+                  style={styles.consentLink}
+                >
+                  <Text style={styles.consentLinkText}>Lire les documents légaux</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: ageConfirmed }}
+                  onPress={() => setAgeConfirmed((confirmed) => !confirmed)}
+                  style={styles.consentRow}
+                >
+                  <View style={[styles.checkbox, ageConfirmed && styles.checkboxChecked]}>
+                    {ageConfirmed && <Text style={styles.checkboxTick}>✓</Text>}
+                  </View>
+                  <Text style={styles.consentText}>
+                    Je confirme avoir au moins 16 ans.
+                  </Text>
+                </Pressable>
+              </>
+            )}
+
+            {mode === "login" && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={async () => {
+                  if (!isValidEmail(emailPassword.email)) {
+                    setError("Saisissez une adresse e-mail valide avant de récupérer votre mot de passe.");
+                    return;
+                  }
+                  setIsLoading(true);
+                  try {
+                    await resetPasswordForEmail(emailPassword.email);
+                    setError(null);
+                    setSuccessMessage("Un e-mail de réinitialisation a été envoyé.");
+                  } catch (resetError) {
+                    setError(firebaseAuthErrorMessage(resetError));
+                  } finally {
+                    setIsLoading(false);
+                  }
+                }}
+                style={styles.forgotLink}
+              >
+                <Text style={styles.forgotLinkText}>Mot de passe oublié ?</Text>
+              </Pressable>
             )}
           </>
         )}
 
-        {mode === "login" && !otpRequested && (
-          <>
-            <Text style={styles.label}>Recevoir le code par</Text>
-            <View style={styles.modeSwitch}>
-              {(["sms", "email"] as const).map((channel) => (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: otpChannel === channel }}
-                  key={channel}
-                  onPress={() => setOtpChannel(channel)}
-                  style={[styles.modeButton, otpChannel === channel && styles.modeButtonSelected]}
-                >
-                  <Text
-                    style={[styles.modeText, otpChannel === channel && styles.modeTextSelected]}
-                    numberOfLines={1}
-                  >
-                    {channel === "sms" ? "SMS" : "E-mail"}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </>
-        )}
-
-        {otpRequested && (
-          <>
-            <Text style={styles.label}>Code de vérification</Text>
-            <Text style={styles.helper}>
-              Un code à six chiffres a été envoyé par {otpChannel === "sms" ? "SMS" : "e-mail"}.
+        {verificationPending && (
+          <View style={styles.verificationPanel}>
+            <Text style={styles.verificationTitle}>Vérification requise</Text>
+            <Text style={styles.verificationText}>
+              Consultez votre boîte de réception et confirmez votre adresse e-mail pour débloquer l’accès à QuartierPlus.
             </Text>
-            <TextInput
-              accessibilityLabel="Code OTP à six chiffres"
-              autoComplete="one-time-code"
-              keyboardType="number-pad"
-              maxLength={6}
-              onChangeText={(value) => setOtp(value.replace(/\D/g, ""))}
-              placeholder="••••••"
-              placeholderTextColor="#94a3b8"
-              style={[styles.textInput, styles.otpInput]}
-              value={otp}
-            />
             <Pressable
               accessibilityRole="button"
-              disabled={secondsRemaining > 0 || isLoading}
-              onPress={() => void requestOtp()}
+              onPress={async () => {
+                setIsLoading(true);
+                try {
+                  const user = getFirebaseUser();
+                  if (!user) throw new Error("Aucun compte Firebase actif.");
+                  await resendEmailVerification(user);
+                  setSuccessMessage("Le lien de confirmation a bien été renvoyé.");
+                } catch (resendError) {
+                  setError(firebaseAuthErrorMessage(resendError));
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+              style={styles.secondaryAction}
             >
-              <Text
-                style={[
-                  styles.resend,
-                  (secondsRemaining > 0 || isLoading) && styles.disabledText,
-                ]}
-              >
-                {secondsRemaining > 0
-                  ? `Renvoyer le code dans ${secondsRemaining}s`
-                  : "Renvoyer le code"}
-              </Text>
+              <Text style={styles.secondaryActionText}>Renvoyer le lien de confirmation</Text>
             </Pressable>
-          </>
+            <Pressable
+              accessibilityRole="button"
+              onPress={async () => {
+                setIsLoading(true);
+                try {
+                  const user = getFirebaseUser();
+                  if (!user) throw new Error("Aucun compte Firebase actif.");
+                  await user.reload();
+                  const refreshed = getFirebaseUser();
+                  if (!refreshed || !refreshed.emailVerified) {
+                    setSuccessMessage("L’adresse n’est pas encore confirmée. Vérifiez votre boîte mail.");
+                    return;
+                  }
+                  const result = await exchangeFirebaseSession(refreshed, {
+                    terms_accepted: true,
+                    age_16_or_older: true,
+                  });
+                  if (result.kind === "email-verification-required") {
+                    setSuccessMessage("L’adresse n’est pas encore confirmée.");
+                    return;
+                  }
+                  await setSession(result.token, result.user);
+                } catch (checkError) {
+                  setError(firebaseAuthErrorMessage(checkError));
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+              style={styles.secondaryAction}
+            >
+              <Text style={styles.secondaryActionText}>J’ai confirmé mon adresse, vérifier à nouveau</Text>
+            </Pressable>
+          </View>
         )}
 
         {isLoading && (
           <Text style={styles.wakingMessage}>
-            Le serveur se réveille… Cela peut prendre jusqu’à une minute.
+            {authProvider === "email"
+              ? "Traitement en cours…"
+              : "Le serveur se réveille… Cela peut prendre jusqu’à une minute."}
           </Text>
         )}
+        {successMessage && <Text style={styles.success}>{successMessage}</Text>}
         {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
 
         <Pressable
           accessibilityRole="button"
-          disabled={isLoading || (otpRequested && otp.length !== 6)}
-          onPress={() => void (otpRequested ? verifyOtp() : requestOtp())}
+          disabled={isLoading || (authProvider === "phone" && otpRequested && otp.length !== 6)}
+          onPress={async () => {
+            if (authProvider === "email") {
+              if (mode === "register") {
+                setIsLoading(true);
+                try {
+                  if (!isValidEmail(emailPassword.email)) {
+                    throw new Error("Saisissez une adresse e-mail valide.");
+                  }
+                  if (!isStrongPassword(emailPassword.password)) {
+                    throw new Error("Le mot de passe doit contenir au moins 8 caractères, une majuscule, une minuscule, un chiffre et un symbole.");
+                  }
+                  if (emailPassword.password !== emailPassword.confirmPassword) {
+                    throw new Error("Les mots de passe ne correspondent pas.");
+                  }
+                  if (!termsAccepted || !ageConfirmed) {
+                    throw new Error("Vous devez accepter les conditions et confirmer l’âge minimum.");
+                  }
+                  const user = await registerWithEmailPassword(emailPassword.email, emailPassword.password);
+                  const result = await exchangeFirebaseSession(user, {
+                    first_name: firstName.trim() || undefined,
+                    last_name: lastName.trim() || undefined,
+                    terms_accepted: true,
+                    age_16_or_older: true,
+                  });
+                  if (result.kind === "email-verification-required") {
+                    setVerificationPending(true);
+                    setSuccessMessage("Vérifiez votre messagerie pour confirmer votre adresse e-mail.");
+                    return;
+                  }
+                  await setSession(result.token, result.user);
+                } catch (registerError) {
+                  setError(firebaseAuthErrorMessage(registerError));
+                } finally {
+                  setIsLoading(false);
+                }
+                return;
+              }
+
+              setIsLoading(true);
+              try {
+                if (!isValidEmail(emailPassword.email)) {
+                  throw new Error("Saisissez une adresse e-mail valide.");
+                }
+                if (!emailPassword.password) {
+                  throw new Error("Saisissez votre mot de passe.");
+                }
+                const user = await signInWithEmailPassword(emailPassword.email, emailPassword.password);
+                const result = await exchangeFirebaseSession(user, {
+                  terms_accepted: true,
+                  age_16_or_older: true,
+                });
+                if (result.kind === "email-verification-required") {
+                  setVerificationPending(true);
+                  setSuccessMessage("Vérifiez votre messagerie pour confirmer votre adresse e-mail.");
+                  return;
+                }
+                await setSession(result.token, result.user);
+              } catch (loginError) {
+                setError(firebaseAuthErrorMessage(loginError));
+              } finally {
+                setIsLoading(false);
+              }
+              return;
+            }
+
+            if (otpRequested) {
+              void verifyOtp();
+              return;
+            }
+            void requestOtp();
+          }}
           style={[
             styles.primaryButton,
-            (isLoading || (otpRequested && otp.length !== 6)) && styles.buttonDisabled,
+            (isLoading || (authProvider === "phone" && otpRequested && otp.length !== 6)) && styles.buttonDisabled,
           ]}
         >
           {isLoading ? (
             <ActivityIndicator color="#ffffff" />
           ) : (
             <Text style={styles.primaryButtonText}>
-              {otpRequested
-                ? "Vérifier et continuer"
-                : mode === "register"
-                  ? "Créer mon compte et recevoir un code"
-                  : "Recevoir un code"}
+              {authProvider === "email"
+                ? mode === "register"
+                  ? "Créer mon compte"
+                  : "Se connecter"
+                : otpRequested
+                  ? "Vérifier et continuer"
+                  : mode === "register"
+                    ? "Créer mon compte et recevoir un code"
+                    : "Recevoir un code"}
             </Text>
           )}
         </Pressable>
 
-        {offerRegistration && mode === "login" && (
+        {authProvider === "phone" && offerRegistration && mode === "login" && (
           <Pressable
             accessibilityRole="button"
             onPress={() => {
-                if (identifier.includes("@")) setEmail(identifier.trim());
+              if (identifier.includes("@")) setEmail(identifier.trim());
               else setPhone(identifier.trim());
-                switchMode("register");
-              }}
+              switchMode("register");
+            }}
             style={styles.registerOffer}
           >
             <Text style={styles.registerOfferText}>Créer un compte</Text>
           </Pressable>
         )}
 
-        {mode === "login" && (
+        {authProvider === "phone" && mode === "login" && (
           <>
             <View style={styles.divider}>
               <View style={styles.dividerLine} />
@@ -649,14 +963,15 @@ const styles = StyleSheet.create({
   modeTextSelected: { color: "#1d4ed8" },
   label: { color: "#334155", fontSize: 14, fontWeight: "600", marginBottom: 8, marginTop: 14 },
   textInput: { backgroundColor: "#ffffff", borderColor: "#cbd5e1", borderRadius: 12, borderWidth: 1, color: "#0f172a", fontSize: 16, minHeight: 52, paddingHorizontal: 14 },
+  passwordWrap: { alignItems: "center", flexDirection: "row", position: "relative" },
+  textInputPassword: { backgroundColor: "#ffffff", borderColor: "#cbd5e1", borderRadius: 12, borderWidth: 1, color: "#0f172a", flex: 1, fontSize: 16, minHeight: 52, paddingHorizontal: 14, paddingRight: 84 },
+  passwordToggle: { alignItems: "center", justifyContent: "center", paddingHorizontal: 12, position: "absolute", right: 10 },
+  passwordToggleText: { color: "#2563eb", fontSize: 12, fontWeight: "700" },
   countryList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   countryOption: { backgroundColor: "#ffffff", borderColor: "#cbd5e1", borderRadius: 18, borderWidth: 1, paddingHorizontal: 11, paddingVertical: 8 },
   countryOptionSelected: { backgroundColor: "#eff6ff", borderColor: "#2563eb" },
   countryOptionText: { color: "#475569", fontSize: 12 },
   countryOptionTextSelected: { color: "#1d4ed8", fontWeight: "600" },
-  phoneInput: { alignItems: "center", backgroundColor: "#ffffff", borderColor: "#cbd5e1", borderRadius: 12, borderWidth: 1, flexDirection: "row", paddingHorizontal: 14 },
-  prefix: { color: "#0f172a", fontSize: 16, fontWeight: "600", marginRight: 10 },
-  phoneTextInput: { color: "#0f172a", flex: 1, fontSize: 16, minHeight: 52 },
   helper: { color: "#64748b", fontSize: 12, lineHeight: 18, marginTop: 8 },
   consentRow: { alignItems: "center", flexDirection: "row", gap: 10, marginTop: 20 },
   checkbox: { alignItems: "center", backgroundColor: "#ffffff", borderColor: "#94a3b8", borderRadius: 5, borderWidth: 1, height: 22, justifyContent: "center", width: 22 },
@@ -668,7 +983,15 @@ const styles = StyleSheet.create({
   otpInput: { fontSize: 22, letterSpacing: 10, textAlign: "center" },
   resend: { color: "#2563eb", fontSize: 14, fontWeight: "600", marginTop: 10, textAlign: "right" },
   disabledText: { color: "#94a3b8" },
+  forgotLink: { alignSelf: "flex-end", marginTop: 12 },
+  forgotLinkText: { color: "#2563eb", fontSize: 13, fontWeight: "700" },
+  verificationPanel: { backgroundColor: "#eff6ff", borderColor: "#bfdbfe", borderRadius: 12, borderWidth: 1, marginTop: 18, padding: 16 },
+  verificationTitle: { color: "#1d4ed8", fontSize: 15, fontWeight: "700" },
+  verificationText: { color: "#1e3a8a", fontSize: 13, lineHeight: 19, marginTop: 8 },
+  secondaryAction: { backgroundColor: "#ffffff", borderColor: "#bfdbfe", borderRadius: 10, borderWidth: 1, marginTop: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  secondaryActionText: { color: "#1d4ed8", fontSize: 13, fontWeight: "700", textAlign: "center" },
   wakingMessage: { color: "#92400e", fontSize: 13, lineHeight: 19, marginTop: 14, textAlign: "center" },
+  success: { color: "#166534", fontSize: 13, lineHeight: 19, marginTop: 14 },
   error: { color: "#b91c1c", fontSize: 14, lineHeight: 20, marginTop: 14 },
   primaryButton: { alignItems: "center", backgroundColor: "#2563eb", borderRadius: 12, justifyContent: "center", marginTop: 22, minHeight: 52, paddingHorizontal: 16 },
   buttonDisabled: { opacity: 0.55 },

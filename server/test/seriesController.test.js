@@ -12,8 +12,10 @@ const {
   createEpisode,
   getEpisodePoll,
   getEpisodePollResults,
+  getSeries,
   getResume,
   publishSeries,
+  signSeriesMediaUpload,
   voteOnEpisodePoll,
 } = await import("../controllers/seriesController.js");
 const { pool } = await import("../db/pool.js");
@@ -95,6 +97,61 @@ test("episode creation rejects invalid media URLs before touching the database",
 
   assert.equal(response.statusCode, 400);
   assert.equal(query.mock.callCount(), 0);
+});
+
+test("series creators can load draft episodes without exposing them publicly", async (context) => {
+  let statement;
+  context.mock.method(pool, "query", async (sql) => {
+    statement = sql;
+    return {
+      rowCount: 1,
+      rows: [{
+        id: "series-id",
+        creator_id: "creator-id",
+        title: "Histoires du quartier",
+        status: "DRAFT",
+        season_id: "season-id",
+        season_number: 1,
+        season_title: "Saison 1",
+        episode_id: "episode-id",
+        episode_number: 1,
+        episode_title: "Pilote",
+        video_url: null,
+      }],
+    };
+  });
+  const response = createResponse();
+
+  await getSeries({
+    params: { seriesId: "11111111-1111-4111-8111-111111111111" },
+    auth: { userId: "creator-id" },
+  }, response, next);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.series.seasons[0].episodes[0].id, "episode-id");
+  assert.match(statement, /e\.is_published = TRUE OR s\.creator_id = \$2/);
+  assert.match(statement, /WHERE s\.id = \$1 AND \(s\.status = 'PUBLISHED' OR s\.creator_id = \$2\)/);
+});
+
+test("series media signatures are limited to the authenticated creator", async (context) => {
+  let statement;
+  let values;
+  context.mock.method(pool, "query", async (sql, params) => {
+    statement = sql;
+    values = params;
+    return { rowCount: 0, rows: [] };
+  });
+  const response = createResponse();
+
+  await signSeriesMediaUpload({
+    params: { seriesId: "11111111-1111-4111-8111-111111111111" },
+    auth: { userId: "another-user" },
+    body: { media_type: "video" },
+  }, response, next);
+
+  assert.equal(response.statusCode, 404);
+  assert.match(statement, /creator_id = \$2/);
+  assert.equal(values[1], "another-user");
 });
 
 test("season creation scopes inserts to the authenticated series creator", async (context) => {

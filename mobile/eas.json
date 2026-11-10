@@ -29,6 +29,17 @@
         "EXPO_ANDROID_BUILD_ARCHS": "armeabi-v7a",
         "EXPO_ANDROID_MINIFY": "false"
       }
+    },
+    "production": {
+      "channel": "production",
+      "environment": "production",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_ANDROID_BUILD_ARCHS": "arm64-v8a"
+      },
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
   }
 }

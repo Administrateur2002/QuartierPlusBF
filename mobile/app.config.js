@@ -59,6 +59,9 @@ module.exports = ({ config }) => ({
   },
   ios: {
     ...config.ios,
+    ...(process.env.GOOGLE_SERVICES_IOS_PLIST
+      ? { googleServicesFile: process.env.GOOGLE_SERVICES_IOS_PLIST }
+      : {}),
     infoPlist: {
       ...config.ios?.infoPlist,
       UIBackgroundModes: [

@@ -9,6 +9,7 @@ import {
   verifyPhoneChangeOtp,
 } from "../controllers/authController.js";
 import { authMiddleware } from "../middlewares/authMiddleware.js";
+import { firebaseAuth } from "../controllers/firebaseAuthController.js";
 
 const router = Router();
 const otpRequestLimiter = rateLimit({
@@ -30,6 +31,7 @@ router.get("/countries", listCountries);
 router.post("/request-otp", otpRequestLimiter, requestOtp);
 router.post("/verify-otp", credentialLimiter, verifyOtp);
 router.post("/google", credentialLimiter, googleAuth);
+router.post("/firebase", credentialLimiter, firebaseAuth);
 router.post(
   "/change-phone/request-otp",
   authMiddleware,

@@ -20,6 +20,7 @@ export const uploadEmergencyMedia = async (
   filename: string,
   mimeType: string,
   mediaKind: MediaKind,
+  onProgress?: (progress: number) => void,
 ) => {
   if (!API_BASE_URL) throw new Error("L'adresse du serveur n'est pas configurée.");
   const signUrl = `${API_BASE_URL}/v1/media/sign`;
@@ -65,6 +66,7 @@ export const uploadEmergencyMedia = async (
   }
 
   const signature = payload as UploadSignature;
+  onProgress?.(5);
   const size = new File(uri).size;
   if (size > signature.max_bytes) {
     throw new MediaUploadError(
@@ -78,6 +80,8 @@ export const uploadEmergencyMedia = async (
       name: filename,
       type: mimeType,
       size,
+    }, {
+      onProgress: (progress) => onProgress?.(5 + Math.round(progress * 0.95)),
     });
     if (!result.secureUrl) {
       throw new MediaUploadError(
@@ -85,6 +89,7 @@ export const uploadEmergencyMedia = async (
         "Statut HTTP : 200\nMessage Cloudinary : adresse sécurisée absente.",
       );
     }
+    onProgress?.(100);
     return result.secureUrl;
   } catch (error) {
     if (error instanceof MediaUploadError) {

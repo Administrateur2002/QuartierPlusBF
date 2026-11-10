@@ -90,7 +90,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "QuartierPlus utilise le microphone pour la dictée vocale, le talkie-walkie et les échanges vidéo du Grin.",
+          "microphonePermission": "QuartierPlus utilise le microphone pour la dictée, le talkie-walkie, les échanges vidéo du Grin et les messages vocaux que vous choisissez d’envoyer.",
           "enableBackgroundPlayback": false
         }
       ]

@@ -2,6 +2,11 @@ import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 
 export const adminAuthMiddleware = async (request, response, next) => {
+  if (!env.adminEmail) {
+    return response.status(503).json({
+      error: "L'accès administrateur n'est pas configuré sur ce serveur.",
+    });
+  }
   try {
     const result = await pool.query(
       `SELECT 1

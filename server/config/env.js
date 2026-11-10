@@ -127,6 +127,10 @@ const positiveInteger = (name, fallback) => {
 };
 
 const googleClientId = optional("GOOGLE_CLIENT_ID");
+const firebaseProjectId = optional("FIREBASE_PROJECT_ID");
+if (isProduction && !firebaseProjectId) {
+  throw new Error("FIREBASE_PROJECT_ID is required in production.");
+}
 const smtpHost = optional("SMTP_HOST");
 const smtpPortValue = optional("SMTP_PORT");
 const smtpPort = smtpPortValue ? Number(smtpPortValue) : 0;
@@ -318,8 +322,7 @@ const grinModeratorIds = [
       .filter(Boolean),
   ),
 ];
-const adminEmail = (optional("ADMIN_EMAIL") || "administrateurquartierplus@gmail.com")
-  .toLowerCase();
+const adminEmail = optional("ADMIN_EMAIL").toLowerCase();
 const supportNotifyEmail = optional("SUPPORT_NOTIFY_EMAIL").toLowerCase();
 if (
   supportNotifyEmail &&
@@ -349,10 +352,13 @@ if (grinModerationEnabled && grinModeratorIds.length === 0) {
     "GRIN_MODERATOR_IDS is required when GRIN_MODERATION_ENABLED=true.",
   );
 }
-if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
+if (adminEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
   throw new Error("ADMIN_EMAIL must be a valid email address.");
 }
 if (isProduction) {
+  if (!adminEmail) {
+    throw new Error("ADMIN_EMAIL is required in production.");
+  }
   if (!googleClientId) {
     throw new Error("GOOGLE_CLIENT_ID is required in production.");
   }
@@ -386,7 +392,7 @@ export const env = Object.freeze({
   databaseUrl,
   jwtSecret,
   jwtExpiresIn: optional("JWT_EXPIRES_IN") || "7d",
-  googleClientId,
+  firebaseProjectId,
   googleClientIds: [
     googleClientId,
     ...optional("GOOGLE_CLIENT_IDS")

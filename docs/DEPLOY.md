@@ -95,6 +95,9 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 47. `migrations/043_geographic_communications.sql`
 48. `migrations/044_community_groups_and_post_shares.sql`
 49. `migrations/045_community_alliance_projects.sql`
+50. `migrations/046_firebase_auth_identity.sql`
+
+La migration 046 ajoute l’identifiant Firebase unique aux comptes existants sans modifier leurs profils, rôles ni sessions. Appliquez-la avant de déployer l’échange `/api/v1/auth/firebase`. Configurez `FIREBASE_PROJECT_ID=quartierplus-final` et un compte de service Firebase Admin dans le gestionnaire de secrets du serveur via `FIREBASE_SERVICE_ACCOUNT_JSON`, ou fournissez des identifiants ADC. N’utilisez jamais le JSON de compte de service dans l’application mobile.
 
 La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
 progression de lecture et votes de fin d'épisode. Elle est additive et conserve
@@ -207,38 +210,22 @@ Appliquez-la après 034 avant de déployer le nouvel espace administrateur.
 
 ## Espace Administrateur sécurisé
 
-L'accès est désactivé tant qu'aucun UUID n'est explicitement autorisé. Après
-avoir créé le compte `administrateurquartierplus@gmail.com`, vérifiez son
-identité Google ou son e-mail, puis liez et vérifiez également un numéro de
-téléphone par OTP. Relevez l'UUID du compte dans la base :
+Configurez `ADMIN_EMAIL` avec l'adresse déjà vérifiée du compte désigné dans
+chaque environnement (développement, test, préproduction et production).
+Vérifiez aussi son numéro par OTP. Le rôle `admin` en base reste obligatoire :
+une adresse configurée ou une valeur affichée dans l'application ne suffit pas.
+Pour attribuer ce rôle au compte existant, lancez depuis `server/` avec les
+identifiants de base de données de l'environnement visé :
 
-```sql
-SELECT id FROM users
-WHERE LOWER(email) = 'administrateurquartierplus@gmail.com';
+```sh
+node scripts/grant-admin-role.js --confirm
 ```
 
-Le rôle `admin` en base est la source d'autorisation. L'API exige également
-l'e-mail et le téléphone vérifiés, et que l'adresse corresponde à
-`ADMIN_EMAIL`. Les connexions téléphone, e-mail et Google aboutissent au même
-compte lorsque leurs identifiants sont associés à la même ligne `users`.
-Pour attribuer le rôle au compte existant, exécutez cette requête paramétrée dans
-Neon avec l'adresse administrateur et le téléphone E.164 comme paramètres `$1`
-et `$2` :
-
-```sql
-UPDATE users
-SET role = 'admin'
-WHERE LOWER(email) = LOWER($1)
-     AND (regexp_replace(phone_e164, '[^0-9]', '', 'g')
-        = regexp_replace($2, '[^0-9]', '', 'g')
-        OR regexp_replace(phone_number, '[^0-9]', '', 'g')
-        = regexp_replace($2, '[^0-9]', '', 'g'))
-RETURNING id, role, email, phone_e164;
-```
-
-Vérifiez qu'une ligne est retournée et que les deux facteurs sont vérifiés.
-L'UUID n'est pas à recopier dans l'application. Les routes admin restent
-protégées côté serveur par le rôle et les états de vérification.
+Le script n'agit que sur l'unique compte vérifié correspondant à `ADMIN_EMAIL`;
+il refuse les comptes absents ou non vérifiés. Après l'opération, reconnectez
+le compte dans l'application pour recharger son rôle. Les routes admin restent
+protégées côté serveur par le rôle et les états de vérification. La production
+refuse de démarrer sans `ADMIN_EMAIL`.
 Ne réutilisez pas un jeton d'administration partagé. Toute action de
 modération est journalisée; les comptes suspendus gardent accès au dépôt d'un
 recours et aux fonctions SOS de sécurité.

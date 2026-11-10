@@ -33,6 +33,22 @@
   `OTP_TEST_ALLOWLIST` à des numéros de test maîtrisés. Ne copiez jamais de
   données de production vers cet environnement.
 
+## Accès administrateur
+
+- Configurez `ADMIN_EMAIL` séparément dans chaque environnement avec l’adresse
+  déjà vérifiée du compte administrateur. Le serveur n’accorde aucun rôle sur
+  la base de cette adresse seule : l’accès exige aussi `role='admin'`, un
+  téléphone vérifié et un compte vérifié.
+- Pour attribuer le rôle à un compte existant, utilisez les identifiants de base
+  de données de l’environnement visé et lancez depuis `server/` :
+  `node scripts/grant-admin-role.js --confirm`. Le script refuse les comptes
+  absents ou non vérifiés, n’affiche pas l’adresse et ne modifie aucun autre
+  compte. Déconnectez-vous puis reconnectez-vous dans l’application pour
+  recharger le rôle.
+- Gardez `ADMIN_EMAIL` absent dans les environnements où aucun accès
+  administrateur n’est requis; l’API refuse alors explicitement l’accès. Cette
+  valeur est obligatoire en production.
+
 ## Drapeaux et plafonds serveur
 
 Les contrôles suivants sont lus par le serveur au démarrage; les changer dans

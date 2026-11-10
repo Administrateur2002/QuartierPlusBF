@@ -59,3 +59,59 @@ test("private messages reject videos longer than the configured maximum", async 
 
   assert.match(result.error, /invalide ou dépasse les limites/);
 });
+
+test("private messages accept owned audio stored as a Cloudinary video resource", async (context) => {
+  const audioUrl =
+    "https://res.cloudinary.com/quartierplus-test/video/upload/voice.m4a";
+  const fetch = context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        public_id: MEDIA_PUBLIC_ID,
+        secure_url: audioUrl,
+        format: "m4a",
+        bytes: 1000,
+        resource_type: "video",
+        duration: 12,
+      };
+    },
+  }));
+
+  assert.deepEqual(
+    await verifyMessageMedia({
+      userId: USER_ID,
+      mediaUrl: audioUrl,
+      mediaType: "audio",
+      mediaPublicId: MEDIA_PUBLIC_ID,
+    }),
+    { mediaUrl: audioUrl, mediaType: "audio" },
+  );
+  assert.match(fetch.mock.calls[0].arguments[0].pathname, /resources\/video\/upload/);
+});
+
+test("private messages reject audio formats outside the allowed set", async (context) => {
+  context.mock.method(globalThis, "fetch", async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return {
+        public_id: MEDIA_PUBLIC_ID,
+        secure_url: MEDIA_URL,
+        format: "exe",
+        bytes: 1000,
+        resource_type: "video",
+        duration: 12,
+      };
+    },
+  }));
+
+  const result = await verifyMessageMedia({
+    userId: USER_ID,
+    mediaUrl: MEDIA_URL,
+    mediaType: "audio",
+    mediaPublicId: MEDIA_PUBLIC_ID,
+  });
+
+  assert.match(result.error, /invalide ou dépasse les limites/);
+});

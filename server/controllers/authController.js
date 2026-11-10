@@ -44,6 +44,36 @@ const userProfile = (user) => ({
   phone_verified_at: user.phone_verified_at,
 });
 
+const smsDeliveryFailure = (error) => {
+  const failureMessages = {
+    SMS_DAILY_LIMIT_REACHED:
+      "La limite quotidienne de SMS QuartierPlus est atteinte. Réessayez demain ou choisissez l'e-mail.",
+    SMS_PROVIDER_RATE_LIMITED:
+      "Le fournisseur SMS a limité les envois. Réessayez plus tard ou choisissez l'e-mail.",
+    SMS_RECIPIENT_REJECTED:
+      "Le fournisseur SMS a refusé ce numéro ou ce pays. Vérifiez l'indicatif international ou choisissez l'e-mail.",
+    SMS_PROVIDER_CONFIGURATION_ERROR:
+      "Le fournisseur SMS refuse la configuration d'envoi. Contactez l'assistance ou choisissez l'e-mail.",
+    SMS_DELIVERY_TIMEOUT:
+      "Le fournisseur SMS n'a pas répondu à temps. Vérifiez votre réseau puis réessayez ou choisissez l'e-mail.",
+    SMS_PROVIDER_UNAVAILABLE:
+      "Le fournisseur SMS est temporairement indisponible. Réessayez plus tard ou choisissez l'e-mail.",
+    SMS_NETWORK_ERROR:
+      "La passerelle SMS est injoignable depuis le serveur. Réessayez plus tard ou choisissez l'e-mail.",
+  };
+  const code =
+    typeof error?.code === "string" && failureMessages[error.code]
+      ? error.code
+      : "SMS_DELIVERY_FAILED";
+  return {
+    status: Number.isInteger(error?.status) ? error.status : 503,
+    code,
+    error:
+      failureMessages[code] ??
+      "La livraison du SMS a échoué. Réessayez plus tard ou choisissez l'e-mail.",
+  };
+};
+
 const deliverOtp = async (phoneNumber, code) => {
   if (!(await reserveDailySms())) {
     throw Object.assign(
@@ -56,9 +86,14 @@ const deliverOtp = async (phoneNumber, code) => {
     );
   }
   if (!env.smsDeliveryUrl || !env.smsDeliveryToken) {
-    throw new Error("Le service SMS n'est pas configuré.");
+    throw Object.assign(new Error("Le service SMS n'est pas configuré."), {
+      status: 503,
+      code: "SMS_NOT_CONFIGURED",
+    });
   }
-  const response = await fetch(env.smsDeliveryUrl, {
+  let response;
+  try {
+    response = await fetch(env.smsDeliveryUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.smsDeliveryToken}`,
@@ -68,10 +103,48 @@ const deliverOtp = async (phoneNumber, code) => {
       to: phoneNumber,
       message: `Votre code de vérification QuartierPlus est ${code}. Il expire dans ${OTP_TTL_MINUTES} minutes.`,
     }),
-    signal: AbortSignal.timeout(10_000),
-  });
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
+    throw Object.assign(
+      new Error(
+        timeout
+          ? "Le fournisseur SMS n'a pas répondu à temps."
+          : "La passerelle SMS est injoignable.",
+      ),
+      {
+        status: timeout ? 504 : 502,
+        code: timeout ? "SMS_DELIVERY_TIMEOUT" : "SMS_NETWORK_ERROR",
+      },
+    );
+  }
   if (!response.ok) {
-    throw new Error(`Échec de livraison SMS (${response.status}).`);
+    const providerFailure =
+      response.status === 429
+        ? {
+            status: 429,
+            code: "SMS_PROVIDER_RATE_LIMITED",
+            message: "Le fournisseur SMS a limité les envois.",
+          }
+        : [400, 404, 422].includes(response.status)
+          ? {
+              status: 400,
+              code: "SMS_RECIPIENT_REJECTED",
+              message: "Le fournisseur SMS a refusé le destinataire.",
+            }
+          : [401, 403].includes(response.status)
+            ? {
+                status: 503,
+                code: "SMS_PROVIDER_CONFIGURATION_ERROR",
+                message: "Le fournisseur SMS a refusé la configuration.",
+              }
+            : {
+                status: 502,
+                code: "SMS_PROVIDER_UNAVAILABLE",
+                message: "Le fournisseur SMS est temporairement indisponible.",
+              };
+    throw Object.assign(new Error(providerFailure.message), providerFailure);
   }
 };
 
@@ -288,7 +361,10 @@ export const requestOtp = async (request, response, next) => {
 
   const useTestOtp = isOtpTestPhone(phoneNumber, env);
   if (!useTestOtp && channel === "sms" && (!env.smsDeliveryUrl || !env.smsDeliveryToken)) {
-    return response.status(503).json({ error: "Le service SMS est indisponible." });
+    return response.status(503).json({
+      error: "Le service SMS n'est pas configuré sur le serveur. Choisissez l'e-mail.",
+      code: "SMS_NOT_CONFIGURED",
+    });
   }
   if (!useTestOtp && channel === "email" && !isEmailDeliveryConfigured(env)) {
     return response.status(503).json({
@@ -365,8 +441,13 @@ export const requestOtp = async (request, response, next) => {
         console.error("Failed to remove undelivered OTP:", cleanupError);
       });
     if (otpStored && !useTestOtp) {
-      return response.status(503).json({
-        error: `La livraison du code par ${channel === "sms" ? "SMS" : "e-mail"} a échoué. Réessayez plus tard.`,
+      if (channel === "sms") {
+        const failure = smsDeliveryFailure(error);
+        return response.status(failure.status).json(failure);
+      }
+      return response.status(502).json({
+        error: "La livraison du code par e-mail a échoué. Vérifiez le service e-mail ou choisissez SMS.",
+        code: "EMAIL_DELIVERY_FAILED",
       });
     }
     return next(error);
@@ -387,7 +468,10 @@ export const requestPhoneChangeOtp = async (request, response, next) => {
   }
   const useTestOtp = isOtpTestPhone(phoneNumber, env);
   if (!useTestOtp && (!env.smsDeliveryUrl || !env.smsDeliveryToken)) {
-    return response.status(503).json({ error: "Le service SMS est indisponible." });
+    return response.status(503).json({
+      error: "Le service SMS n'est pas configuré sur le serveur.",
+      code: "SMS_NOT_CONFIGURED",
+    });
   }
 
   const code = useTestOtp
@@ -449,6 +533,10 @@ export const requestPhoneChangeOtp = async (request, response, next) => {
       .catch((cleanupError) => {
         console.error("Failed to remove undelivered phone-change OTP:", cleanupError);
       });
+    if (typeof error?.code === "string" && error.code.startsWith("SMS_")) {
+      const failure = smsDeliveryFailure(error);
+      return response.status(failure.status).json(failure);
+    }
     return next(error);
   } finally {
     client.release();

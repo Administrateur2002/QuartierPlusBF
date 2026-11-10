@@ -7,14 +7,20 @@ import {
 } from "./cloudinary.js";
 
 export const verifyMessageMedia = async ({ userId, mediaUrl, mediaType, mediaPublicId }) => {
+  if (!["image", "video", "audio"].includes(mediaType)) {
+    return { error: "Le type de média est invalide." };
+  }
   if (!isCloudinaryPublicIdOwnedByUser(userId, mediaPublicId)) {
     return { error: "Le média ne vous appartient pas." };
   }
-  const asset = await getCloudinaryAsset(mediaType, mediaPublicId);
+  const cloudinaryType = mediaType === "audio" ? "video" : mediaType;
+  const asset = await getCloudinaryAsset(cloudinaryType, mediaPublicId);
   const maxBytes = mediaType === "image" ? env.postMaxPhotoBytes : env.postMaxVideoBytes;
   const allowedFormat = mediaType === "image"
     ? ["jpg", "jpeg", "png", "webp"].includes(String(asset?.format).toLowerCase())
-    : String(asset?.format).toLowerCase() === "mp4";
+    : mediaType === "audio"
+      ? ["m4a", "mp3", "aac", "wav", "ogg"].includes(String(asset?.format).toLowerCase())
+      : String(asset?.format).toLowerCase() === "mp4";
   if (
     !asset ||
     asset.public_id !== mediaPublicId ||
@@ -24,7 +30,7 @@ export const verifyMessageMedia = async ({ userId, mediaUrl, mediaType, mediaPub
     !Number.isSafeInteger(asset.bytes) ||
     asset.bytes < 1 ||
     asset.bytes > maxBytes ||
-    (mediaType === "video" &&
+    ((mediaType === "video" || mediaType === "audio") &&
       (!Number.isFinite(Number(asset.duration)) ||
         Number(asset.duration) <= 0 ||
         Number(asset.duration) > env.postMaxVideoSeconds))

@@ -2,6 +2,8 @@ import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/nativ
 import type { RouteProp } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { Clapperboard, Plus, RefreshCw } from "lucide-react-native";
+import * as ImagePicker from "expo-image-picker";
+import { File } from "expo-file-system";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -18,6 +20,11 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import type { MainTabParamList } from "../navigation/types";
+import {
+  uploadCloudinaryMedia,
+  type CloudinaryUploadSignature,
+} from "../services/cloudinaryUpload";
+import { exceedsVideoDurationLimit } from "../services/videoDuration";
 import api from "../services/api";
 
 type SeriesItem = {
@@ -63,6 +70,12 @@ type ResumeEpisode = {
 const messageFrom = (error: unknown) =>
   error instanceof Error ? error.message : "Une erreur est survenue.";
 
+const formatDuration = (milliseconds: number | null | undefined) => {
+  if (!milliseconds || !Number.isFinite(milliseconds)) return "Durée inconnue";
+  const seconds = Math.floor(milliseconds / 1000);
+  return `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
+};
+
 export default function SeriesScreen() {
   const { colors } = useTheme();
   const { user, requestAuthentication } = useAuth();
@@ -85,7 +98,11 @@ export default function SeriesScreen() {
   const [seasonTitle, setSeasonTitle] = useState("Saison 1");
   const [episodeTitle, setEpisodeTitle] = useState("");
   const [episodeVideoUrl, setEpisodeVideoUrl] = useState("");
+  const [selectedVideo, setSelectedVideo] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [selectedVideoSize, setSelectedVideoSize] = useState<number | null>(null);
+  const [videoUploadProgress, setVideoUploadProgress] = useState<number | null>(null);
   const [isSavingEpisode, setIsSavingEpisode] = useState(false);
+  const videoUploadController = useRef<AbortController | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [cultureFilter, setCultureFilter] = useState<string | null>(null);
 
@@ -175,10 +192,89 @@ export default function SeriesScreen() {
     if (activeEpisode) void saveProgress(activeEpisode.id, position, completed);
   }, [activeEpisode?.id, saveProgress]);
 
-  const addEpisode = async () => {
+  const selectAndUploadVideo = async () => {
+    if (!detail || detail.creator_id !== user?.id || videoUploadController.current) return;
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error("Autorisez l’accès à la photothèque pour choisir une vidéo.");
+      }
+      const selection = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["videos"],
+        allowsEditing: false,
+        quality: 1,
+      });
+      if (selection.canceled) return;
+      const asset = selection.assets[0];
+      if (!asset?.uri) throw new Error("La vidéo sélectionnée est indisponible.");
+      const extension = asset.fileName?.split(".").pop()?.toLowerCase();
+      const mimeType = asset.mimeType?.toLowerCase() ??
+        (extension === "mov" ? "video/quicktime" : extension === "mp4" ? "video/mp4" : "");
+      if (!["video/mp4", "video/quicktime", "video/x-m4v"].includes(mimeType)) {
+        throw new Error("Format non accepté. Choisissez une vidéo MP4 ou MOV.");
+      }
+      setSelectedVideo(asset);
+      const size = asset.fileSize ?? new File(asset.uri).size;
+      setSelectedVideoSize(size);
+      setEpisodeVideoUrl("");
+      setVideoUploadProgress(0);
+      const controller = new AbortController();
+      videoUploadController.current = controller;
+      const response = await api.post<CloudinaryUploadSignature & {
+        max_bytes: number;
+        max_duration_seconds: number;
+      }>(`/v1/series/${detail.id}/media/sign`, { media_type: "video" }, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) throw new Error("Importation annulée.");
+      if (size > response.data.max_bytes) {
+        throw new Error(`La vidéo dépasse la limite de ${(response.data.max_bytes / (1024 * 1024)).toFixed(0)} Mo.`);
+      }
+      if (typeof asset.duration === "number" && exceedsVideoDurationLimit(
+        asset.duration / 1000,
+        response.data.max_duration_seconds,
+      )) {
+        throw new Error(`La vidéo doit durer au maximum ${response.data.max_duration_seconds} secondes.`);
+      }
+      const upload = await uploadCloudinaryMedia(
+        response.data,
+        {
+          uri: asset.uri,
+          name: asset.fileName ?? `episode-${Date.now()}.${extension ?? "mp4"}`,
+          type: mimeType,
+          size,
+        },
+        { signal: controller.signal, onProgress: setVideoUploadProgress },
+      );
+      if (!upload.secureUrl) throw new Error("Le serveur de stockage n’a pas confirmé la vidéo.");
+      setEpisodeVideoUrl(upload.secureUrl);
+      setVideoUploadProgress(100);
+    } catch (uploadError) {
+      if (!(uploadError instanceof Error && uploadError.name === "CanceledError")) {
+        Alert.alert("Importation impossible", messageFrom(uploadError));
+      }
+      setSelectedVideo(null);
+      setSelectedVideoSize(null);
+      setVideoUploadProgress(null);
+      setEpisodeVideoUrl("");
+    } finally {
+      videoUploadController.current = null;
+    }
+  };
+
+  const cancelVideoUpload = () => {
+    videoUploadController.current?.abort();
+    videoUploadController.current = null;
+    setSelectedVideo(null);
+    setSelectedVideoSize(null);
+    setVideoUploadProgress(null);
+    setEpisodeVideoUrl("");
+  };
+
+  const addEpisode = async (publish: boolean) => {
     if (!detail || detail.creator_id !== user?.id) return;
-    if (!episodeTitle.trim() || !episodeVideoUrl.trim().startsWith("https://")) {
-      Alert.alert("Épisode incomplet", "Ajoutez un titre et une URL vidéo HTTPS valide.");
+    if (!episodeTitle.trim() || (publish && !episodeVideoUrl.trim().startsWith("https://"))) {
+      Alert.alert("Épisode incomplet", publish ? "Ajoutez un titre et une vidéo importée ou une URL HTTPS valide." : "Ajoutez un titre à l’épisode.");
       return;
     }
     setIsSavingEpisode(true);
@@ -195,15 +291,18 @@ export default function SeriesScreen() {
         episode_number: season.episodes.length + 1,
         title: episodeTitle.trim(),
         video_url: episodeVideoUrl.trim(),
-        is_published: true,
+        is_published: publish,
       });
-      if (detail.status !== "PUBLISHED") {
+      if (publish && detail.status !== "PUBLISHED") {
         await api.post(`/v1/series/${detail.id}/publish`);
       }
       setEpisodeTitle("");
       setEpisodeVideoUrl("");
+      setSelectedVideo(null);
+      setSelectedVideoSize(null);
+      setVideoUploadProgress(null);
       await Promise.all([loadSeries(), openSeries(detail)]);
-      Alert.alert("Épisode publié", "Votre épisode est maintenant disponible dans le catalogue.");
+      Alert.alert(publish ? "Épisode publié" : "Brouillon enregistré", publish ? "Votre épisode est maintenant disponible dans le catalogue." : "Votre brouillon est enregistré.");
     } catch (episodeError) {
       Alert.alert("Publication impossible", messageFrom(episodeError));
     } finally {
@@ -417,8 +516,35 @@ export default function SeriesScreen() {
               <Text style={styles.formTitle}>{detail.seasons.length === 0 ? "Créer la saison 1 et son épisode" : "Ajouter un épisode"}</Text>
               {detail.seasons.length === 0 && <Field label="Titre de la saison" value={seasonTitle} onChangeText={setSeasonTitle} maxLength={160} styles={styles} />}
               <Field label="Titre de l’épisode" value={episodeTitle} onChangeText={setEpisodeTitle} maxLength={160} styles={styles} />
-              <Field label="URL vidéo HTTPS" value={episodeVideoUrl} onChangeText={setEpisodeVideoUrl} maxLength={2000} styles={styles} />
-              <Pressable accessibilityRole="button" disabled={isSavingEpisode} onPress={() => void addEpisode()} style={[styles.submitButton, isSavingEpisode && styles.disabled]}>
+              <Pressable accessibilityRole="button" disabled={videoUploadProgress !== null && videoUploadProgress < 100} onPress={() => void selectAndUploadVideo()} style={[styles.importButton, videoUploadProgress !== null && videoUploadProgress < 100 && styles.disabled]}>
+                <Plus color={colors.onPrimary} size={17} />
+                <Text style={styles.importButtonText}>{videoUploadProgress !== null && videoUploadProgress < 100 ? "Importation en cours…" : "Importer une vidéo"}</Text>
+              </Pressable>
+              {selectedVideo && (
+                <View style={styles.selectedVideoBlock}>
+                  <SelectedVideoPreview uri={selectedVideo.uri} styles={styles} />
+                  <Text numberOfLines={1} style={styles.metadata}>{selectedVideo.fileName ?? "Vidéo sélectionnée"}</Text>
+                  <Text style={styles.metadata}>
+                    {formatDuration(selectedVideo.duration)} · {((selectedVideoSize ?? 0) / (1024 * 1024)).toFixed(1)} Mo
+                  </Text>
+                  {videoUploadProgress !== null && (
+                    <>
+                      <View accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: videoUploadProgress }} style={styles.progressTrack}>
+                        <View style={[styles.progressBar, { width: `${videoUploadProgress}%` }]} />
+                      </View>
+                      <Text style={styles.metadata}>{videoUploadProgress < 100 ? `Transfert · ${videoUploadProgress}%` : "Vidéo prête à publier"}</Text>
+                    </>
+                  )}
+                  <Pressable accessibilityRole="button" onPress={cancelVideoUpload} style={styles.cancelUploadButton}>
+                    <Text style={styles.cancelUploadText}>{videoUploadProgress !== null && videoUploadProgress < 100 ? "Annuler le transfert" : "Retirer la vidéo"}</Text>
+                  </Pressable>
+                </View>
+              )}
+              <Field label="URL vidéo HTTPS (alternative)" value={episodeVideoUrl} onChangeText={(value) => { setEpisodeVideoUrl(value); if (value) setSelectedVideo(null); }} maxLength={2000} styles={styles} />
+              <Pressable accessibilityRole="button" disabled={isSavingEpisode || (videoUploadProgress !== null && videoUploadProgress < 100)} onPress={() => void addEpisode(false)} style={[styles.secondarySubmitButton, isSavingEpisode && styles.disabled]}>
+                <Text style={styles.secondarySubmitText}>{isSavingEpisode ? "Enregistrement…" : "Enregistrer en brouillon"}</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" disabled={isSavingEpisode || (videoUploadProgress !== null && videoUploadProgress < 100)} onPress={() => void addEpisode(true)} style={[styles.submitButton, isSavingEpisode && styles.disabled]}>
                 <Text style={styles.submitButtonText}>{isSavingEpisode ? "Publication…" : "Publier l’épisode"}</Text>
               </Pressable>
             </View>
@@ -469,6 +595,19 @@ function Field({
       />
     </View>
   );
+}
+
+function SelectedVideoPreview({
+  uri,
+  styles,
+}: {
+  uri: string;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const player = useVideoPlayer(uri, (instance) => {
+    instance.muted = true;
+  });
+  return <VideoView nativeControls player={player} contentFit="contain" style={styles.selectedVideoPreview} />;
 }
 
 function SeriesRow({ item, styles, onPress }: { item: SeriesItem; styles: ReturnType<typeof createStyles>; onPress: () => void }) {
@@ -709,6 +848,16 @@ const createStyles = (colors: ReturnType<typeof useTheme>["colors"]) => StyleShe
   placeholder: { color: colors.secondaryText },
   submitButton: { minHeight: 44, borderRadius: 7, backgroundColor: colors.text, alignItems: "center", justifyContent: "center" },
   submitButtonText: { color: colors.background, fontWeight: "700" },
+  secondarySubmitButton: { minHeight: 42, borderRadius: 7, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  secondarySubmitText: { color: colors.text, fontWeight: "700" },
+  importButton: { minHeight: 44, borderRadius: 7, backgroundColor: "#16856b", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  importButtonText: { color: "#ffffff", fontWeight: "700" },
+  selectedVideoBlock: { gap: 6, padding: 10, borderRadius: 8, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border },
+  selectedVideoPreview: { width: "100%", aspectRatio: 16 / 9, maxHeight: 240, backgroundColor: "#101010", borderRadius: 6 },
+  progressTrack: { height: 6, overflow: "hidden", borderRadius: 3, backgroundColor: colors.muted },
+  progressBar: { height: "100%", backgroundColor: "#16856b" },
+  cancelUploadButton: { alignSelf: "flex-start", minHeight: 32, justifyContent: "center" },
+  cancelUploadText: { color: colors.danger, fontSize: 12, fontWeight: "700" },
   disabled: { opacity: 0.55 },
   seriesRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.border },
   seriesMark: { width: 46, height: 60, borderRadius: 5, backgroundColor: "#d8eee8", alignItems: "center", justifyContent: "center" },
