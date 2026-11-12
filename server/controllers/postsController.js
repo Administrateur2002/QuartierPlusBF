@@ -20,6 +20,7 @@ const SCOPES = new Set(["neighborhood", "region", "country", "international"]);
 const IMAGE_FORMATS = new Set(["jpg", "jpeg", "png", "webp"]);
 const VIDEO_FORMATS = new Set(["mp4"]);
 const GEO_CELL_LATITUDE_DEGREES = 200 / 111_320;
+const VIDEO_DURATION_RETRY_DELAYS_MS = [250, 500];
 
 const positiveDuration = (value) => {
   if (
@@ -42,6 +43,29 @@ const getVideoDurationSeconds = (asset) => {
     positiveDuration(asset.duration_ms) ??
     positiveDuration(asset.video_metadata?.duration_ms);
   return durationMilliseconds === null ? null : durationMilliseconds / 1000;
+};
+
+const getCloudinaryAssetWithVideoDuration = async (
+  mediaType,
+  mediaPublicId,
+  trimVideo,
+) => {
+  let asset;
+  for (let attempt = 0; ; attempt += 1) {
+    asset = await getCloudinaryAsset(mediaType, mediaPublicId);
+    if (
+      !asset ||
+      mediaType !== "video" ||
+      trimVideo ||
+      getVideoDurationSeconds(asset) !== null ||
+      attempt >= VIDEO_DURATION_RETRY_DELAYS_MS.length
+    ) {
+      return asset;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, VIDEO_DURATION_RETRY_DELAYS_MS[attempt]),
+    );
+  }
 };
 
 const parseCoordinates = (latitude, longitude) => {
@@ -366,7 +390,11 @@ const getVerifiedAsset = async (
   ) {
     return { error: "Le média téléversé ne vous appartient pas." };
   }
-  const asset = await getCloudinaryAsset(mediaType, mediaPublicId);
+  const asset = await getCloudinaryAssetWithVideoDuration(
+    mediaType,
+    mediaPublicId,
+    trimVideo,
+  );
   if (!asset || asset.public_id !== mediaPublicId) {
     console.error("Cloudinary public ID mismatch:", {
       expectedPublicId: mediaPublicId,

@@ -25,6 +25,7 @@ import {
   Mic,
   Pause,
   Play,
+  QrCode,
   Radio,
   RefreshCw,
   Send,
@@ -33,6 +34,7 @@ import {
   X,
 } from "lucide-react-native";
 import { Room } from "livekit-client";
+import QRCode from "react-native-qrcode-svg";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRoute, type RouteProp } from "@react-navigation/native";
 import VoiceTextInput from "../components/VoiceTextInput";
@@ -101,6 +103,7 @@ type ChatMessage = {
   senderIsAlly: boolean;
   createdAt: string;
   isOwnMessage: boolean;
+  isRead: boolean;
   imageUrl?: string;
   mediaType?: MessageMediaType;
   informationType: "COMMUNITY" | "OFFICIAL";
@@ -140,6 +143,25 @@ type PrivateConversation = {
   lastMessage: string;
   updatedAt: string;
   unreadCount: number;
+};
+type PrivateContact = {
+  id: string;
+  name: string;
+  profile_photo_url: string | null;
+  badge: string | null;
+  public_handle: string;
+  connection_status: "CONNECTED" | "OUTGOING" | "INCOMING" | null;
+};
+type PrivateConnectionRequest = {
+  id: string;
+  status: "PENDING";
+  direction: "INCOMING" | "OUTGOING";
+  user_id: string;
+  name: string;
+  profile_photo_url: string | null;
+  badge: string | null;
+  public_handle: string;
+  created_at: string;
 };
 
 const LIVEKIT_URL = process.env.EXPO_PUBLIC_LIVEKIT_URL;
@@ -285,6 +307,7 @@ const normalizeMessage = (
       value.created_at ?? value.createdAt ?? new Date().toISOString(),
     ),
     isOwnMessage: value.is_mine === true || value.isOwnMessage === true,
+    isRead: value.is_read === true,
     imageUrl:
       typeof value.media_url === "string"
         ? value.media_url
@@ -693,6 +716,19 @@ export default function MessagesScreen() {
   const [conversationsError, setConversationsError] = useState<string | null>(
     null,
   );
+  const [connectionRequests, setConnectionRequests] = useState<
+    PrivateConnectionRequest[]
+  >([]);
+  const [isLoadingConnectionRequests, setIsLoadingConnectionRequests] =
+    useState(false);
+  const [isContactSearchVisible, setIsContactSearchVisible] = useState(false);
+  const [contactSearch, setContactSearch] = useState("");
+  const [contacts, setContacts] = useState<PrivateContact[]>([]);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+  const [isSearchingContacts, setIsSearchingContacts] = useState(false);
+  const [myPublicHandle, setMyPublicHandle] = useState("");
+  const [isQrVisible, setIsQrVisible] = useState(false);
+  const [isRespondingToRequest, setIsRespondingToRequest] = useState(false);
   const [conversationSearch, setConversationSearch] = useState("");
   const [selectedConversation, setSelectedConversation] =
     useState<PrivateConversation | null>(null);
@@ -765,6 +801,172 @@ export default function MessagesScreen() {
       ).includes(query),
     );
   }, [conversationSearch, conversations]);
+
+  const refreshPrivateConversations = useCallback(async (openConversationId?: string) => {
+    if (!API_BASE_URL) return;
+    const response = await apiFetch(`${API_BASE_URL}/v1/conversations`);
+    if (!response.ok) {
+      throw new Error(`Chargement refusé (HTTP ${response.status}).`);
+    }
+    const payload: unknown = await response.json();
+    const rawConversations =
+      isRecord(payload) && Array.isArray(payload.conversations)
+        ? payload.conversations
+        : null;
+    if (!rawConversations) {
+      throw new Error("Le serveur a renvoyé une liste de conversations invalide.");
+    }
+    const normalized = rawConversations.map(normalizeConversation);
+    if (normalized.some((conversation) => conversation === null)) {
+      throw new Error("La liste contient une conversation invalide.");
+    }
+    const validConversations = normalized.filter(
+      (conversation): conversation is PrivateConversation =>
+        conversation !== null,
+    );
+    setConversations(validConversations);
+    const conversation = validConversations.find(
+      (item) => item.id === openConversationId,
+    );
+    if (conversation) {
+      setSelectedConversation(conversation);
+      setIsContactSearchVisible(false);
+      setActiveTab("Privés");
+    }
+  }, []);
+
+  const loadConnectionRequests = useCallback(async () => {
+    if (!API_BASE_URL) return;
+    setIsLoadingConnectionRequests(true);
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/conversations/requests`);
+      if (!response.ok) {
+        throw new Error(`Chargement des demandes refusé (HTTP ${response.status}).`);
+      }
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !Array.isArray(payload.requests)) {
+        throw new Error("Le serveur a renvoyé des demandes de connexion invalides.");
+      }
+      setConnectionRequests(
+        payload.requests.flatMap((item) => {
+          if (
+            !isRecord(item) ||
+            typeof item.id !== "string" ||
+            typeof item.user_id !== "string" ||
+            (item.direction !== "INCOMING" && item.direction !== "OUTGOING") ||
+            typeof item.name !== "string"
+          ) {
+            return [];
+          }
+          return [{
+            id: item.id,
+            status: "PENDING" as const,
+            direction: item.direction,
+            user_id: item.user_id,
+            name: item.name,
+            profile_photo_url:
+              typeof item.profile_photo_url === "string"
+                ? item.profile_photo_url
+                : null,
+            badge: typeof item.badge === "string" ? item.badge : null,
+            public_handle:
+              typeof item.public_handle === "string" ? item.public_handle : "",
+            created_at:
+              typeof item.created_at === "string" ? item.created_at : "",
+          }];
+        }),
+      );
+    } finally {
+      setIsLoadingConnectionRequests(false);
+    }
+  }, []);
+
+  const sendConnectionRequest = async (contact: PrivateContact) => {
+    if (!API_BASE_URL) {
+      setContactsError("L'adresse du serveur n'est pas configurée.");
+      return;
+    }
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/v1/conversations/requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipient_id: contact.id }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `La demande a échoué (HTTP ${response.status}).`,
+        );
+      }
+      if (
+        isRecord(payload) &&
+        payload.status === "CONNECTED" &&
+        typeof payload.conversation_id === "string"
+      ) {
+        await refreshPrivateConversations(payload.conversation_id);
+      } else {
+        setContacts((current) =>
+          current.map((item) =>
+            item.id === contact.id
+              ? { ...item, connection_status: "OUTGOING" }
+              : item,
+          ),
+        );
+        await loadConnectionRequests();
+        Alert.alert(
+          "Demande envoyée",
+          `Votre demande de connexion a été envoyée à ${contact.name}.`,
+        );
+      }
+    } catch (error) {
+      setContactsError(
+        error instanceof Error ? error.message : "Impossible d'envoyer la demande.",
+      );
+    }
+  };
+
+  const respondToConnectionRequest = async (
+    connectionRequest: PrivateConnectionRequest,
+    decision: "ACCEPT" | "DECLINE",
+  ) => {
+    if (!API_BASE_URL || isRespondingToRequest) return;
+    setIsRespondingToRequest(true);
+    try {
+      const response = await apiFetch(
+        `${API_BASE_URL}/v1/conversations/requests/${encodeURIComponent(connectionRequest.id)}/respond`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+        },
+      );
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === "string"
+            ? payload.error
+            : `La réponse a échoué (HTTP ${response.status}).`,
+        );
+      }
+      await loadConnectionRequests();
+      if (
+        decision === "ACCEPT" &&
+        isRecord(payload) &&
+        typeof payload.conversation_id === "string"
+      ) {
+        await refreshPrivateConversations(payload.conversation_id);
+      }
+    } catch (error) {
+      Alert.alert(
+        "Demande non traitée",
+        error instanceof Error ? error.message : "Une erreur est survenue.",
+      );
+    } finally {
+      setIsRespondingToRequest(false);
+    }
+  };
 
   useEffect(() => {
     const params = route.params;
@@ -1041,6 +1243,125 @@ export default function MessagesScreen() {
   }, [activeTab, isOffline]);
 
   useEffect(() => {
+    if (activeTab !== "Privés") return;
+    let active = true;
+    void loadConnectionRequests().catch((error: unknown) => {
+      if (active) {
+        setConversationsError(
+          error instanceof Error
+            ? error.message
+            : "Impossible de charger les demandes de connexion.",
+        );
+      }
+    });
+    if (API_BASE_URL) {
+      void apiFetch(`${API_BASE_URL}/v1/conversations/contacts/me`)
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Chargement du profil public refusé (HTTP ${response.status}).`);
+          }
+          const payload: unknown = await response.json();
+          if (
+            !isRecord(payload) ||
+            !isRecord(payload.profile) ||
+            typeof payload.profile.public_handle !== "string"
+          ) {
+            throw new Error("Le serveur n'a pas renvoyé votre identifiant public.");
+          }
+          if (active) setMyPublicHandle(payload.profile.public_handle);
+        })
+        .catch((error: unknown) => {
+          if (active) {
+            console.error("Unable to load public contact handle:", error);
+          }
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [activeTab, loadConnectionRequests, user?.id]);
+
+  useEffect(() => {
+    if (!isContactSearchVisible || activeTab !== "Privés") return;
+    const query = contactSearch.trim();
+    if (query.length < 2) {
+      setContacts([]);
+      setContactsError(null);
+      setIsSearchingContacts(false);
+      return;
+    }
+    if (!API_BASE_URL) {
+      setContactsError("L'adresse du serveur n'est pas configurée.");
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setIsSearchingContacts(true);
+      setContactsError(null);
+      void apiFetch(
+        `${API_BASE_URL}/v1/conversations/contacts?query=${encodeURIComponent(query)}`,
+        { signal: controller.signal },
+      )
+        .then(async (response) => {
+          const payload: unknown = await response.json();
+          if (!response.ok) {
+            throw new Error(
+              isRecord(payload) && typeof payload.error === "string"
+                ? payload.error
+                : `Recherche refusée (HTTP ${response.status}).`,
+            );
+          }
+          if (!isRecord(payload) || !Array.isArray(payload.contacts)) {
+            throw new Error("Le serveur a renvoyé une liste de contacts invalide.");
+          }
+          const parsed = payload.contacts.flatMap((item) => {
+            if (
+              !isRecord(item) ||
+              typeof item.id !== "string" ||
+              typeof item.name !== "string" ||
+              typeof item.public_handle !== "string"
+            ) {
+              return [];
+            }
+            return [{
+              id: item.id,
+              name: item.name,
+              profile_photo_url:
+                typeof item.profile_photo_url === "string"
+                  ? item.profile_photo_url
+                  : null,
+              badge: typeof item.badge === "string" ? item.badge : null,
+              public_handle: item.public_handle,
+              connection_status:
+                item.connection_status === "CONNECTED" ||
+                item.connection_status === "OUTGOING" ||
+                item.connection_status === "INCOMING"
+                  ? item.connection_status
+                  : null,
+            }];
+          });
+          if (!controller.signal.aborted) setContacts(parsed);
+        })
+        .catch((error: unknown) => {
+          if (!controller.signal.aborted) {
+            setContactsError(
+              error instanceof Error
+                ? error.message
+                : "Impossible de rechercher des contacts.",
+            );
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setIsSearchingContacts(false);
+        });
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, contactSearch, isContactSearchVisible]);
+
+  useEffect(() => {
     if (activeTab === "Privés") {
       if (!selectedConversation) {
         setMessages([]);
@@ -1248,6 +1569,39 @@ export default function MessagesScreen() {
           activeSocket.emit("join_channel", { channel_id: selectedChannelId });
         }
       });
+      activeSocket.on("private:new_message", (payload: unknown) => {
+        if (!isPrivateConversation || !selectedConversation) return;
+        const message = normalizeMessage(
+          payload,
+          undefined,
+          selectedConversation.id,
+        );
+        if (!message) return;
+        const threadKey = `user:${encodeURIComponent(user?.id ?? "anonymous")}:conversation:${selectedConversation.id}`;
+        setMessages((current) => [
+          ...current.filter((item) => item.id !== message.id),
+          message,
+        ]);
+        void cacheMessages(threadKey, [message]).catch((error: unknown) => {
+          console.error("Unable to cache a private:new_message event:", error);
+        });
+      });
+      activeSocket.on("private:read", (payload: unknown) => {
+        if (
+          !isPrivateConversation ||
+          !selectedConversation ||
+          !isRecord(payload) ||
+          payload.conversation_id !== selectedConversation.id ||
+          payload.user_id === user?.id
+        ) {
+          return;
+        }
+        setMessages((current) =>
+          current.map((message) =>
+            message.isOwnMessage ? { ...message, isRead: true } : message,
+          ),
+        );
+      });
       activeSocket.on("new_message", (payload: unknown) => {
         if (!isRecord(payload)) return;
         const message =
@@ -1336,6 +1690,8 @@ export default function MessagesScreen() {
           socket.emit("leave_channel", { channel_id: selectedChannelId });
         }
         socket.removeAllListeners("connect");
+        socket.removeAllListeners("private:new_message");
+        socket.removeAllListeners("private:read");
         socket.removeAllListeners("new_message");
         socket.removeAllListeners("channel:new_message");
         socket.removeAllListeners("chat:message");
@@ -2645,10 +3001,78 @@ export default function MessagesScreen() {
                 : "Voisin"}
             </Text>
           </View>
+          <Pressable
+            accessibilityLabel={`Bloquer ${selectedConversation.participantName}`}
+            accessibilityRole="button"
+            onPress={() => {
+              Alert.alert(
+                "Bloquer ce contact ?",
+                "Cette personne ne pourra plus vous envoyer de messages. Vous pourrez la débloquer depuis les paramètres de blocage.",
+                [
+                  { text: "Annuler", style: "cancel" },
+                  {
+                    text: "Bloquer",
+                    style: "destructive",
+                    onPress: () => {
+                      void (async () => {
+                        const response = await apiFetch(
+                          `${API_BASE_URL}/v1/social/users/${encodeURIComponent(selectedConversation.participantId)}/block`,
+                          { method: "POST" },
+                        );
+                        if (!response.ok) {
+                          const payload: unknown = await response.json();
+                          throw new Error(
+                            isRecord(payload) && typeof payload.error === "string"
+                              ? payload.error
+                              : `Blocage refusé (HTTP ${response.status}).`,
+                          );
+                        }
+                        setSelectedConversation(null);
+                        setMessages([]);
+                        await refreshPrivateConversations();
+                        Alert.alert("Contact bloqué", "La conversation est masquée.");
+                      })().catch((error: unknown) => {
+                        Alert.alert(
+                          "Blocage impossible",
+                          error instanceof Error ? error.message : "Une erreur est survenue.",
+                        );
+                      });
+                    },
+                  },
+                ],
+              );
+            }}
+            style={styles.conversationSafetyButton}
+          >
+            <ShieldAlert color="#b91c1c" size={19} />
+          </Pressable>
         </View>
       ) : (
         <View style={styles.privateListContainer}>
           <Text style={styles.privateListTitle}>Conversations privées</Text>
+          <View style={styles.contactActionRow}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setContacts([]);
+                setContactsError(null);
+                setContactSearch("");
+                setIsContactSearchVisible(true);
+              }}
+              style={styles.findContactButton}
+            >
+              <Text style={styles.findContactText}>Trouver un contact</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Afficher mon QR code QuartierPlus Connexion"
+              accessibilityRole="button"
+              disabled={!myPublicHandle}
+              onPress={() => setIsQrVisible(true)}
+              style={styles.qrButton}
+            >
+              <QrCode color="#2563eb" size={19} />
+            </Pressable>
+          </View>
           <VoiceTextInput
             accessibilityLabel="Rechercher un contact ou une conversation"
             onChangeText={setConversationSearch}
@@ -2669,6 +3093,54 @@ export default function MessagesScreen() {
               contentContainerStyle={styles.conversationList}
               showsVerticalScrollIndicator={false}
             >
+              {connectionRequests.map((connectionRequest) => (
+                <View
+                  key={connectionRequest.id}
+                  style={[styles.connectionRequestCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+                >
+                  <ProfileAvatar
+                    name={connectionRequest.name}
+                    photoUrl={connectionRequest.profile_photo_url}
+                    size={40}
+                    isProVerified={connectionRequest.badge === "Commerçant Certifié"}
+                  />
+                  <View style={styles.connectionRequestCopy}>
+                    <Text style={[styles.conversationName, { color: colors.text }]}>
+                      {connectionRequest.name}
+                    </Text>
+                    <Text style={[styles.connectionRequestHint, { color: colors.secondaryText }]}>
+                      {connectionRequest.direction === "INCOMING"
+                        ? "Demande de connexion reçue"
+                        : "Demande envoyée · en attente"}
+                    </Text>
+                  </View>
+                  {connectionRequest.direction === "INCOMING" ? (
+                    <View style={styles.connectionRequestActions}>
+                      <Pressable
+                        accessibilityLabel={`Accepter la demande de ${connectionRequest.name}`}
+                        accessibilityRole="button"
+                        disabled={isRespondingToRequest}
+                        onPress={() => void respondToConnectionRequest(connectionRequest, "ACCEPT")}
+                        style={styles.acceptConnectionButton}
+                      >
+                        <Text style={styles.acceptConnectionText}>Accepter</Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityLabel={`Refuser la demande de ${connectionRequest.name}`}
+                        accessibilityRole="button"
+                        disabled={isRespondingToRequest}
+                        onPress={() => void respondToConnectionRequest(connectionRequest, "DECLINE")}
+                        style={styles.declineConnectionButton}
+                      >
+                        <Text style={styles.declineConnectionText}>Refuser</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+              {isLoadingConnectionRequests && (
+                <ActivityIndicator color="#2563eb" style={styles.loading} />
+              )}
               {filteredConversations.map((conversation) => (
                 <Pressable
                   accessibilityRole="button"
@@ -2839,6 +3311,7 @@ export default function MessagesScreen() {
                 ]}
               >
                 {formatMessageTime(message.createdAt)}
+                {message.isOwnMessage ? (message.isRead ? " · Lu" : " · Envoyé") : ""}
               </Text>
             </Pressable>
           ))
@@ -2964,6 +3437,155 @@ export default function MessagesScreen() {
                 <Text style={styles.reportButtonText}>Envoyer le signalement</Text>
               )}
             </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setIsContactSearchVisible(false)}
+        transparent
+        visible={isContactSearchVisible}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.dialog}>
+            <View style={styles.dialogHeader}>
+              <View style={styles.reportIcon}>
+                <MessageSquare color="#2563eb" size={20} />
+              </View>
+              <Text style={styles.dialogTitle}>Trouver un contact</Text>
+              <Pressable
+                accessibilityLabel="Fermer la recherche de contacts"
+                accessibilityRole="button"
+                onPress={() => setIsContactSearchVisible(false)}
+                style={styles.closeButton}
+              >
+                <X color="#64748b" size={20} />
+              </Pressable>
+            </View>
+            <Text style={styles.dialogDescription}>
+              Recherchez par nom ou par identifiant public QuartierPlus.
+            </Text>
+            <VoiceTextInput
+              accessibilityLabel="Rechercher un contact par nom ou identifiant"
+              autoCapitalize="none"
+              onChangeText={setContactSearch}
+              placeholder="Nom ou qp-..."
+              placeholderTextColor="#94a3b8"
+              style={styles.contactSearchInput}
+              value={contactSearch}
+            />
+            {contactsError ? (
+              <Text accessibilityRole="alert" style={styles.errorText}>
+                {contactsError}
+              </Text>
+            ) : null}
+            {isSearchingContacts ? (
+              <ActivityIndicator color="#2563eb" style={styles.loading} />
+            ) : (
+              <ScrollView
+                contentContainerStyle={styles.contactResults}
+                keyboardShouldPersistTaps="handled"
+              >
+                {contactSearch.trim().length < 2 ? (
+                  <Text style={styles.emptyText}>
+                    Saisissez au moins 2 caractères pour lancer la recherche.
+                  </Text>
+                ) : contacts.map((contact) => (
+                  <View key={contact.id} style={styles.contactResultCard}>
+                    <ProfileAvatar
+                      name={contact.name}
+                      photoUrl={contact.profile_photo_url}
+                      size={42}
+                      isProVerified={contact.badge === "Commerçant Certifié"}
+                    />
+                    <View style={styles.contactResultCopy}>
+                      <Text style={styles.conversationName}>{contact.name}</Text>
+                      <Text style={styles.contactHandle}>{contact.public_handle}</Text>
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={contact.connection_status === "OUTGOING"}
+                      onPress={() => {
+                        if (contact.connection_status === "INCOMING") {
+                          setIsContactSearchVisible(false);
+                          void loadConnectionRequests();
+                        } else {
+                          void sendConnectionRequest(contact);
+                        }
+                      }}
+                      style={[
+                        styles.contactRequestButton,
+                        contact.connection_status === "OUTGOING" &&
+                          styles.contactRequestButtonDisabled,
+                      ]}
+                    >
+                      <Text style={styles.contactRequestButtonText}>
+                        {contact.connection_status === "CONNECTED"
+                          ? "Ouvrir"
+                          : contact.connection_status === "OUTGOING"
+                            ? "En attente"
+                            : contact.connection_status === "INCOMING"
+                              ? "Répondre"
+                              : "Ajouter"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                ))}
+                {contactSearch.trim().length >= 2 &&
+                  !contacts.length &&
+                  !contactsError &&
+                  !isSearchingContacts && (
+                    <Text style={styles.emptyText}>Aucun contact trouvé.</Text>
+                  )}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setIsQrVisible(false)}
+        transparent
+        visible={isQrVisible}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.dialog}>
+            <View style={styles.dialogHeader}>
+              <View style={styles.reportIcon}>
+                <QrCode color="#2563eb" size={20} />
+              </View>
+              <Text style={styles.dialogTitle}>Mon QR de contact</Text>
+              <Pressable
+                accessibilityLabel="Fermer mon QR de contact"
+                accessibilityRole="button"
+                onPress={() => setIsQrVisible(false)}
+                style={styles.closeButton}
+              >
+                <X color="#64748b" size={20} />
+              </Pressable>
+            </View>
+            {myPublicHandle ? (
+              <>
+                <View style={styles.qrCodeContainer}>
+                  <QRCode
+                    value={`quartierplus://connect/${myPublicHandle}`}
+                    size={200}
+                    backgroundColor="#ffffff"
+                    color="#172b4d"
+                  />
+                </View>
+                <Text selectable style={styles.qrHandleText}>
+                  {myPublicHandle}
+                </Text>
+                <Text style={styles.dialogDescription}>
+                  Partagez ce code ou votre identifiant pour recevoir une demande de connexion.
+                </Text>
+              </>
+            ) : (
+              <ActivityIndicator color="#2563eb" style={styles.loading} />
+            )}
           </View>
         </View>
       </Modal>
@@ -3669,6 +4291,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 8,
   },
+  contactActionRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+    marginHorizontal: 20,
+  },
+  findContactButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 10,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 40,
+  },
+  findContactText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  qrButton: {
+    alignItems: "center",
+    backgroundColor: "#eff6ff",
+    borderColor: "#bfdbfe",
+    borderRadius: 10,
+    borderWidth: 1,
+    height: 40,
+    justifyContent: "center",
+    width: 44,
+  },
   searchInput: {
     backgroundColor: "#f8fafc",
     borderColor: "#cbd5e1",
@@ -3693,6 +4345,126 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     marginBottom: 9,
     padding: 12,
+  },
+  connectionRequestCard: {
+    alignItems: "center",
+    borderRadius: 13,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 9,
+    marginBottom: 9,
+    padding: 10,
+  },
+  connectionRequestCopy: {
+    flex: 1,
+    minWidth: 50,
+  },
+  connectionRequestHint: {
+    fontSize: 10,
+    marginTop: 3,
+  },
+  connectionRequestActions: {
+    alignItems: "flex-end",
+    gap: 5,
+  },
+  acceptConnectionButton: {
+    alignItems: "center",
+    backgroundColor: "#166534",
+    borderRadius: 7,
+    justifyContent: "center",
+    minWidth: 74,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  acceptConnectionText: {
+    color: "#ffffff",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  declineConnectionButton: {
+    alignItems: "center",
+    borderColor: "#fecaca",
+    borderRadius: 7,
+    borderWidth: 1,
+    justifyContent: "center",
+    minWidth: 74,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  declineConnectionText: {
+    color: "#b91c1c",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  contactResultCard: {
+    alignItems: "center",
+    borderBottomColor: "#e2e8f0",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    gap: 9,
+    paddingVertical: 9,
+  },
+  contactResultCopy: {
+    flex: 1,
+  },
+  contactHandle: {
+    color: "#64748b",
+    fontSize: 10,
+    marginTop: 3,
+  },
+  contactRequestButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 8,
+    justifyContent: "center",
+    minWidth: 74,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  contactRequestButtonDisabled: {
+    backgroundColor: "#94a3b8",
+  },
+  contactRequestButtonText: {
+    color: "#ffffff",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  contactResults: {
+    paddingBottom: 8,
+  },
+  contactSearchInput: {
+    backgroundColor: "#f8fafc",
+    borderColor: "#cbd5e1",
+    borderRadius: 10,
+    borderWidth: 1,
+    color: "#172b4d",
+    fontSize: 13,
+    marginTop: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  qrCodeContainer: {
+    alignItems: "center",
+    alignSelf: "center",
+    backgroundColor: "#ffffff",
+    borderColor: "#e2e8f0",
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 18,
+    padding: 14,
+  },
+  qrHandleText: {
+    color: "#172b4d",
+    fontSize: 14,
+    fontWeight: "800",
+    marginTop: 14,
+    textAlign: "center",
+  },
+  conversationSafetyButton: {
+    alignItems: "center",
+    height: 38,
+    justifyContent: "center",
+    width: 34,
   },
   conversationCopy: {
     flex: 1,

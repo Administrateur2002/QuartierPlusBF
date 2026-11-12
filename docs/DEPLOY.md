@@ -96,8 +96,11 @@ Puis exécutez, sans supprimer de table ni de données, dans cet ordre :
 48. `migrations/044_community_groups_and_post_shares.sql`
 49. `migrations/045_community_alliance_projects.sql`
 50. `migrations/046_firebase_auth_identity.sql`
+51. `migrations/047_private_connections.sql`
 
 La migration 046 ajoute l’identifiant Firebase unique aux comptes existants sans modifier leurs profils, rôles ni sessions. Appliquez-la avant de déployer l’échange `/api/v1/auth/firebase`. Configurez `FIREBASE_PROJECT_ID=quartierplus-final` et un compte de service Firebase Admin dans le gestionnaire de secrets du serveur via `FIREBASE_SERVICE_ACCOUNT_JSON`, ou fournissez des identifiants ADC. N’utilisez jamais le JSON de compte de service dans l’application mobile.
+
+La migration 047 ajoute les demandes d'accès à QuartierPlus Connexion ainsi que le lien unique entre deux comptes et leur conversation privée. Appliquez-la avant le déploiement des routes de découverte et de demandes de contact.
 
 La migration 041 ajoute le catalogue de séries, saisons, épisodes, sous-titres,
 progression de lecture et votes de fin d'épisode. Elle est additive et conserve

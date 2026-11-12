@@ -708,6 +708,74 @@ test("server does not silently cap videos when trimming was not authorized", asy
   }
 });
 
+test("server retries Cloudinary metadata while video duration is still processing", async (context) => {
+  const publicId = `${USER_ID}_processing_video`;
+  let metadataReads = 0;
+  context.mock.method(pool, "query", async () => ({
+    rowCount: 1,
+    rows: [VERIFIED_USER],
+  }));
+  context.mock.method(globalThis, "fetch", async () => {
+    metadataReads += 1;
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          public_id: publicId,
+          secure_url:
+            "https://res.cloudinary.com/quartierplus-test/video/upload/video.mp4",
+          format: "mp4",
+          bytes: 1000,
+          resource_type: "video",
+          duration: metadataReads === 1 ? null : 12.5,
+        };
+      },
+    };
+  });
+  const transaction = createTransactionClient({
+    query(statement, values) {
+      if (statement.includes("INSERT INTO posts")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: POST_ID,
+            caption: "Vidéo en cours de traitement",
+            scope: "country",
+            media_url: values[7],
+            media_type: "video",
+          }],
+        };
+      }
+      return undefined;
+    },
+  });
+  context.mock.method(pool, "connect", async () => transaction);
+  const response = createResponse();
+
+  await createPost(
+    {
+      auth: { userId: USER_ID },
+      body: {
+        scope: "country",
+        media_type: "video",
+        media_public_id: publicId,
+      },
+    },
+    response,
+    (error) => {
+      throw error;
+    },
+  );
+
+  assert.equal(metadataReads, 2);
+  assert.equal(response.statusCode, 201);
+  const insert = transaction.queries.find(({ statement }) =>
+    statement.includes("INSERT INTO posts"),
+  );
+  assert.equal(insert.values[11], 12.5);
+});
+
 test("server caps videos when Cloudinary has not returned readable duration metadata", async (context) => {
   const asset = {
     public_id: `${USER_ID}_unknown_duration`,

@@ -52,6 +52,10 @@ const communityAllianceProjectsMigration = readFileSync(
   new URL("../../migrations/045_community_alliance_projects.sql", import.meta.url),
   "utf8",
 );
+const privateConnectionsMigration = readFileSync(
+  new URL("../../migrations/047_private_connections.sql", import.meta.url),
+  "utf8",
+);
 const deployGuide = readFileSync(
   new URL("../../docs/DEPLOY.md", import.meta.url),
   "utf8",
@@ -172,6 +176,14 @@ test("profile photos and feed carousel migrations are additive and documented fo
   assert.match(communityAllianceProjectsMigration, /VALUES \('045_community_alliance_projects\.sql'\)/);
   assert.doesNotMatch(
     communityAllianceProjectsMigration,
+    /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
+  );
+  assert.match(privateConnectionsMigration, /CREATE TABLE IF NOT EXISTS private_connection_requests/);
+  assert.match(privateConnectionsMigration, /CREATE TABLE IF NOT EXISTS private_connections/);
+  assert.match(privateConnectionsMigration, /CHECK \(user_low_id < user_high_id\)/);
+  assert.match(privateConnectionsMigration, /VALUES \('047_private_connections\.sql'\)/);
+  assert.doesNotMatch(
+    privateConnectionsMigration,
     /\b(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE)\b/i,
   );
   for (const [migration, version] of [
